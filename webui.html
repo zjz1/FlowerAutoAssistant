@@ -102,6 +102,16 @@
       <div class="row" style="margin-top:8px">
         <label>流程运行在后台, 日志实时滚动下方。</label>
       </div>
+      <h2 style="margin-top:12px">可选功能</h2>
+      <div class="row">
+        <label><input type="checkbox" id="switch-chk"> 切换账号</label>
+        <label>目标尾部 <input type="text" id="switch-tail" style="width:56px" placeholder="账号尾号"></label>
+        <button id="save-cfg-btn">保存</button>
+        <span class="muted" id="cfg-status"></span>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <span class="muted">勾选后在每日编排登录前切换账号, 目标 = 账号末尾数字(如 89)。</span>
+      </div>
       <h2 style="margin-top:12px">运行日志</h2>
       <div id="log"><span class="muted">暂无日志</span></div>
     </div>
@@ -254,6 +264,26 @@ $("run-btn").onclick = async ()=>{
   }catch(e){ alert("无法运行: "+e.message); }
 };
 
+async function refreshConfig(){
+  try{
+    const d = await api("/api/config");
+    $("switch-chk").checked = !!d.enable_switch;
+    $("switch-tail").value = d.target_tail ?? "";
+  }catch(e){}
+}
+
+$("save-cfg-btn").onclick = async ()=>{
+  try{
+    const body = {
+      enable_switch: $("switch-chk").checked,
+      target_tail: $("switch-tail").value.trim(),
+    };
+    const d = await api("/api/set_config", {method:"POST", body:JSON.stringify(body)});
+    $("cfg-status").textContent = d.changed ? "已保存 ✓" : "已应用 ✓";
+    setTimeout(()=>{ $("cfg-status").textContent = ""; }, 2000);
+  }catch(e){ alert("保存失败: "+e.message); }
+};
+
 async function pollLog(){
   try{
     const d = await api("/api/log?after="+logCursor);
@@ -303,6 +333,7 @@ $("screen-wrap").addEventListener("click", async (ev)=>{
   await refreshStatus();
   await refreshFlows();
   await refreshKb();
+  await refreshConfig();
   if(autoTimer!=null) clearInterval(autoTimer);
   autoTimer = setInterval(()=>{ refreshScreen(); }, 1500);
   $("auto-chk").checked = true;

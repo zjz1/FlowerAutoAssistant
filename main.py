@@ -40,6 +40,7 @@ def parse_args():
     p.add_argument("--address", default=ADB_ADDRESS, help=f"ADB 地址 (默认: {ADB_ADDRESS})")
     p.add_argument("--adb", default=ADB_PATH, help="adb 可执行文件路径")
     p.add_argument("--interval", type=float, default=1.0, help="每轮循环之间间隔秒 (默认 1.0)")
+    p.add_argument("--tail", default=None, help="切换账号目标账户尾部数字 (覆盖 data/config.json 的 target_tail, 默认 None=用配置)")
     p.add_argument("--list", action="store_true", help="列出可用流程并退出")
     return p.parse_args()
 
@@ -61,6 +62,9 @@ def main():
         return
 
     eng = OCREngine(adb_path=args.adb, address=args.address)
+    if args.tail is not None:
+        eng.config["target_tail"] = str(args.tail)
+        print(f"[配置] 切换账号目标账户尾部: {args.tail}")
     if not eng.connect():
         print("[错误] 连接模拟器失败, 请确认模拟器已启动且 ADB 可用")
         return

@@ -1,7 +1,8 @@
 {
     "name": "每日挂机编排",
-    "description": "顺序调度 7 大模块: 启动(登录进游戏)->签到->种植->体力->每日任务->挂机->领取奖励. 核心模块失败终止本轮, 可选模块失败自动跳过.",
+    "description": "顺序调度 8 大模块: 切换账号(可选)->启动(登录进游戏)->签到->种植->体力->每日任务->挂机->领取奖励. 核心模块失败终止本轮, 可选模块失败自动跳过.",
     "modules": [
+        { "id": "switch",  "flow": "flow_switch.json",      "required": false, "on_fail": "skip" },
         { "id": "startup", "flow": "flow_startup.json",     "required": true,  "on_fail": "stop_round" },
         { "id": "signin",  "flow": "flow_signin.json",      "required": false, "on_fail": "skip" },
         { "id": "plant",   "flow": "flow_plant.json",       "required": true,  "on_fail": "stop_round" },

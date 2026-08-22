@@ -34,6 +34,7 @@ ADB_PATH = r"D:\Program Files\Netease\MuMu\nx_main\adb.exe"
 FLOW_DIR = Path(__file__).parent / "flows"
 CLICK_LOG_PATH = Path(__file__).parent / "data" / "click_log.json"
 CLOSE_BUTTONS_PATH = Path(__file__).parent / "data" / "close_buttons.json"
+CONFIG_PATH = Path(__file__).parent / "data" / "config.json"
 
 
 # ---------- 坐标 ----------
@@ -68,6 +69,53 @@ class OCREngine:
         self.screen_h = 0
         self.click_log: dict[str, dict] = self._load_click_log()  # 按钮名 -> 记录
         self.close_buttons: list[dict] = self._load_close_buttons()  # 关闭按钮特殊逻辑注册表
+        self.config: dict = self._load_config()  # 用户配置 (data/config.json), 支持 CLI 覆盖
+
+    # ---- 用户配置 (data/config.json) ----
+    def _load_config(self) -> dict:
+        """加载用户配置 (data/config.json)。流程 JSON 中可用 ${key} 占位符引用配置值,
+        例如 ${target_tail} -> config["target_tail"]。缺失字段返回空字符串。"""
+        cfg = {}
+        try:
+            if CONFIG_PATH.exists():
+                with open(CONFIG_PATH, encoding="utf-8") as fp:
+                    data = json.load(fp)
+                    if isinstance(data, dict):
+                        cfg = {k: v for k, v in data.items() if not k.startswith("_")}
+        except Exception as e:
+            print(f"[配置加载失败] {e}")
+        return cfg
+
+    def _save_config(self) -> None:
+        """把 self.config 写回 data/config.json (合并注释字段除外)。"""
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        try:
+            if CONFIG_PATH.exists():
+                with open(CONFIG_PATH, encoding="utf-8") as fp:
+                    data = json.load(fp)
+        except Exception:
+            data = {}
+        for k, v in self.config.items():
+            data[k] = v
+        with open(CONFIG_PATH, "w", encoding="utf-8") as fp:
+            json.dump(data, fp, ensure_ascii=False, indent=4)
+
+    def update_config(self, **kwargs) -> None:
+        """更新配置项并持久化。例如 update_config(enable_switch=True, target_tail="61")。"""
+        self.config.update(kwargs)
+        self._save_config()
+
+    def resolve(self, val):
+        """把字符串中的 ${key} 占位符替换为配置值; 非字符串或未含占位符则原样返回。"""
+        if isinstance(val, str) and "${" in val:
+            def _repl(m):
+                key = m.group(1)
+                if key not in self.config:
+                    print(f"[配置] 提示: 配置键 '{key}' 未定义, 使用空值")
+                return str(self.config.get(key, ""))
+            return re.sub(r"\$\{(\w+)\}", _repl, val)
+        return val
 
     # ---- 关闭按钮特殊逻辑注册表 ----
     def _load_close_buttons(self) -> list:
@@ -118,17 +166,24 @@ class OCREngine:
             json.dump(self.click_log, fp, ensure_ascii=False, indent=2)
 
     def _log_click(self, name: str, keywords, pt: "Point", method: str) -> None:
-        """记录一次成功点击: 按钮名 + 文本 + 相对坐标 + 绝对坐标。同名按钮只保留一次。"""
+        """记录一次成功点击: 按钮名 + 文本 + 相对坐标 + 绝对坐标。同名按钮只保留一次。
+        旧条目中人工标注的扩展字段(anchor/color/scene/note)会被保留, 不被自动日志覆盖。
+        """
         kws = keywords if isinstance(keywords, list) else [keywords]
-        self.click_log[name] = {
+        old = self.click_log.get(name) or {}
+        entry = {
             "name": name,
             "text": kws,
             "rel": [round(pt.rel[0], 4), round(pt.rel[1], 4)],
             "abs": [pt.x, pt.y],
             "screen": [self.screen_w, self.screen_h],
-            "method": method,  # ocr / fallback
+            "method": method,  # ocr / color / anchor / fallback
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
+        for k in ("anchor", "color", "scene", "note"):
+            if k in old:
+                entry[k] = old[k]
+        self.click_log[name] = entry
         self._save_click_log()
         print(f"[记录] 按钮[{name}] 相对{self.click_log[name]['rel']} 已存入 {CLICK_LOG_PATH.name}")
 
@@ -310,6 +365,78 @@ class OCREngine:
         cx, cy = int(candidates[0][0]), int(candidates[0][1])
         return Point(cx, cy, self.screen_w, self.screen_h)
 
+    def locate_anchor_offset(self, anchor_cfg: dict, img=None, min_score=0.4) -> "Point | None":
+        """锚点 + 像素偏移定位: 适用于「固定尺寸界面」(如小花仙登录界面不随设备分辨率缩放),
+        整体画面相对坐标(0~1)会失效, 但「界面内元素相对锚点的像素偏移」恒定不变。
+
+        anchor_cfg: {"anchors": [
+            {"text_contains": "****", "offset": [dx, dy]},   # 按子串找锚点块(如账号 abc****de)
+            {"text": ["登录"], "offset": [dx, dy]},           # 按关键字找锚点块
+        ]}
+        依次尝试各锚点, 首个命中即返回 锚点中心+offset 的 Point; 全部失败返回 None。
+        """
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return None
+        for a in anchor_cfg.get("anchors", []):
+            dx, dy = a.get("offset", [0, 0])
+            pat = a.get("text_contains")
+            if pat:
+                hit = next((b for b in ocr_image(img) if pat in b.get("text", "")), None)
+                if hit is None:
+                    print(f"[锚点偏移] 未找到含 '{pat}' 的文本块")
+                    continue
+                cx, cy = hit["center"]
+            else:
+                pt = self.locate(a.get("text", []), img=img, min_score=min_score)
+                if pt is None:
+                    continue
+                cx, cy = pt.x, pt.y
+            tx = max(0, min(self.screen_w - 1, int(cx + dx)))
+            ty = max(0, min(self.screen_h - 1, int(cy + dy)))
+            return Point(tx, ty, self.screen_w, self.screen_h)
+        return None
+
+    def click_account_tail(self, tail: str, region_rel=None, min_score=0.4) -> bool:
+        """在账号选择界面点击「账号文本尾部数字」匹配的账号条目并返回坐标缓存。
+
+        账号条目文本形如 `abc****de`(如 138****00)。登录界面固定尺寸, 用 OCR 识别各账号块,
+        locale 匹配文本尾部数字==tail 的块(可能合并块需取尾部), 点击其中心。
+        region_rel=[x1,y1,x2,y2] 限定时只在账号列表区域匹配, 避免误点其它数字文本。
+        """
+        img = self.screenshot()
+        if img is None:
+            return False
+        blocks = [b for b in ocr_image(img) if b.get("score", 1) >= min_score]
+        # 区域限定
+        if region_rel:
+            w, h = self.screen_w, self.screen_h
+            rx1, ry1 = int(region_rel[0] * w), int(region_rel[1] * h)
+            rx2, ry2 = int(region_rel[2] * w), int(region_rel[3] * h)
+            blocks = [b for b in blocks if rx1 <= b["center"][0] <= rx2 and ry1 <= b["center"][1] <= ry2]
+        tail = str(tail).strip()
+        best = None
+        for b in blocks:
+            txt = b.get("text", "").strip()
+            # 匹配账号格式: 尾部数字 == tail (可含 **** 脱敏)
+            m = re.search(r"(\d+)\s*$", txt)
+            if not m or m.group(1) != tail:
+                continue
+            if "****" in txt:  # 确认是脱敏账号块
+                best = b
+                break
+        if best is None:
+            print(f"[账号尾部] 未找到尾部={tail} 的账号条目")
+            return False
+        cx, cy = best["center"]
+        pt = Point(cx, cy, self.screen_w, self.screen_h)
+        print(f"[账号尾部] {best['text']} 尾部={tail} -> {cx},{cy}")
+        self.click_abs(cx, cy)
+        self._log_click(f"账号:{best['text']}", [], pt, "account_tail")
+        for kw in (best["text"], f"账号尾{tail}"):
+            self.last_rel[kw] = pt.rel
+        return True
+
     def locate_anchor_color(self, anchor_kw, color_cfg: dict, dx_range=(150, 400), dy_tol=60,
                             img=None, min_score=0.4) -> "Point | None":
         """锚点 + 颜色复合定位: 先 OCR 找锚点文字(如「提示」), 在锚点右侧/某偏移区域按颜色找目标按钮。
@@ -489,8 +616,18 @@ class OCREngine:
             self._log_click(keywords[0] if isinstance(keywords, list) else keywords,
                             keywords, pt, "ocr")
             return True
-        # 颜色特征检测 (针对无文字的图形按钮)
+        # 锚点偏移定位 (固定尺寸界面, 如登录界面无文字图形按钮)
         kws = keywords if isinstance(keywords, list) else [keywords]
+        for kw in kws:
+            entry = self.click_log.get(kw)
+            if entry and "anchor" in entry:
+                pt_a = self.locate_anchor_offset(entry["anchor"], img=img)
+                if pt_a is not None:
+                    print(f"[锚点偏移命中] {kw} -> {pt_a.x},{pt_a.y}")
+                    self.click_abs(pt_a.x, pt_a.y)
+                    self._log_click(kw, [kw], pt_a, "anchor")
+                    return True
+        # 颜色特征检测 (针对无文字的图形按钮)
         for kw in kws:
             entry = self.click_log.get(kw)
             if entry and entry.get("method") == "color" and "color" in entry:
@@ -588,6 +725,16 @@ class OCREngine:
                                  exact=step.get("exact", False))
             print(f"{pad}[click_text] {kws} -> {'ok' if ok else 'fail'}")
             time.sleep(step.get("delay", 0.5))
+        elif s_type == "click_account_tail":
+            # 点击「账号文本尾部数字」匹配的账号条目(账号选择界面)。
+            # 登录界面固定尺寸, 账号条目以 `abc****de` 出现, 用尾部数字识别目标账号。
+            tail = self.resolve(step.get("tail"))
+            if tail in (None, ""):
+                tail = self.resolve(self.config.get("target_tail", ""))
+            ok = self.click_account_tail(str(tail), region_rel=step.get("region_rel"),
+                                         min_score=step.get("min_score", 0.4))
+            print(f"{pad}[click_account_tail] tail={tail} -> {'ok' if ok else 'fail'}")
+            time.sleep(step.get("delay", 0.5))
         elif s_type == "sleep":
             time.sleep(step.get("seconds", 1.0))
         elif s_type == "click_rel":
@@ -679,8 +826,14 @@ class OCREngine:
         result = {"ok": [], "skip": [], "fail": []}
         print(f"\n########## 编排: {name} ##########")
         for m in plan.get("modules", []):
+            mid = m.get("id")
+            # 可选功能开关: 「切换账号」未启用则跳过(不执行)
+            if mid == "switch" and not bool(self.config.get("enable_switch", False)):
+                print(f"[编排] 切换账号功能未启用(enable_switch=false), 跳过模块 '{mid}'")
+                result["skip"].append(mid)
+                continue
             res = self.run_module(m, registry)
-            result[res if res in result else "fail"].append(m.get("id"))
+            result[res if res in result else "fail"].append(mid)
             if res == "fail" and m.get("on_fail", "stop_round") == "stop_round":
                 print(f"[编排] 模块 {m.get('id')} 失败且 on_fail=stop_round, 终止本轮")
                 break
@@ -769,6 +922,11 @@ def main():
             print(f"未找到流程包含关键字 '{key}'. 可用: {[f.get('name') for f in flows]}")
             return
         eng = OCREngine()
+        # 支持 --tail <数字> 覆盖配置(切换账号目标账户尾部)
+        if "--tail" in args:
+            i = args.index("--tail")
+            if i + 1 < len(args):
+                eng.config["target_tail"] = args[i + 1]
         if not eng.connect():
             return
         eng.run_flow(target)
@@ -832,7 +990,41 @@ def main():
             print(f"  {b['text']:<16} rel({rx},{ry})  abs({b['center'][0]},{b['center'][1]})  score{b.get('score',0):.2f}")
         return
 
-    print("用法: python ocr_engine.py --list | --flow <关键字> | --collect | --close-test | --add-close <名称> <corner|anchor_color> | --ocr-screen")
+    if args[0] == "--ocr-anchor":
+        """开发工具: 以指定文字(如「登录」)为锚点, 打印其它各文字块相对锚点的像素偏移。
+
+        适用于「固定尺寸界面」(如小花仙登录界面尺寸不随设备分辨率改变):
+        整体画面相对坐标(0~1)会失效, 改用「锚点 + 像素偏移」定位, 偏移不随分辨率变化。
+        用法: python ocr_engine.py --ocr-anchor <锚点关键字> [--exact]
+        """
+        exact = "--exact" in args
+        anchor_kw = args[1] if len(args) > 1 and not args[1].startswith("-") else "登录"
+        eng = OCREngine()
+        if not eng.connect():
+            return
+        img = eng.screenshot()
+        if img is None:
+            print("[失败] 截图失败")
+            return
+        h, w = img.shape[:2]
+        print(f"画面尺寸 W={w} H={h} | 锚点='{anchor_kw}' (exact={exact})")
+        blocks = [b for b in ocr_image(img) if b.get("score", 1) >= 0.4]
+        # 找锚点块(取第一个非空、按文本命中)
+        anchors = ocr_find(blocks, [anchor_kw], exact=exact)
+        if not anchors:
+            print(f"[失败] 未找到锚点文字 '{anchor_kw}'")
+            return
+        ax, ay = anchors[0]["center"]
+        print(f"锚点中心 abs({ax},{ay})")
+        blocks.sort(key=lambda b: (b["center"][1], b["center"][0]))
+        print(f"共 {len(blocks)} 块, 相对锚点的像素偏移 (dx=center_x-ax, dy=center_y-ay):")
+        for b in blocks:
+            dx = int(b["center"][0] - ax)
+            dy = int(b["center"][1] - ay)
+            print(f"  {b['text']:<16} d({dx},{dy})  anchor_abs({b['center'][0]},{b['center'][1]})  score{b.get('score',0):.2f}")
+        return
+
+    print("用法: python ocr_engine.py --list | --flow <关键字> | --collect | --close-test | --add-close <名称> <corner|anchor_color> | --ocr-screen | --ocr-anchor <锚点关键字> [--exact]")
 
 
 if __name__ == "__main__":

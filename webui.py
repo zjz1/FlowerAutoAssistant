@@ -175,6 +175,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"flows": flows})
         if api == "kb" and self.command == "GET":
             return self._send_json(self._kb())
+        if api == "config" and self.command == "GET":
+            eng = get_engine()
+            return self._send_json({
+                "enable_switch": bool(eng.config.get("enable_switch", False)),
+                "target_tail": eng.config.get("target_tail", ""),
+            })
+        if api == "set_config" and self.command == "POST":
+            data = self._read_json()
+            eng = get_engine()
+            pre = bool(eng.config.get("enable_switch", False))
+            if "enable_switch" in data:
+                eng.update_config(enable_switch=bool(data["enable_switch"]))
+            if "target_tail" in data:
+                eng.update_config(target_tail=str(data["target_tail"]))
+            now = bool(eng.config.get("enable_switch", False))
+            log_append(f"[config] 切换账号功能 {'启用' if now else '关闭'}"
+                       + (f", 目标尾部={eng.config.get('target_tail')}" if now else ""))
+            return self._send_json({"ok": True, "changed": pre != now, "enable_switch": now})
 
         if api == "connect" and self.command == "POST":
             return self._connect()
@@ -329,7 +347,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         resource = self.path.split("?", 1)[0]
-        if resource != "/api/connect" and resource != "/api/set_mode" and resource != "/api/click" and resource != "/api/back" and resource != "/api/run":
+        if resource != "/api/connect" and resource != "/api/set_mode" and resource != "/api/click" and resource != "/api/back" and resource != "/api/run" and resource != "/api/set_config":
             self._send_json({"error": "method not allowed"}, 405)
             return
         try:
