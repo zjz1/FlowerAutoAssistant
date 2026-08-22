@@ -127,7 +127,50 @@
 - 仓库：`https://github.com/zjz1/FlowerAutoAssistant`（Public）
 - 已推送白名单：`main.py`、`ocr_engine.py`、`ocr_ui.py`、`requirements.txt`、`PROGRESS.md`、`flows/*.json`、`data/click_log.json`、`.gitignore`
 - 因规避个人信息/IP风险，仓库级 `.gitignore` 排除了：`.venv/`、`debug/`（游戏截图）、`legacy/`（Unity 解包脚本）、`resource/`（旧模板/素材图）、`__pycache__/`
-- git 提交用户配置用 `-c user.name/-c user.email`（GitHub noreply 邮箱）临时传入，未改全局 config
+
+### 📤 提交 GitHub 方法（知识库 / MAA 工作流）
+> 在本目录（`FlowerAutoAssistant/`）用 PowerShell 执行。所有命令不会改动全局/本地 git 配置。
+
+1. **扫描是否含敏感信息**（提交前必做）：
+   - 检查 `data/config.json` 是否内置了真实账号数据（如 `target_tail` 应为空 `""` 或由用户自行填写，不内置真实账号尾号）。
+   - 检查 `data/click_log.json` 是否有账号类条目（键名或内容含 `195`/`186`/手机号模式/账号 `****` 尾号）。如发现，先脱敏（置空/删除该条目）再提交。
+   - 检查是否混入临时/调试产物：`git status` 应只见真正要提交的文件；`data/click_debug/`、`_probe*.png`、`_tmp_*.py` 已被 `.gitignore` 排除。
+
+2. **查看待提交状态**：
+   ```powershell
+   git status               # 看改动文件
+   git diff data/config.json   # 逐一核对 config 差异, 确认无账号
+   git log --oneline -3     # 看历史 commit 风格
+   git branch -vv           # 确认分支与远程领先/落后
+   ```
+
+3. **暂存 + 提交**（身份用 `-c` 内联临时指定，与历史一致 `zjz1 <zjz1@users.noreply.github.com>`；本仓库未落盘全局/本地 user.name/email，直接 `git commit` 会报 `Author identity unknown`）：
+   ```powershell
+   git add PROGRESS.md webui.py webui.html start_webui.bat data/config.json data/click_log.json
+   git -c user.name="zjz1" -c user.email="zjz1@users.noreply.github.com" commit -m "feat: <一句话主题>
+
+   <（可选）详细说明, 分点列出改动, 用空行分隔正文>"
+   ```
+   - 出现 `LF will be replaced by CRLF` 仅是换行符提示，无害，可忽略。
+   - 提交失败时先停下排查：报 `Author identity unknown` 就补上面的 `-c`。
+
+4. **推送**：
+   ```powershell
+   git push origin main
+   ```
+   - 推送成功尾部见 `  <旧hash>..<新hash>  main -> main`。
+   - 若报 `Recv failure: Connection was reset`（多为临时网络/代理抖动）：提交已在本地（不丢），稍后重跑 `git push origin main` 即可。
+   - **绝不 `git push --force`**，不 `--force-with-lease`，不直接改 `git config`。
+
+5. **验证**：
+   ```powershell
+   git status              # 工作树干净
+   git log --oneline -1    # 最新 commit
+   git branch -vv          # main 应显示 up to date
+   ```
+   - 仓库不纳入版本管理的文件：`.venv/`、`debug/`、`legacy/`、`resource/`、`__pycache__/`（已在 `.gitignore`）。
+
+> ⚠️ 注意：`data/config.json` 的 `target_tail`、`data/click_log.json` 属坐标/配置数据，提交前严格筛查账号类信息；不能确定时先脱敏或暂不提交（讨论后再定）。
 
 ---
 
