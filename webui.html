@@ -8,16 +8,51 @@
   :root{
     --bg:#0f1420; --panel:#1a2233; --panel2:#223047; --line:#2e3f5c;
     --fg:#dce6f2; --muted:#8aa0bd; --accent:#58a6ff; --ok:#3fb950;
-    --warn:#d29922; --err:#f85149; --pink:#ff7ab8;
+    --warn:#d29922; --err:#f85149; --pink:#ff7ab8; --purple:#9d7bff;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;font-size:13px}
+  a{color:var(--accent)}
   header{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;flex-wrap:wrap}
   header h1{font-size:16px;margin:0;color:var(--fg)}
   header h1 span{color:var(--pink)}
   .badge{padding:3px 10px;border-radius:12px;font-size:12px;border:1px solid var(--line)}
   .badge.on{color:var(--ok);border-color:var(--ok)}
   .badge.off{color:var(--muted)}
+  .view-link{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--accent);cursor:pointer;text-decoration:none;font-size:13px;border:1px solid var(--line);border-radius:6px;padding:6px 12px;background:var(--panel2)}
+  .view-link:hover{border-color:var(--accent)}
+  .view-link.danger{color:var(--err);border-color:var(--err)}
+  .view-link.danger:hover{background:var(--err);color:#fff}
+  .hidden{display:none!important}
+
+  /* ---------- MAA 风格 (使用界面) ---------- */
+  .maa-top{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--accent);margin:0 0 12px}
+  .maa-top b{font-size:15px;color:var(--fg)}
+  .maa-layout{display:grid;grid-template-columns:minmax(340px,5fr) minmax(340px,5fr);gap:14px;padding:14px}
+  @media(max-width:760px){.maa-layout{grid-template-columns:1fr}}
+  .maa-panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .maa-panel h2{margin:0 0 8px;font-size:14px;color:var(--accent);border-bottom:1px solid var(--line);padding-bottom:6px}
+  .task-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px}
+  .task-row:hover{background:var(--panel2)}
+  .task-row input{accent-color:var(--accent);width:15px;height:15px}
+  .task-row .name{flex:1}
+  .task-row .gear{color:var(--muted);cursor:pointer;font-size:14px;padding:0 2px}
+  .task-row .gear:hover{color:var(--accent)}
+  .maa-actions{display:flex;gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid var(--line);flex-wrap:wrap;align-items:center}
+  .maa-fin{display:flex;flex-direction:column;gap:4px;margin-top:14px}
+  .maa-fin label{color:var(--muted);font-size:12px}
+  .start-btn{margin-top:14px;width:100%;background:var(--accent);color:#0b1220;border:none;border-radius:8px;font-size:15px;font-weight:700;padding:12px;cursor:pointer}
+  .start-btn:hover{filter:brightness(1.08)}
+  .cfg-row{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line)}
+  .cfg-row:last-of-type{border-bottom:none}
+  .cfg-row .lbl{flex:1}
+  .cfg-row input{accent-color:var(--accent)}
+  .cfg-hint{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:12px}
+  .hint-ic{color:var(--accent);cursor:pointer}
+  .account-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .maa-note{margin:12px 0 0;color:var(--muted);font-size:12px;line-height:1.6}
+
+  /* ---------- 测试界面 (原有能力) ---------- */
   .layout{display:grid;grid-template-columns:minmax(380px,7fr) minmax(320px,5fr);gap:14px;padding:14px}
   @media(max-width:980px){.layout{grid-template-columns:1fr}}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
@@ -30,7 +65,6 @@
   select,input[type=text]{background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px;font-size:13px}
   select{min-width:200px}
   label{color:var(--muted);font-size:12px}
-  /* 画面 */
   .screen-wrap{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
   #screen-img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
   #screen-overlay{position:absolute;inset:0;pointer-events:none}
@@ -39,10 +73,8 @@
   .hit{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px red,0 0 6px red;pointer-events:none}
   .hit::after{content:"";position:absolute;inset:2px;border-radius:50%;background:red}
   .hint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px;background:#000}
-  /* 日志 */
   #log{height:300px;overflow-y:auto;background:#0b1020;border:1px solid var(--line);border-radius:8px;padding:8px;font-family:Consolas,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap}
   #log .l-fail{color:var(--err)} #log .l-ok{color:var(--ok)}
-  /* 知识库 */
   #kb-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   @media(max-width:980px){#kb-grid{grid-template-columns:1fr}}
   table{width:100%;border-collapse:collapse;font-size:12px}
@@ -53,6 +85,7 @@
   .scroll{max-height:280px;overflow-y:auto}
   .muted{color:var(--muted)}
   .mono{font-family:Consolas;font-size:11px}
+  .section-t{font-size:12px;color:var(--muted);margin:14px 0 6px;font-weight:600}
 </style>
 </head>
 <body>
@@ -61,72 +94,146 @@
   <span id="conn-badge" class="badge off">未连接</span>
   <span id="mode-badge" class="badge off">使用模式</span>
   <span id="screen-size" class="muted mono"></span>
-  <span style="flex:1"></span>
-  <button id="connect-btn" class="primary">连接</button>
-  <button id="back-btn">返回键</button>
-  <label>模式:
-    <select id="mode-sel">
-      <option value="use">使用</option>
-      <option value="test">测试(存点击图)</option>
-    </select>
-  </label>
+  <button id="view-toggle" class="view-link">↔ 切换界面：测试</button>
+  <button id="shutdown-btn" class="view-link danger" style="margin-left:0">⏻ 关闭服务</button>
 </header>
 
-<div class="layout">
-  <!-- 左：实时画面 -->
-  <div class="panel">
-    <div class="row" style="margin-bottom:8px;justify-content:space-between">
-      <h2 style="margin:0;border:none;padding:0">实时画面 + OCR</h2>
-      <div class="row">
-        <button id="refresh-btn">刷新</button>
-        <label><input type="checkbox" id="auto-chk" checked> 自动刷新</label>
-        <label><input type="checkbox" id="ocr-chk" checked> OCR标注</label>
+<!-- ============= 使用界面 (MAA 风格) ============= -->
+<div id="use-view">
+  <div class="maa-layout">
+    <!-- 左栏: 每日挂机任务 -->
+    <div class="maa-panel">
+      <div class="maa-top"><b>每日挂机任务</b><span class="muted">勾选本轮要执行的任务</span></div>
+      <div id="task-list"></div>
+      <div class="maa-actions">
+        <button id="maa-all">全选</button>
+        <button id="maa-clear">清空</button>
+        <button id="maa-invert">反选</button>
       </div>
+      <div class="maa-fin">
+        <label>完成后</label>
+        <select id="maa-finish">
+          <option value="none">无动作</option>
+          <option value="close">关闭客户端</option>
+        </select>
+      </div>
+      <button id="maa-start" class="start-btn">开始一轮</button>
+      <p class="maa-note" id="maa-status"></p>
     </div>
-    <div class="screen-wrap" id="screen-wrap">
-      <img id="screen-img" alt="screenshot">
-      <div id="screen-overlay"></div>
-      <div class="hint" id="screen-hint">点击「连接」后显示模拟器画面</div>
-    </div>
-    <div class="muted" style="margin-top:6px">点击画面任意位置 = 对模拟器发出点击</div>
-  </div>
 
-  <!-- 右：操作 -->
-  <div class="layout" style="grid-template-columns:1fr;padding:0;gap:14px;">
-    <div class="panel">
-      <h2>运行流程</h2>
-      <div class="row">
-        <select id="flow-sel"></select>
-        <button id="run-btn" class="primary">运行</button>
+    <!-- 右栏: 账号 + 连接 -->
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="maa-panel">
+        <h2>账号切换</h2>
+        <div class="cfg-row account-row">
+          <span class="lbl">切换账号</span>
+          <label class="cfg-hint"><input type="checkbox" id="maa-switch-chk"> 启用</label>
+        </div>
+        <div class="cfg-row account-row">
+          <span class="lbl">目标账号</span>
+          <input id="maa-switch-tail" type="text" maxlength="4" placeholder="账号尾号" style="width:72px">
+          <button id="maa-switch-go" class="primary">立即切换</button>
+        </div>
+        <p class="maa-note">勾选启用后, 「开始一轮」会在登录前先切换到此账号。</p>
       </div>
-      <div class="row" style="margin-top:8px">
-        <label>流程运行在后台, 日志实时滚动下方。</label>
+
+      <div class="maa-panel">
+        <h2>连接设置</h2>
+        <div class="cfg-row">
+          <span class="lbl">连接配置</span>
+          <select id="maa-conn">
+            <option value="mumu">MuMu 模拟器</option>
+          </select>
+        </div>
+        <div class="cfg-row">
+          <span class="lbl">ADB 路径</span>
+          <span class="mono muted" id="maa-adb">D:\Program Files\Netease\MuMu</span>
+        </div>
+        <div class="cfg-row">
+          <span class="lbl">连接地址</span>
+          <span class="mono muted" id="maa-addr">127.0.0.1:16384</span>
+        </div>
+        <div class="cfg-row">
+          <span class="lbl">连接状态</span>
+          <button id="maa-connect" style="min-width:110px">连接</button>
+        </div>
       </div>
-      <h2 style="margin-top:12px">可选功能</h2>
-      <div class="row">
-        <label><input type="checkbox" id="switch-chk"> 切换账号</label>
-        <label>目标尾部 <input type="text" id="switch-tail" style="width:56px" placeholder="账号尾号"></label>
-        <button id="save-cfg-btn">保存</button>
-        <span class="muted" id="cfg-status"></span>
+
+      <div class="maa-panel">
+        <h2>今日小提示</h2>
+        <div class="muted" style="line-height:1.8">
+          · 种植箱「一键种植」入库量基准<br>
+          · 体力优先级：闪耀变身 → 星光偶像<br>
+          · 知识库现收录按钮见「测试界面」知识库面板
+        </div>
       </div>
-      <div class="row" style="margin-top:6px">
-        <span class="muted">勾选后在每日编排登录前切换账号, 目标 = 账号末尾数字(如 89)。</span>
-      </div>
-      <h2 style="margin-top:12px">运行日志</h2>
-      <div id="log"><span class="muted">暂无日志</span></div>
     </div>
   </div>
 </div>
 
-<!-- 知识库 / 流程 查看 -->
-<div class="layout" style="padding-top:0">
-  <div class="panel">
-    <h2>流程列表 (flows/*.json)</h2>
-    <div class="scroll" id="flows-wrap"><span class="muted">加载中...</span></div>
+<!-- ============= 测试界面 (原有能力) ============= -->
+<div id="test-view" class="hidden">
+  <div class="layout">
+    <div class="panel">
+      <div class="row" style="margin-bottom:8px;justify-content:space-between">
+        <h2 style="margin:0;border:none;padding:0">实时画面 + OCR</h2>
+        <div class="row">
+          <button id="connect-btn" class="primary">连接</button>
+          <button id="back-btn">返回键</button>
+          <label>模式:
+            <select id="mode-sel">
+              <option value="use">使用</option>
+              <option value="test">测试(存点击图)</option>
+            </select>
+          </label>
+          <button id="refresh-btn">刷新</button>
+          <label><input type="checkbox" id="auto-chk" checked> 自动刷新</label>
+          <label><input type="checkbox" id="ocr-chk" checked> OCR标注</label>
+        </div>
+      </div>
+      <div class="screen-wrap" id="screen-wrap">
+        <img id="screen-img" alt="screenshot">
+        <div id="screen-overlay"></div>
+        <div class="hint" id="screen-hint">点击「连接」后显示模拟器画面</div>
+      </div>
+      <div class="muted" style="margin-top:6px">点击画面任意位置 = 对模拟器发出点击</div>
+    </div>
+
+    <div class="layout" style="grid-template-columns:1fr;padding:0;gap:14px;">
+      <div class="panel">
+        <h2>运行流程</h2>
+        <div class="row">
+          <select id="flow-sel"></select>
+          <button id="run-btn" class="primary">运行</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label>流程运行在后台, 日志实时滚动下方。</label>
+        </div>
+        <h2 style="margin-top:12px">可选功能</h2>
+        <div class="row">
+          <label><input type="checkbox" id="switch-chk"> 切换账号</label>
+          <label>目标尾部 <input type="text" id="switch-tail" style="width:56px" placeholder="账号尾号"></label>
+          <button id="save-cfg-btn">保存</button>
+          <span class="muted" id="cfg-status"></span>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <span class="muted">勾选后在每日编排登录前切换账号, 目标 = 账号末尾数字(如 89)。</span>
+        </div>
+        <h2 style="margin-top:12px">运行日志</h2>
+        <div id="log"><span class="muted">暂无日志</span></div>
+      </div>
+    </div>
   </div>
-  <div class="panel">
-    <h2>知识库 (click_log.json)</h2>
-    <div class="scroll" id="kb-wrap"><span class="muted">加载中...</span></div>
+
+  <div class="layout" style="padding-top:0">
+    <div class="panel">
+      <h2>流程列表 (flows/*.json)</h2>
+      <div class="scroll" id="flows-wrap"><span class="muted">加载中...</span></div>
+    </div>
+    <div class="panel">
+      <h2>知识库 (click_log.json)</h2>
+      <div class="scroll" id="kb-wrap"><span class="muted">加载中...</span></div>
+    </div>
   </div>
 </div>
 
@@ -147,6 +254,29 @@ async function api(path, opts={}){
   return d;
 }
 
+// ---- 界面切换 ----
+let currentView = "use";
+function switchView(view){
+  currentView = view;
+  $("use-view").classList.toggle("hidden", view !== "use");
+  $("test-view").classList.toggle("hidden", view !== "test");
+  $("view-toggle").textContent = "↔ 切换界面：" + (view === "use" ? "测试" : "使用");
+}
+$("view-toggle").onclick = ()=> switchView(currentView === "use" ? "test" : "use");
+
+// 关闭服务
+$("shutdown-btn").onclick = async ()=>{
+  if(!confirm("确定要关闭 Web UI 服务吗？关闭后将无法通过网页操作，需重新启动服务。")) return;
+  try{
+    const d = await api("/api/shutdown", {method:"POST", body:"{}"});
+    alert((d.message || "服务已关闭") + "。此页面将失效。");
+    document.body.innerHTML = "<div style='padding:40px;text-align:center;color:var(--muted);font-size:15px'>" +
+      "Web UI 服务已关闭。<br>重新启动请运行 start_webui.bat 或 python webui.py</div>";
+  }catch(e){
+    alert("关闭请求已发送: " + e.message);
+  }
+};
+
 async function refreshStatus(){
   try{
     const s = await api("/api/status");
@@ -158,6 +288,11 @@ async function refreshStatus(){
     if(s.screen) $("screen-size").textContent = s.screen.join("×");
     if(c) $("screen-hint").style.display = "none";
     else $("screen-hint").style.display = "flex";
+    $("maa-connect").textContent = c ? "已连接" : "连接";
+    try{
+      $("connect-btn").textContent = c ? "已连接" : "连接";
+      $("connect-btn").classList.toggle("primary", c);
+    }catch(e){}
   }catch(e){}
 }
 
@@ -203,18 +338,13 @@ async function refreshFlows(){
       o.value = f.name; o.textContent = f.name + (f.modules.length?" [编排]":"");
       sel.appendChild(o);
     }
-    const w = $("flows-wrap");
-    w.innerHTML = "<table><tr><th>流程名</th><th>文件</th></tr></table>";
-    w.innerHTML = "";
     let html = "<table><tr><th>流程名</th><th>文件</th></tr>";
     for(const f of d.flows){
       html += `<tr><td class="name">${esc(f.name)}</td><td class="mono muted">${esc(f.file)}</td></tr>`;
     }
-    w.innerHTML = html + "</table>";
+    $("flows-wrap").innerHTML = html + "</table>";
   }catch(e){}
 }
-
-const sc = (v)=>JSON.stringify(v,null,0);
 
 async function refreshKb(){
   try{
@@ -231,39 +361,100 @@ async function refreshKb(){
 
 function esc(s){ const d=document.createElement("div"); d.textContent=String(s??""); return d.innerHTML; }
 
-// ---- 事件 ----
+// ---- 使用界面: 任务列表 ----
+let maaTasks = [];  // [{id,name,flow,checked}]
+async function refreshMaa(){
+  try{
+    const d = await api("/api/daily");
+    maaTasks = (d.modules||[]).map(m=>({id:m.id, name:m.name, flow:m.flow, checked:true}));
+    $("maa-switch-chk").checked = !!d.enable_switch;
+    $("maa-switch-tail").value = d.target_tail || "";
+    renderMaaTasks();
+  }catch(e){}
+}
+function renderMaaTasks(){
+  const box = $("task-list");
+  let html = "";
+  for(const t of maaTasks){
+    html +=
+      `<label class="task-row">
+        <input type="checkbox" data-id="${esc(t.id)}" ${t.checked?"checked":""}>
+        <span class="name">${esc(t.name)}</span>
+        <span class="gear" title="流程: ${esc(t.flow)}">⚙</span>
+      </label>`;
+  }
+  // 切换账号默认可选(仅作为勾选项)
+  box.innerHTML = html;
+  box.querySelectorAll("input[type=checkbox]").forEach(cb=>{
+    cb.onchange = ()=>{ const t = maaTasks.find(x=>x.id===cb.dataset.id); if(t) t.checked = cb.checked; };
+  });
+}
+$("maa-all").onclick = ()=>{ maaTasks.forEach(t=>t.checked=true); renderMaaTasks(); };
+$("maa-clear").onclick = ()=>{ maaTasks.forEach(t=>t.checked=false); renderMaaTasks(); };
+$("maa-invert").onclick = ()=>{ maaTasks.forEach(t=>t.checked=!t.checked); renderMaaTasks(); };
+
+// 使用界面: 立即切换账号
+$("maa-switch-go").onclick = async ()=>{
+  const tail = $("maa-switch-tail").value;
+  if(!tail){ alert("请选择目标账号"); return; }
+  await api("/api/set_config", {method:"POST", body:JSON.stringify({
+    enable_switch:true, target_tail: String(tail)
+  })});
+  $("maa-status").textContent = "配置已保存(目标尾部=" + tail + ")。开始一轮时自动切换。";
+};
+$("maa-switch-chk").onchange = async (ev)=>{
+  // 仅持久化开关; 目标账号仍需在开始一轮时的配置生效
+  await api("/api/set_config", {method:"POST", body:JSON.stringify({
+    enable_switch: ev.target.checked
+  })});
+};
+
+// 使用界面: 开始一轮
+$("maa-start").onclick = async ()=>{
+  try{
+    const sel = maaTasks.filter(t=>t.checked).map(t=>t.id);
+    if(!sel.length){ alert("请至少勾选一个任务"); return; }
+    $("maa-status").textContent = "已提交 " + sel.length + " 个任务, 后台运行中...";
+    const d = await api("/api/run_daily", {method:"POST", body:JSON.stringify({selected:sel, mode:"use"})});
+    $("maa-status").textContent = "开始: " + d.started + " (" + d.count + " 个任务)。查看运行日志请到测试界面或终端。";
+  }catch(e){ alert("无法运行: " + e.message); }
+};
+
+// 使用界面: 连接
+$("maa-connect").onclick = async ()=>{
+  try{
+    await api("/api/connect", {method:"POST", body:"{}"});
+    await refreshStatus();
+  }catch(e){ alert("连接失败: " + e.message); }
+};
+
+// ---- 测试界面事件 ----
 $("connect-btn").onclick = async ()=>{
   try{
-    const d = await api("/api/connect", {method:"POST", body:"{}"});
+    await api("/api/connect", {method:"POST", body:"{}"});
     await refreshStatus();
     refreshScreen();
   }catch(e){ alert("连接失败: "+e.message); }
 };
-
 $("back-btn").onclick = ()=> api("/api/back", {method:"POST", body:"{}"}).catch(()=>{});
-
 $("mode-sel").onchange = async ()=>{
   await api("/api/set_mode", {method:"POST", body:JSON.stringify({mode:$("mode-sel").value})});
   refreshStatus();
 };
-
 $("refresh-btn").onclick = refreshScreen;
-
 $("auto-chk").onchange = ()=>{
   clearInterval(autoTimer);
   if($("auto-chk").checked) autoTimer = setInterval(()=>{ refreshScreen(); }, 1500);
 };
-
 $("run-btn").onclick = async ()=>{
   try{
     const flow = $("flow-sel").value;
     $("log").innerHTML = "";
     logCursor = 0;
-    await api("/api/run", {method:"POST", body:JSON.stringify({flow, mode:$("mode-sel").value})});
+    await api("/api/run", {method:"POST", body:JSON.stringify({flow, mode:"use"})});
     pollLog();
   }catch(e){ alert("无法运行: "+e.message); }
 };
-
 async function refreshConfig(){
   try{
     const d = await api("/api/config");
@@ -271,7 +462,6 @@ async function refreshConfig(){
     $("switch-tail").value = d.target_tail ?? "";
   }catch(e){}
 }
-
 $("save-cfg-btn").onclick = async ()=>{
   try{
     const body = {
@@ -283,7 +473,6 @@ $("save-cfg-btn").onclick = async ()=>{
     setTimeout(()=>{ $("cfg-status").textContent = ""; }, 2000);
   }catch(e){ alert("保存失败: "+e.message); }
 };
-
 async function pollLog(){
   try{
     const d = await api("/api/log?after="+logCursor);
@@ -303,17 +492,14 @@ async function pollLog(){
   setTimeout(pollLog, 800);
 }
 
-// 画面点击 -> 相对坐标
 $("screen-wrap").addEventListener("click", async (ev)=>{
   const rect = ev.currentTarget.getBoundingClientRect();
   const img = $("screen-img");
   const imgRect = img.getBoundingClientRect();
-  // 用图片实际渲染区域计算(保持比例)
   if(imgRect.width===0) return;
   const rx = (ev.clientX - imgRect.left) / imgRect.width;
   const ry = (ev.clientY - imgRect.top) / imgRect.height;
   if(rx<0||rx>1||ry<0||ry>1) return;
-  // 画一个点击标记
   const ov = $("screen-overlay");
   const hit = document.createElement("div");
   hit.className = "hit";
@@ -322,22 +508,23 @@ $("screen-wrap").addEventListener("click", async (ev)=>{
   ov.appendChild(hit);
   setTimeout(()=>hit.remove(), 800);
   try{
-    await api("/api/click", {method:"POST", body:sc({rel:[+rx.toFixed(4), +ry.toFixed(4)]})});
+    await api("/api/click", {method:"POST", body:JSON.stringify({rel:[+rx.toFixed(4), +ry.toFixed(4)]})});
     refreshScreen();
   }catch(e){ alert("点击失败: "+e.message); }
 });
 
 // 初始化
 (async ()=>{
-  el.connect = $("connect-btn");
   await refreshStatus();
+  await refreshMaa();
   await refreshFlows();
   await refreshKb();
   await refreshConfig();
-  if(autoTimer!=null) clearInterval(autoTimer);
+  clearInterval(autoTimer);
   autoTimer = setInterval(()=>{ refreshScreen(); }, 1500);
   $("auto-chk").checked = true;
   setTimeout(pollLog, 500);
+  switchView("use");
 })();
 </script>
 </body>

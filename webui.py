@@ -28,6 +28,7 @@ from ocr_engine import OCREngine, load_flows, select_flow, ADB_ADDRESS, ADB_PATH
 BASE = Path(__file__).parent
 ENGINE: OCREngine | None = None
 ENGINE_LOCK = threading.Lock()
+_SERVER = None  # 当前 http server 实例, 用于 /api/shutdown
 
 # ---- 运行日志环形缓冲 (支持增量拉取) ----
 _LOG_LOCK = threading.Lock()
@@ -181,6 +182,10 @@ class Handler(BaseHTTPRequestHandler):
                 "enable_switch": bool(eng.config.get("enable_switch", False)),
                 "target_tail": eng.config.get("target_tail", ""),
             })
+        if api == "daily" and self.command == "GET":
+            return self._daily()
+        if api == "run_daily" and self.command == "POST":
+            return self._run_daily_sel()
         if api == "set_config" and self.command == "POST":
             data = self._read_json()
             eng = get_engine()
@@ -210,6 +215,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._run()
         if api == "log" and self.command == "GET":
             return self._log()
+        if api == "shutdown" and self.command == "POST":
+            return self._shutdown()
 
         self._send_json({"error": "no such api"}, 404)
 
@@ -285,6 +292,92 @@ class Handler(BaseHTTPRequestHandler):
         ok = eng.back() if _is_connected(eng) else False
         return self._send_json({"ok": ok}, 200 if ok else 503)
 
+    # ---- API: 每日编排 (使用界面读取任务列表) ----
+    def _daily(self):
+        eng = get_engine()
+        plan = None
+        import json as _json
+        p = BASE / "flows" / "daily.json"
+        if p.exists():
+            try:
+                plan = _json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                plan = None
+        # 中文任务名映射 (id -> 显示名)
+        id2name = {
+            "switch": "切换账号",
+            "startup": "启动就绪",
+            "signin": "签到",
+            "plant": "种植任务",
+            "energy": "体力任务",
+            "daily": "每日任务",
+            "idle": "挂机",
+            "claim": "领取奖励",
+        }
+        modules = []
+        if plan and plan.get("modules"):
+            for m in plan["modules"]:
+                mid = m.get("id")
+                modules.append({
+                    "id": mid,
+                    "flow": m.get("flow"),
+                    "name": id2name.get(mid, mid),
+                    "required": bool(m.get("required", False)),
+                })
+        return self._send_json({
+            "name": plan.get("name") if plan else "每日挂机编排",
+            "modules": modules,
+            "enable_switch": bool(eng.config.get("enable_switch", False)),
+            "target_tail": eng.config.get("target_tail", ""),
+        })
+
+    # ---- API: 按勾选模块运行每日编排 (使用界面「开始一轮」) ----
+    def _run_daily_sel(self):
+        data = self._read_json()
+        selected = data.get("selected", [])
+        mode = data.get("mode", "use")
+        _set_mode(mode)
+        import json as _json
+        p = BASE / "flows" / "daily.json"
+        if not p.exists():
+            return self._send_json({"error": "daily.json 缺失"}, 500)
+        try:
+            plan = _json.loads(p.read_text(encoding="utf-8"))
+        except Exception as e:
+            return self._send_json({"error": f"daily.json 解析失败: {e}"}, 500)
+        all_modules = plan.get("modules", [])
+        # 去掉任何必选标记: 全部 on_fail 统一为 skip, 勾选才跑
+        chosen = []
+        for m in all_modules:
+            if m.get("id") not in selected:
+                continue
+            m = dict(m)
+            m["on_fail"] = "skip"
+            chosen.append(m)
+        if not chosen:
+            return self._send_json({"error": "未勾选任何任务"}, 400)
+        plan["modules"] = chosen
+        plan["description"] = "Web UI 使用界面按勾选模块调度"
+        name = plan.get("name", "每日编排")
+        def job():
+            eng = get_engine()
+            if not _is_connected(eng):
+                eng.connect()
+            import sys
+            real_out, real_err = sys.stdout, sys.stderr
+            sys.stdout = _TeeOut(real_out, _LOGS)
+            sys.stderr = _TeeOut(real_err, _LOGS)
+            try:
+                log_append(f"[run] ==== {name} (勾选 {len(chosen)} 模块) 开始 ====")
+                eng.run_daily(plan)
+                log_append(f"[run] ==== {name} 完成 ====")
+            except Exception as e:
+                log_append(f"[run] 流程异常: {e}")
+            finally:
+                sys.stdout, sys.stderr = real_out, real_err
+        threading.Thread(target=job, daemon=True).start()
+        return self._send_json({"ok": True, "started": name, "count": len(chosen)})
+
     # ---- API: 运行流程 (后台线程 + 日志) ----
     def _run(self):
         data = self._read_json()
@@ -327,6 +420,17 @@ class Handler(BaseHTTPRequestHandler):
             lines = _LOGS[after:]
         return self._send_json({"next": after + len(lines), "lines": lines})
 
+    # ---- API: 关闭服务 (UI「关闭服务」按钮) ----
+    def _shutdown(self):
+        global _SERVER
+        log_append("[webui] 收到关闭服务请求, 正在退出...")
+        self._send_json({"ok": True, "message": "服务已关闭"})
+        srv = _SERVER
+        if srv is not None:
+            # 在独立线程执行, 避免阻塞当前请求响应
+            threading.Timer(0.3, lambda: (srv.shutdown(), srv.server_close())).start()
+        return
+
     def _query(self, name: str) -> str | None:
         q = self.path.split("?", 1)[1] if "?" in self.path else ""
         for kv in q.split("&"):
@@ -347,7 +451,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         resource = self.path.split("?", 1)[0]
-        if resource != "/api/connect" and resource != "/api/set_mode" and resource != "/api/click" and resource != "/api/back" and resource != "/api/run" and resource != "/api/set_config":
+        if resource != "/api/connect" and resource != "/api/set_mode" and resource != "/api/click" and resource != "/api/back" and resource != "/api/run" and resource != "/api/set_config" and resource != "/api/run_daily" and resource != "/api/shutdown":
             self._send_json({"error": "method not allowed"}, 405)
             return
         try:
@@ -376,11 +480,12 @@ def main():
     args = parser.parse_args()
 
     # 用命令行优先的 ADB 参数重新初始化单例
-    global ENGINE
+    global ENGINE, _SERVER
     if args.address != ADB_ADDRESS or args.adb != ADB_PATH:
         ENGINE = OCREngine(adb_path=args.adb, address=args.address)
 
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    _SERVER = srv
     print(f"\n=== FAA Web UI ===")
     print(f"打开浏览器: http://127.0.0.1:{args.port}/")
     print(f"ADB: {args.adb}  {args.address}")

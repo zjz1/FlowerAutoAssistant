@@ -96,6 +96,23 @@
    - API 一览：`/api/status` `/api/flows` `/api/kb` `/api/connect` `/api/set_mode` `/api/screen` `/api/click` `/api/back` `/api/run` `/api/log`。
    - 已修复：[webui.html](webui.html) `refreshStatus()` 里未定义的 `rank()` 改为 `!!s.connected`（原先会抛 ReferenceError 致连接徽标刷新崩溃）。
 
+16. **✅ Web UI 重构：使用 / 测试双界面（MAA 风格）**（AS OF 2026-08-22）：
+   - **拆分为两个界面，右上角「切换界面」按钮互切**：
+     - **使用界面**（新，仿 MAA 主界面）：左栏「每日挂机任务」勾选列表（全选/清空/反选）+「完成后」下拉 +「开始一轮」大按钮；右栏「账号切换」（启用开关 + 目标账号下拉 + 立即切换）、“连接设置”（连接配置/ADB/地址/连接状态按钮）。**去除任何「必选」标记**——任务全部可由用户勾选决定是否执行。
+     - **测试界面**（原单页能力全部保留）：实时画面 + OCR 标注、点击、运行流程、可选功能、运行日志、流程/知识库浏览。
+   - 前端 [webui.html](webui.html)：两视图容器 `#use-view` / `#test-view` 用 `.hidden` 切换，右上角 `#view-toggle` 切换按钮；共用同一条 `/api/log` 日志流。
+   - 后端 [webui.py](webui.py) 新增接口：
+     - `GET /api/daily`：读 `flows/daily.json` 返回模块列表（id→中文名映射）+ config/enable_switch/target_tail。
+     - `POST /api/run_daily`：接收勾选模块 id 列表，从 daily.json 过滤构造编排后跑，「开始一轮」使用；会**去掉必选标记**（统一 `on_fail=skip`）、空选择返回 400。
+   - 实机验证：页面 200、`/api/daily` 返回正确中文映射、`/api/run_daily` 空选择返回 400「未勾选任何任务」。
+   - **注意：端口 8765 曾被未关闭的旧 webui 进程（系统 Python313）占用**，导致新接口返回旧逻辑；用 `Stop-Process` 清掉旧进程、以 `.venv` 重启后一切正常。启动脚本 [start_webui.bat](start_webui.bat) 仍适用（会优先用 `.venv`）。
+
+17. **✅ 启动脚本增强 + UI 关闭服务按钮**（AS OF 2026-08-22）：
+   - [start_webui.bat](start_webui.bat)：双击即用，启动后约 2 秒**自动打开浏览器**（内嵌 PowerShell `Start-Process`）；支持 `start_webui.bat [port] [--address xxx] [--adb xxx]`，沿用 `.venv` 优先；进程退出后自动关窗（`timeout 3s`）。
+   - 后端 [webui.py](webui.py) 新增 `POST /api/shutdown`：记录日志后用独立线程调用 `srv.shutdown()`+`server_close()`，优雅退出并释放端口（`main()` 里把 server 实例存入模块级 `_SERVER`）。
+   - 前端 [webui.html](webui.html)：header 右上角新增红色「⏻ 关闭服务」按钮（确认弹窗 → 请求 `/api/shutdown` → 页面提示已关闭）。为避免改变 `.view-link` 布局，`shutdown` 不加 `margin-left:auto`（`view-link` 上的 auto 已生效，默认间距不变）。
+   - 实测：POST `/api/shutdown` 返回 `{"ok":true,"message":"服务已关闭"}`，监听进程退出、端口释放（`LISTENERS_LEFT=0`）。
+
 ### 🚧 进行中 / 待确认（实机作业校准）
 - **种植模块作业未真正执行**：每日编排里对"一键种植/种植箱"MISS（8s 超时）→ 未进花田 → 浇水/施肥/授粉/收花循环全部空转。编排框架 OK，实机作业动作需校准。
 - **离线诊断为有效线索**：`after_home.png` 上 OCR 把「种植箱一键种植」识别为**单一合并块**（box [930,672,1078,698]，宽 148>90，score 0.82）；`ocr_find` 用严格方式能命中。**MISS 根因疑似与 `find_text()` 中"过宽块放大重识别"（宽>90 触发）有关**，需下个会话重点排查（见待办 🔴-1）。
