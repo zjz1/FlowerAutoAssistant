@@ -103,4 +103,6 @@ python main.py --address 127.0.0.1:16384 --adb "D:\\...\\adb.exe"
 
 ## License
 
-For learning and personal use only. No affiliation with the game's developer/publisher.
+MIT License — see [LICENSE](LICENSE).
+
+This software is provided for learning and personal use only. No affiliation with the game's developer/publisher.
