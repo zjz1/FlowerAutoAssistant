@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FAA Web UI - 小花仙挂机助手</title>
+<style>
+  :root{
+    --bg:#0f1420; --panel:#1a2233; --panel2:#223047; --line:#2e3f5c;
+    --fg:#dce6f2; --muted:#8aa0bd; --accent:#58a6ff; --ok:#3fb950;
+    --warn:#d29922; --err:#f85149; --pink:#ff7ab8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;font-size:13px}
+  header{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;color:var(--fg)}
+  header h1 span{color:var(--pink)}
+  .badge{padding:3px 10px;border-radius:12px;font-size:12px;border:1px solid var(--line)}
+  .badge.on{color:var(--ok);border-color:var(--ok)}
+  .badge.off{color:var(--muted)}
+  .layout{display:grid;grid-template-columns:minmax(380px,7fr) minmax(320px,5fr);gap:14px;padding:14px}
+  @media(max-width:980px){.layout{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  .panel h2{margin:0 0 10px;font-size:14px;color:var(--accent);border-bottom:1px solid var(--line);padding-bottom:6px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  button{background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:#0b1220;border-color:var(--accent);font-weight:600}
+  button.danger{border-color:var(--err);color:var(--err)}
+  select,input[type=text]{background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px;font-size:13px}
+  select{min-width:200px}
+  label{color:var(--muted);font-size:12px}
+  /* 画面 */
+  .screen-wrap{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+  #screen-img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+  #screen-overlay{position:absolute;inset:0;pointer-events:none}
+  .box{position:absolute;border:1px solid var(--pink);background:rgba(255,122,184,.08);border-radius:2px}
+  .box-label{position:absolute;transform:translateY(-100%);font-size:10px;color:#fff;background:var(--pink);padding:0 3px;border-radius:2px;white-space:nowrap}
+  .hit{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px red,0 0 6px red;pointer-events:none}
+  .hit::after{content:"";position:absolute;inset:2px;border-radius:50%;background:red}
+  .hint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px;background:#000}
+  /* 日志 */
+  #log{height:300px;overflow-y:auto;background:#0b1020;border:1px solid var(--line);border-radius:8px;padding:8px;font-family:Consolas,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap}
+  #log .l-fail{color:var(--err)} #log .l-ok{color:var(--ok)}
+  /* 知识库 */
+  #kb-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:980px){#kb-grid{grid-template-columns:1fr}}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600}
+  td.rel{font-family:Consolas;color:var(--ok);font-size:11px}
+  #flows-table td.name{color:var(--accent)}
+  .scroll{max-height:280px;overflow-y:auto}
+  .muted{color:var(--muted)}
+  .mono{font-family:Consolas;font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🌺 <span>FAA</span> 小花仙挂机助手</h1>
+  <span id="conn-badge" class="badge off">未连接</span>
+  <span id="mode-badge" class="badge off">使用模式</span>
+  <span id="screen-size" class="muted mono"></span>
+  <span style="flex:1"></span>
+  <button id="connect-btn" class="primary">连接</button>
+  <button id="back-btn">返回键</button>
+  <label>模式:
+    <select id="mode-sel">
+      <option value="use">使用</option>
+      <option value="test">测试(存点击图)</option>
+    </select>
+  </label>
+</header>
+
+<div class="layout">
+  <!-- 左：实时画面 -->
+  <div class="panel">
+    <div class="row" style="margin-bottom:8px;justify-content:space-between">
+      <h2 style="margin:0;border:none;padding:0">实时画面 + OCR</h2>
+      <div class="row">
+        <button id="refresh-btn">刷新</button>
+        <label><input type="checkbox" id="auto-chk" checked> 自动刷新</label>
+        <label><input type="checkbox" id="ocr-chk" checked> OCR标注</label>
+      </div>
+    </div>
+    <div class="screen-wrap" id="screen-wrap">
+      <img id="screen-img" alt="screenshot">
+      <div id="screen-overlay"></div>
+      <div class="hint" id="screen-hint">点击「连接」后显示模拟器画面</div>
+    </div>
+    <div class="muted" style="margin-top:6px">点击画面任意位置 = 对模拟器发出点击</div>
+  </div>
+
+  <!-- 右：操作 -->
+  <div class="layout" style="grid-template-columns:1fr;padding:0;gap:14px;">
+    <div class="panel">
+      <h2>运行流程</h2>
+      <div class="row">
+        <select id="flow-sel"></select>
+        <button id="run-btn" class="primary">运行</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label>流程运行在后台, 日志实时滚动下方。</label>
+      </div>
+      <h2 style="margin-top:12px">运行日志</h2>
+      <div id="log"><span class="muted">暂无日志</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 知识库 / 流程 查看 -->
+<div class="layout" style="padding-top:0">
+  <div class="panel">
+    <h2>流程列表 (flows/*.json)</h2>
+    <div class="scroll" id="flows-wrap"><span class="muted">加载中...</span></div>
+  </div>
+  <div class="panel">
+    <h2>知识库 (click_log.json)</h2>
+    <div class="scroll" id="kb-wrap"><span class="muted">加载中...</span></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const el = {};
+let autoTimer = null;
+let logCursor = 0;
+
+async function api(path, opts={}){
+  const r = await fetch(path, {
+    headers: {"Content-Type":"application/json"},
+    ...opts,
+  });
+  const d = await r.json().catch(()=>({error:"bad json"}));
+  if(!r.ok && d.error) throw new Error(d.error);
+  return d;
+}
+
+async function refreshStatus(){
+  try{
+    const s = await api("/api/status");
+    const c = !!s.connected;
+    $("conn-badge").textContent = c ? "已连接" : "未连接";
+    $("conn-badge").className = "badge " + (c?"on":"off");
+    $("mode-badge").textContent = s.debug_click ? "测试模式" : "使用模式";
+    $("mode-badge").className = "badge " + (s.debug_click?"":"on");
+    if(s.screen) $("screen-size").textContent = s.screen.join("×");
+    if(c) $("screen-hint").style.display = "none";
+    else $("screen-hint").style.display = "flex";
+  }catch(e){}
+}
+
+async function refreshScreen(){
+  try{
+    const d = await api("/api/screen");
+    if(!d.jpeg){ return; }
+    const img = $("screen-img");
+    img.onload = ()=>{
+      $("screen-hint").style.display = "none";
+      drawBoxes(d.boxes);
+    };
+    img.src = "data:image/jpeg;base64," + d.jpeg;
+  }catch(e){ /* 未连接则忽略 */ }
+}
+
+async function drawBoxes(boxes){
+  const ov = $("screen-overlay");
+  ov.innerHTML = "";
+  if(!$("ocr-chk").checked) return;
+  for(const b of boxes){
+    const d = document.createElement("div");
+    d.className = "box";
+    d.style.left = b.box[0]*100 + "%";
+    d.style.top  = b.box[1]*100 + "%";
+    d.style.width = (b.box[2]-b.box[0])*100 + "%";
+    d.style.height = (b.box[3]-b.box[1])*100 + "%";
+    const lb = document.createElement("div");
+    lb.className = "box-label";
+    lb.textContent = b.text + "  " + b.rel.map(v=>v.toFixed(3)).join(",");
+    d.appendChild(lb);
+    ov.appendChild(d);
+  }
+}
+
+async function refreshFlows(){
+  try{
+    const d = await api("/api/flows");
+    const sel = $("flow-sel");
+    sel.innerHTML = "";
+    for(const f of d.flows){
+      const o = document.createElement("option");
+      o.value = f.name; o.textContent = f.name + (f.modules.length?" [编排]":"");
+      sel.appendChild(o);
+    }
+    const w = $("flows-wrap");
+    w.innerHTML = "<table><tr><th>流程名</th><th>文件</th></tr></table>";
+    w.innerHTML = "";
+    let html = "<table><tr><th>流程名</th><th>文件</th></tr>";
+    for(const f of d.flows){
+      html += `<tr><td class="name">${esc(f.name)}</td><td class="mono muted">${esc(f.file)}</td></tr>`;
+    }
+    w.innerHTML = html + "</table>";
+  }catch(e){}
+}
+
+const sc = (v)=>JSON.stringify(v,null,0);
+
+async function refreshKb(){
+  try{
+    const d = await api("/api/kb");
+    const cl = d.click_log || {};
+    let html = "<table><tr><th>按钮</th><th>相对坐标</th></tr>";
+    for(const k in cl){
+      const r = cl[k];
+      html += `<tr><td>${esc(k)}</td><td class="rel">${JSON.stringify(r.rel)}</td></tr>`;
+    }
+    $("kb-wrap").innerHTML = html + "</table> <div class='muted'>共 "+Object.keys(cl).length+" 条</div>";
+  }catch(e){}
+}
+
+function esc(s){ const d=document.createElement("div"); d.textContent=String(s??""); return d.innerHTML; }
+
+// ---- 事件 ----
+$("connect-btn").onclick = async ()=>{
+  try{
+    const d = await api("/api/connect", {method:"POST", body:"{}"});
+    await refreshStatus();
+    refreshScreen();
+  }catch(e){ alert("连接失败: "+e.message); }
+};
+
+$("back-btn").onclick = ()=> api("/api/back", {method:"POST", body:"{}"}).catch(()=>{});
+
+$("mode-sel").onchange = async ()=>{
+  await api("/api/set_mode", {method:"POST", body:JSON.stringify({mode:$("mode-sel").value})});
+  refreshStatus();
+};
+
+$("refresh-btn").onclick = refreshScreen;
+
+$("auto-chk").onchange = ()=>{
+  clearInterval(autoTimer);
+  if($("auto-chk").checked) autoTimer = setInterval(()=>{ refreshScreen(); }, 1500);
+};
+
+$("run-btn").onclick = async ()=>{
+  try{
+    const flow = $("flow-sel").value;
+    $("log").innerHTML = "";
+    logCursor = 0;
+    await api("/api/run", {method:"POST", body:JSON.stringify({flow, mode:$("mode-sel").value})});
+    pollLog();
+  }catch(e){ alert("无法运行: "+e.message); }
+};
+
+async function pollLog(){
+  try{
+    const d = await api("/api/log?after="+logCursor);
+    if(d.lines && d.lines.length){
+      logCursor = d.next;
+      const box = $("log");
+      const isBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      for(const line of d.lines){
+        const div = document.createElement("div");
+        div.textContent = line.replace(/\n$/,"");
+        div.className = /异常|失败|错误/.test(line) ? "l-fail" : (/ok|成功/.test(line) ? "" : "");
+        box.appendChild(div);
+      }
+      if(isBottom) box.scrollTop = box.scrollHeight;
+    }
+  }catch(e){}
+  setTimeout(pollLog, 800);
+}
+
+// 画面点击 -> 相对坐标
+$("screen-wrap").addEventListener("click", async (ev)=>{
+  const rect = ev.currentTarget.getBoundingClientRect();
+  const img = $("screen-img");
+  const imgRect = img.getBoundingClientRect();
+  // 用图片实际渲染区域计算(保持比例)
+  if(imgRect.width===0) return;
+  const rx = (ev.clientX - imgRect.left) / imgRect.width;
+  const ry = (ev.clientY - imgRect.top) / imgRect.height;
+  if(rx<0||rx>1||ry<0||ry>1) return;
+  // 画一个点击标记
+  const ov = $("screen-overlay");
+  const hit = document.createElement("div");
+  hit.className = "hit";
+  hit.style.left = (ev.clientX-rect.left)+"px";
+  hit.style.top = (ev.clientY-rect.top)+"px";
+  ov.appendChild(hit);
+  setTimeout(()=>hit.remove(), 800);
+  try{
+    await api("/api/click", {method:"POST", body:sc({rel:[+rx.toFixed(4), +ry.toFixed(4)]})});
+    refreshScreen();
+  }catch(e){ alert("点击失败: "+e.message); }
+});
+
+// 初始化
+(async ()=>{
+  el.connect = $("connect-btn");
+  await refreshStatus();
+  await refreshFlows();
+  await refreshKb();
+  if(autoTimer!=null) clearInterval(autoTimer);
+  autoTimer = setInterval(()=>{ refreshScreen(); }, 1500);
+  $("auto-chk").checked = true;
+  setTimeout(pollLog, 500);
+})();
+</script>
+</body>
+</html>

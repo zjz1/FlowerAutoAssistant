@@ -16,7 +16,9 @@ FlowerAutoAssistant - OCR 数据驱动引擎核心（替代 MAA 模板匹配路�
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -31,6 +33,7 @@ ADB_ADDRESS = "127.0.0.1:16384"
 ADB_PATH = r"D:\Program Files\Netease\MuMu\nx_main\adb.exe"
 FLOW_DIR = Path(__file__).parent / "flows"
 CLICK_LOG_PATH = Path(__file__).parent / "data" / "click_log.json"
+CLOSE_BUTTONS_PATH = Path(__file__).parent / "data" / "close_buttons.json"
 
 
 # ---------- 坐标 ----------
@@ -64,6 +67,38 @@ class OCREngine:
         self.screen_w = 0
         self.screen_h = 0
         self.click_log: dict[str, dict] = self._load_click_log()  # 按钮名 -> 记录
+        self.close_buttons: list[dict] = self._load_close_buttons()  # 关闭按钮特殊逻辑注册表
+
+    # ---- 关闭按钮特殊逻辑注册表 ----
+    def _load_close_buttons(self) -> list:
+        """加载『关闭按钮-特殊逻辑』注册表 (data/close_buttons.json)。
+        每个条目是一种关闭按钮的定位逻辑; 找关闭按钮时会依次遍历。
+        """
+        try:
+            if CLOSE_BUTTONS_PATH.exists():
+                with open(CLOSE_BUTTONS_PATH, encoding="utf-8") as fp:
+                    data = json.load(fp)
+                    if isinstance(data, list):
+                        return data
+        except Exception as e:
+            print(f"[关闭按钮注册表加载失败] {e}")
+        return []
+
+    def _save_close_buttons(self) -> None:
+        CLOSE_BUTTONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(CLOSE_BUTTONS_PATH, "w", encoding="utf-8") as fp:
+            json.dump(self.close_buttons, fp, ensure_ascii=False, indent=2)
+
+    def register_close_button(self, new_entry: dict) -> None:
+        """新增/更新一种关闭按钮特殊逻辑到注册表 (按 name 去重) 并持久化。"""
+        for i, e in enumerate(self.close_buttons):
+            if e.get("name") == new_entry.get("name"):
+                self.close_buttons[i] = new_entry
+                break
+        else:
+            self.close_buttons.append(new_entry)
+        self._save_close_buttons()
+        print(f"[注册表] 已保存关闭按钮特殊逻辑: {new_entry.get('name')}")
 
     # ---- 点击日志 (持久化知识库) ----
     def _load_click_log(self) -> dict:
@@ -110,6 +145,11 @@ class OCREngine:
             print("[错误] 连接失败")
             return False
         self._ctrl = ctrl
+        self.debug_click = bool(os.environ.get("FAA_DEBUG_CLICK", ""))
+        self._click_seq = 0
+        if self.debug_click:
+            self.debug_dir = Path(__file__).parent / "data" / "click_debug"
+            self.debug_dir.mkdir(parents=True, exist_ok=True)
         return True
 
     def screenshot(self) -> np.ndarray | None:
@@ -122,32 +162,80 @@ class OCREngine:
         return img
 
     def click_abs(self, x: int, y: int) -> None:
+        if getattr(self, "debug_click", False):
+            self._snapshot_click(int(x), int(y))
         self._ctrl.post_click(int(x), int(y)).wait()
         print(f"[点击] 绝对({x},{y})")
 
+    def _snapshot_click(self, x: int, y: int) -> None:
+        """调试: 点击前截图, 用红框标注点击点并保存, 便于逐帧核对点击区域。"""
+        try:
+            img = self.screenshot()
+            if img is None:
+                return
+            import cv2
+            img = img.copy()
+            cv2.rectangle(img, (x - 25, y - 25), (x + 25, y + 25), (0, 0, 255), 2)
+            cv2.circle(img, (x, y), 5, (0, 0, 255), -1)
+            self._click_seq += 1
+            fp = self.debug_dir / f"click_{self._click_seq:03d}_({x}_{y}).png"
+            cv2.imwrite(str(fp), img)
+            self._last_snapshot = fp
+            print(f"[截图] 点击区域已保存 -> {fp.name}")
+        except Exception as e:
+            print(f"[截图调试] 失败: {e}")
+
     def click_rel(self, rx: float, ry: float) -> None:
-        """按相对坐标点击 (自适应屏幕尺寸)。"""
+        """按相对坐标点击 (自适应屏幕尺寸)。
+        若屏幕尺寸未知(尚未截图)则先截图获取; 避免相对坐标算成 (0,0)。
+        """
+        if not self.screen_w or not self.screen_h:
+            self.screenshot()
+        if not self.screen_w or not self.screen_h:
+            print("[点击] 相对坐标失败: 屏幕尺寸未知")
+            return
         x = int(rx * self.screen_w)
         y = int(ry * self.screen_h)
         print(f"[点击] 相对({rx:.3f},{ry:.3f}) -> 绝对({x},{y})")
         self.click_abs(x, y)
 
+    def back(self) -> bool:
+        """发送 Android 返回键 (adb shell input keyevent 4)。用于关闭弹窗/返回上一级。
+        返回 True/False。失败时回退点击屏幕左上角。
+        """
+        import subprocess
+        try:
+            # 尝试用 adb 命令行发 keyevent (返回键 code=4)
+            subprocess.run(
+                [self.adb_path, "-s", self.address, "shell", "input", "keyevent", "4"],
+                capture_output=True, timeout=5, check=True,
+            )
+            print("[back] 已发送返回键 keyevent=4")
+            return True
+        except Exception as e:
+            print(f"[back] adb keyevent 失败({e}), 回退点击左上角")
+            self.click_abs(20, 20)
+            return False
+
     # ---- OCR 定位 ----
-    def find_text(self, keywords, img=None, top_k=3):
+    def find_text(self, keywords, img=None, top_k=3, exact=False, region_rel=None):
         """在截图(或给定图)中按关键字找文字块。返回 OCR 块列表 (含坐标)。
-        若整图识别出的文字块过宽(可能合并了相邻按钮), 会自动对该区域放大 2x 重识别拆开。
+        exact=True 要求块文本与关键字完全相等, 避免『家园』误命中『勇气国花园』等。
+        region_rel=[x1,y1,x2,y2] (0~1) 时只保留中心落在该区域内的块 (用于区域限定文本判断)。
+        对过宽的合并块(宽>90, 如「种植箱一键种植」)尝试放大 2x 重识别拆出子按钮以提升
+        定位精度, 但始终保留原合并块(且置于拆分块之前优先匹配), 避免重识别丢失命中。
         """
         img = img if img is not None else self.screenshot()
         if img is None:
             return []
         blocks = ocr_image(img)
-        # 对命中关键字但块过宽(可能合并多按钮)的, 做放大重识别
         refined = []
         for b in blocks:
             x1, y1, x2, y2 = b["box"]
+            # 原块始终保留(优先匹配): 即使拆分失败/丢字, 也能整体命中, 中心已落在目标按钮上
+            refined.append(b)
             w = x2 - x1
-            hit = any(k in b["text"] for k in (keywords if isinstance(keywords, list) else [keywords]))
-            if hit and w > 90:  # 过宽, 疑似合并
+            if w > 90:  # 过宽, 疑似合并: 放大重识别尝试拆出更精确的子按钮
                 crop = img[max(0, y1 - 10):y2 + 10, max(0, x1 - 10):x2 + 10]
                 if crop.size:
                     import cv2
@@ -162,15 +250,19 @@ class OCREngine:
                                       int(nb["box"][2] / 2) + max(0, x1 - 10),
                                       int(nb["box"][3] / 2) + max(0, y1 - 10)]
                         refined.append(nb2)
-                    continue
-            refined.append(b)
-        return ocr_find(refined, keywords)
+        if region_rel:
+            w, h = self.screen_w, self.screen_h
+            rx1, ry1 = int(region_rel[0] * w), int(region_rel[1] * h)
+            rx2, ry2 = int(region_rel[2] * w), int(region_rel[3] * h)
+            refined = [b for b in refined
+                       if rx1 <= b["center"][0] <= rx2 and ry1 <= b["center"][1] <= ry2]
+        return ocr_find(refined, keywords, exact=exact)
 
-    def locate(self, keywords, img=None, min_score=0.5):
+    def locate(self, keywords, img=None, min_score=0.5, exact=False, region_rel=None):
         """返回第一个命中块的中心绝对坐标 Point; 未命中返回 None。
         命中后更新 last_rel 缓存。
         """
-        blocks = self.find_text(keywords, img=img)
+        blocks = self.find_text(keywords, img=img, exact=exact, region_rel=region_rel)
         for b in blocks:
             if b.get("score", 1.0) < min_score:
                 continue
@@ -218,11 +310,179 @@ class OCREngine:
         cx, cy = int(candidates[0][0]), int(candidates[0][1])
         return Point(cx, cy, self.screen_w, self.screen_h)
 
-    def click_text(self, keywords, img=None, fallback_rel=None, min_score=0.5) -> bool:
+    def locate_anchor_color(self, anchor_kw, color_cfg: dict, dx_range=(150, 400), dy_tol=60,
+                            img=None, min_score=0.4) -> "Point | None":
+        """锚点 + 颜色复合定位: 先 OCR 找锚点文字(如「提示」), 在锚点右侧/某偏移区域按颜色找目标按钮。
+        用于弹窗关闭按钮等「有文字作锚点 + 按钮自身无文字」的场景, 比固定绝对坐标更健壮。
+        color_cfg 的 region 若未提供, 则由锚点动态计算。
+        """
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return None
+        anchor = self.locate([anchor_kw], img=img, min_score=min_score)
+        if anchor is None:
+            print(f"[锚点定位] 未找到锚点文字 '{anchor_kw}'")
+            return None
+        import cv2
+        import numpy as np
+        ax, ay = anchor.x, anchor.y
+        # 若颜色配置未给定 region, 用锚点动态生成右侧搜索区
+        cfg = dict(color_cfg)
+        if not cfg.get("region"):
+            x1, x2 = ax + dx_range[0], ax + dx_range[1]
+            y1, y2 = ay - dy_tol, ay + dy_tol
+            cfg["region"] = [max(0, x1), max(0, y1), x2, y2]
+        return self.locate_color(cfg, img=img)
+
+    def parse_fraction_at(self, region_rel, img=None, tol=60) -> "tuple[int,int] | None":
+        """OCR 整图, 找形如 'a/b' 的数字块, 取中心离 region_rel*屏 最近且距离<=tol 的, 返回 (a,b)。
+        未找到返回 None。
+        """
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return None
+        w, h = self.screen_w, self.screen_h
+        tx, ty = int(region_rel[0] * w), int(region_rel[1] * h)
+        best, best_d = None, float("inf")
+        for b in ocr_image(img):
+            m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", b.get("text", "").strip())
+            if not m:
+                continue
+            cx, cy = b["center"]
+            d = (cx - tx) ** 2 + (cy - ty) ** 2
+            if d < best_d:
+                best_d, best = d, (int(m[1]), int(m[2]))
+        if best is not None and best_d ** 0.5 <= tol:
+            return best
+        return None
+
+    def eval_fraction(self, step, img=None) -> bool:
+        """判断某个相对位置处 'a/b' 数字是否满足 condition。
+        condition 使用变量 a(分子)/b(分母) 的表达式, 如 'a<b'、'a>=20'。返回 True/False。
+        """
+        reg = step.get("region_rel")
+        if not reg:
+            print("[if_fraction] 缺少 region_rel")
+            return False
+        res = self.parse_fraction_at(reg, img=img)
+        if res is None:
+            print(f"[if_fraction] 区域{reg} 未识别到 'a/b' 数字块")
+            return False
+        a, b = res
+        cond = step.get("condition", "a<b")
+        # 配置可信, 但仅放行数字/变量/运算符, 避免任意代码
+        if not re.fullmatch(r"[ab0-9+\-*/<>!= ().,]+", cond):
+            print(f"[if_fraction] 非法条件 '{cond}'")
+            return False
+        try:
+            ok = bool(eval(cond, {"__builtins__": {}}, {"a": a, "b": b}))
+        except Exception as e:
+            print(f"[if_fraction] 条件求值异常 '{cond}': {e}")
+            return False
+        print(f"[if_fraction] 区域{reg} a={a}/b={b} 条件'{cond}' -> {'TRUE' if ok else 'FALSE'}")
+        return ok
+
+    def _calc_int(self, formula, a, b) -> int:
+        """受信配置内安全求值整数公式。可用变量 a=分子, b=分母, 函数 ceil()/floor(), 四则运算。
+        非法字符/求值异常抛 ValueError / 返回 0。
+        """
+        if not re.fullmatch(r"[a-zA-Z0-9+\-*/<>!= ().,]+", formula):
+            raise ValueError(f"非法公式 '{formula}'")
+        ns = {"a": a, "b": b, "ceil": math.ceil, "floor": math.floor}
+        try:
+            return int(eval(formula, {"__builtins__": {}}, ns))
+        except Exception as e:
+            raise ValueError(f"公式求值异常 '{formula}': {e}")
+
+    def run_loop_fraction(self, step, indent=0):
+        """按『分数区域算出的循环次数』重复执行 do 子流程。
+        iterations: [{region_rel, formula}] 各自从相对位置读取 a/b 并按公式算一个整数值;
+        combine: 取 min(默认) 或 max 合并; 结果再夹到 max_loop; 为 0 则不循环。
+        典型用法: n=ceil((b-a)/57) 与 m=floor(a/20), combine=min → 每次消耗 20 体力直到结束或所需满足。
+        """
+        pad = "  " * indent
+        img = self.screenshot()
+        vals = []
+        for spec in step.get("iterations", []):
+            res = self.parse_fraction_at(spec["region_rel"], img=img)
+            if res is None:
+                print(f"{pad}[loop_fraction] 区域{spec['region_rel']} 未识别到 a/b, 循环次数=0")
+                return
+            v = self._calc_int(spec["formula"], res[0], res[1])
+            print(f"{pad}[loop_fraction] 区域{spec['region_rel']} a={res[0]} b={res[1]} 公式'{spec['formula']}' -> {v}")
+            vals.append(v)
+        combine = step.get("combine", "min")
+        m = min(vals) if combine != "max" else max(vals)
+        if m < 0:
+            m = 0
+        m = min(m, step.get("max_loop", 100))
+        print(f"{pad}[loop_fraction] 合并({combine})={vals} -> 循环 {m} 次")
+        # 一次性步骤(如读完顶栏后点「光偶像」进入新界面), 在循环前执行一次
+        if step.get("once"):
+            print(f"{pad}[loop_fraction] 执行入场步骤 once")
+            self.run_steps(step["once"], indent=indent + 1)
+        for i in range(m):
+            print(f"{pad} --- 逻辑 {i + 1}/{m} ---")
+            self.run_steps(step.get("do", []), indent=indent + 1)
+
+    def find_close_button(self, img=None) -> "Point | None":
+        """遍历『关闭按钮-特殊逻辑』注册表, 返回第一个命中的关闭按钮 Point; 全未命中返回 None。
+        支持的特殊逻辑 type:
+          - "anchor_color": 以锚点文字(如「提示」)为锚, 在其右侧 dx_range 内按颜色找关闭按钮
+          - "corner": 在画面固定相对区域(如右上角)按颜色找关闭按钮
+        """
+        img = img if img is not None else self.screenshot()
+        w, h = self.screen_w, self.screen_h
+        for entry in self.close_buttons:
+            name = entry.get("name", "?")
+            t = entry.get("type")
+            color = entry.get("color", {})
+            try:
+                if t == "anchor_color":
+                    pt = self.locate_anchor_color(
+                        entry.get("anchor", "提示"), color,
+                        dx_range=entry.get("dx_range", (150, 400)),
+                        dy_tol=entry.get("dy_tol", 60),
+                        img=img, min_score=entry.get("min_score", 0.4))
+                elif t == "corner":
+                    # region_rel: [x1,y1,x2,y2] 相对坐标(0~1) → 转绝对坐标
+                    rx = entry.get("region_rel", [0.82, 0.0, 1.0, 0.18])
+                    cfg = dict(color)
+                    cfg["region"] = [max(0, int(rx[0] * w)), max(0, int(rx[1] * h)),
+                                     min(w, int(rx[2] * w)), min(h, int(rx[3] * h))]
+                    pt = self.locate_color(cfg, img=img)
+                else:
+                    print(f"[关闭按钮] 未知特殊逻辑类型 '{t}' ({name}), 跳过")
+                    continue
+            except Exception as e:
+                print(f"[关闭按钮] 逻辑 '{name}' 执行异常: {e}")
+                pt = None
+            if pt is not None:
+                print(f"[关闭按钮] 特殊逻辑 '{name}' 命中 -> {pt.x},{pt.y}")
+                return pt
+        return None
+
+    def close_dialog(self, img=None, anchor_kw="提示", dx_range=(150, 400),
+                     dy_tol=60, min_score=0.4) -> bool:
+        """关闭通用弹窗: 遍历『关闭按钮-特殊逻辑』注册表找一个可点的关闭按钮并点击。
+        （anchor_kw/dx_range/dy_tol 参数仅为兼容旧调用保留, 实际以注册表为准。）
+        成功点击后写入知识库。返回 True/False。
+        """
+        img = img if img is not None else self.screenshot()
+        pt = self.find_close_button(img=img)
+        if pt is None:
+            print("[关闭弹窗] 未定位到任何关闭按钮")
+            return False
+        self.click_abs(pt.x, pt.y)
+        self._log_click("弹窗关闭", [anchor_kw], pt, "color")
+        return True
+
+    def click_text(self, keywords, img=None, fallback_rel=None, min_score=0.5, exact=False) -> bool:
         """OCR 定位关键字并点击。命中返回 True。
         回退链: OCR → 颜色特征(若知识库有 color 配置) → 进程缓存 → 知识库坐标 → 失败
+        exact=True 时用精确匹配(要求块文本完全等于关键字)。
         """
-        pt = self.locate(keywords, img=img, min_score=min_score)
+        pt = self.locate(keywords, img=img, min_score=min_score, exact=exact)
         if pt is not None:
             print(f"[OCR命中] {keywords} -> {pt.x},{pt.y}")
             self.click_abs(pt.x, pt.y)
@@ -303,14 +563,30 @@ class OCREngine:
                     break
         return hits[0] if hits else "unknown"
 
-    def run_step(self, step: dict):
-        """执行单个步骤。step 为流程 JSON 中的一个节点。"""
+    def run_steps(self, steps: list, indent=1):
+        """顺序执行一组 steps, 支持 list 形式的嵌套(用于 loop 子块)。返回达到的最大步骤索引。"""
+        for step in steps:
+            if isinstance(step, list):
+                # 嵌套块列表
+                self.run_steps(step, indent=indent + 1)
+                continue
+            self.run_step(step, indent=indent)
+        return 0
+
+    def run_step(self, step: dict, indent=1):
+        """执行单个步骤。step 为流程 JSON 中的一个节点。
+        支持: wait_text / click_text / click_rel / sleep / close_dialog /
+        if_text / if_fraction / loop_fraction / loop_times
+        """
+        pad = "  " * indent
         s_type = step.get("type")
         kws = step.get("text", step.get("keywords"))
         if s_type == "wait_text":
             self.wait_text(kws, timeout=step.get("timeout", 30), interval=step.get("interval", 1.0))
         elif s_type == "click_text":
-            ok = self.click_text(kws, fallback_rel=step.get("fallback_rel"))
+            ok = self.click_text(kws, fallback_rel=step.get("fallback_rel"),
+                                 exact=step.get("exact", False))
+            print(f"{pad}[click_text] {kws} -> {'ok' if ok else 'fail'}")
             time.sleep(step.get("delay", 0.5))
         elif s_type == "sleep":
             time.sleep(step.get("seconds", 1.0))
@@ -318,16 +594,98 @@ class OCREngine:
             rx, ry = step["rel"]
             self.click_rel(rx, ry)
             time.sleep(step.get("delay", 0.5))
+        elif s_type == "close_dialog":
+            self.close_dialog(
+                anchor_kw=step.get("anchor", "提示"),
+                dx_range=step.get("dx_range", (150, 400)),
+                dy_tol=step.get("dy_tol", 60),
+            )
+            time.sleep(step.get("delay", 1.0))
+        elif s_type == "if_text":
+            # 条件分支: 检测到任意关键字才执行 then, 否则执行 else(可选)
+            # 支持 region_rel=[x1,y1,x2,y2] (0~1) 限定时只在指定区域做文本判断
+            hit = self.locate(kws, min_score=step.get("min_score", 0.5),
+                              region_rel=step.get("region_rel")) is not None
+            branch = step.get("then") if hit else step.get("else")
+            print(f"{pad}[if_text] {kws} {'区域'+str(step.get('region_rel'))+' ' if step.get('region_rel') else ''}-> {'HIT' if hit else 'MISS'}")
+            if branch:
+                self.run_steps(branch, indent=indent + 1)
+        elif s_type == "if_fraction":
+            # 条件分支: 读取指定相对位置处 'a/b' 数字, 满足 condition(变量 a=分子,b=分母) 则执行 then, 否则 else
+            hit = self.eval_fraction(step)
+            branch = step.get("then") if hit else step.get("else")
+            if branch:
+                self.run_steps(branch, indent=indent + 1)
+        elif s_type == "loop_fraction":
+            # 按分数区域算出的次数重复执行 do (n=ceil((b-a)/57), m=floor(a/20), 取 min)
+            self.run_loop_fraction(step, indent)
+        elif s_type == "loop_times":
+            # 循环执行子块 N 次
+            times = step.get("times", 1)
+            body = step.get("do", [])
+            for i in range(times):
+                print(f"{pad}[loop_times] 第 {i+1}/{times} 次")
+                self.run_steps(body, indent=indent + 1)
         else:
             print(f"[未知步骤] {s_type}")
 
     def run_flow(self, flow: dict):
-        """执行整个流程。flow 含 steps 列表。"""
+        """执行整个流程。flow 含 steps 列表。返回值: 接口回调事件列表。"""
         name = flow.get("name", "未命名流程")
         print(f"\n===== 流程: {name} =====")
         for step in flow.get("steps", []):
             self.run_step(step)
         print(f"===== 流程完成: {name} =====")
+
+    def run_module(self, module: dict, registry: dict) -> str:
+        """执行单个模块(module), 返回结果: 'ok' | 'skip' | 'fail'。
+        module: {"id","flow","flow_data","required","on_fail"}
+        registry: {文件名: 已加载的 flow dict}, 避免重复读盘。
+        """
+        mid = module.get("id", "?")
+        fname = module.get("flow")
+        flow = module.get("flow_data") or registry.get(fname)
+        if flow is None:
+            print(f"[模块:{mid}] 未找到流程文件 {fname}")
+        on_fail = module.get("on_fail", "stop_round")
+        required = module.get("required", False)
+        desc = flow.get("description", "") if isinstance(flow, dict) else ""
+        print(f"\n>>> 模块执行: {mid} [{fname}] {'[必选]' if required else '[可选]'}  {desc}".strip())
+        try:
+            if isinstance(flow, dict):
+                self.run_steps(flow.get("steps", []))
+            print(f"<<< 模块完成: {mid}")
+            return "ok"
+        except Exception as e:
+            print(f"<<< 模块异常: {mid} -> {e} (on_fail={on_fail})")
+            return "fail"
+
+    def run_daily(self, plan: dict) -> dict:
+        """按编排 plan 调度各模块。plan: {"name","modules":[{"id","flow",...}]}。
+        返回统计: {"ok":[],"skip":[],"fail":[]}。容错规则由每个 module.on_fail 决定:
+          skip        -> 失败继续下一个
+          stop_round  -> 失败终止本轮后续模块
+        """
+        name = plan.get("name", "每日编排")
+        # 预加载所有引用到的流程
+        registry = {}
+        for m in plan.get("modules", []):
+            fname = m.get("flow")
+            if fname and fname not in registry:
+                fp = FLOW_DIR / fname
+                if fp.exists():
+                    with open(str(fp), encoding="utf-8") as f:
+                        registry[fname] = json.load(f)
+        result = {"ok": [], "skip": [], "fail": []}
+        print(f"\n########## 编排: {name} ##########")
+        for m in plan.get("modules", []):
+            res = self.run_module(m, registry)
+            result[res if res in result else "fail"].append(m.get("id"))
+            if res == "fail" and m.get("on_fail", "stop_round") == "stop_round":
+                print(f"[编排] 模块 {m.get('id')} 失败且 on_fail=stop_round, 终止本轮")
+                break
+        print(f"########## 编排结束: ok={len(result['ok'])} skip={len(result['skip'])} fail={len(result['fail'])} ##########")
+        return result
 
     # ---- 界面采集 ----
     def collect_ui(self, min_score=0.5) -> dict:
@@ -380,6 +738,22 @@ def load_flows(flow_dir: Path = FLOW_DIR) -> list[dict]:
     return flows
 
 
+def select_flow(flows, key):
+    """按关键字选择流程: 先精确名匹配('name' == key), 再关键字子串匹配。
+    避免『种植』误选先载入的「进入种植界面」而非「种植任务」。
+    返回命中的 flow dict; 未命中返回 None。
+    """
+    if not key:
+        return None
+    for f in flows:
+        if f.get("name") == key:
+            return f
+    for f in flows:
+        if f.get("name") and key in f["name"]:
+            return f
+    return None
+
+
 def main():
     args = sys.argv[1:]
     if not args or args[0] == "--list":
@@ -390,7 +764,7 @@ def main():
     if args[0] == "--flow":
         key = args[1] if len(args) > 1 else ""
         flows = load_flows()
-        target = next((f for f in flows if key in f.get("name", "")), None)
+        target = select_flow(flows, key)
         if target is None:
             print(f"未找到流程包含关键字 '{key}'. 可用: {[f.get('name') for f in flows]}")
             return
@@ -407,7 +781,58 @@ def main():
         eng.collect_ui()
         return
 
-    print("用法: python ocr_engine.py --list | --flow <关键字> | --collect")
+    if args[0] == "--close-test":
+        eng = OCREngine()
+        if not eng.connect():
+            return
+        pt = eng.find_close_button()
+        if pt is not None:
+            print(f"[close-test] 命中关闭按钮 绝对{pt.x},{pt.y} 相对{tuple(round(v,4) for v in pt.rel)}")
+        else:
+            print("[close-test] 未命中任何关闭按钮")
+        return
+
+    if args[0] == "--add-close":
+        if len(args) < 3:
+            print("用法: python ocr_engine.py --add-close <名称> <corner|anchor_color>")
+            return
+        name, t = args[1], args[2]
+        pink = {"hsv_lower": [150, 80, 90], "hsv_upper": [175, 255, 255],
+                "area_min": 300, "area_max": 5000}
+        if t == "corner":
+            entry = {"name": name, "type": "corner",
+                     "region_rel": [0.82, 0.0, 1.0, 0.18], "color": pink}
+        elif t == "anchor_color":
+            entry = {"name": name, "type": "anchor_color", "anchor": "提示",
+                     "dx_range": [150, 400], "dy_tol": 60, "min_score": 0.4,
+                     "color": dict(pink, area_max=3000)}
+        else:
+            print(f"未知类型 '{t}'. 可选: corner | anchor_color")
+            return
+        OCREngine().register_close_button(entry)
+        print(f"[add-close] 已新增关闭按钮特殊逻辑: {name} ({t})")
+        return
+
+    if args[0] == "--ocr-screen":
+        """开发工具: 连接->截图->一次OCR->打印当前画面所有字符及相对坐标(不写入知识库)。"""
+        eng = OCREngine()
+        if not eng.connect():
+            return
+        img = eng.screenshot()
+        if img is None:
+            print("[失败] 截图失败")
+            return
+        h, w = img.shape[:2]
+        print(f"画面尺寸 W={w} H={h}")
+        blocks = [b for b in ocr_image(img) if b.get("score", 1) >= 0.4]
+        blocks.sort(key=lambda b: (b["center"][1], b["center"][0]))
+        print(f"共识别 {len(blocks)} 块:")
+        for b in blocks:
+            rx, ry = round(b["center"][0] / w, 4), round(b["center"][1] / h, 4)
+            print(f"  {b['text']:<16} rel({rx},{ry})  abs({b['center'][0]},{b['center'][1]})  score{b.get('score',0):.2f}")
+        return
+
+    print("用法: python ocr_engine.py --list | --flow <关键字> | --collect | --close-test | --add-close <名称> <corner|anchor_color> | --ocr-screen")
 
 
 if __name__ == "__main__":

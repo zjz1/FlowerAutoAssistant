@@ -1,0 +1,17 @@
+{
+    "name": "启动就绪",
+    "description": "登录进游戏: 点「登录」->点「点击进入游戏」。切换账号功能待开发。",
+    "steps": [
+        { "type": "if_text",
+          "text": ["登录"],
+          "min_score": 0.35,
+          "then": [{ "type": "click_text", "text": ["登录"], "delay": 2.0 }]
+        },
+        { "type": "if_text",
+          "text": ["点击进入游戏", "进入游戏"],
+          "min_score": 0.35,
+          "then": [{ "type": "click_text", "text": ["点击进入游戏", "进入游戏"], "delay": 2.0 }]
+        },
+        { "type": "sleep", "seconds": 1.0 }
+    ]
+}

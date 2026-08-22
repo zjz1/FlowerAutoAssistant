@@ -18,6 +18,13 @@ resource/
 *.bak
 *.tmp
 
+# Web UI 测试点击截图 / 临时调试产物（勿提交）
+data/click_debug/
+data/_corner_evidence.png
+_probe*.png
+_probe_*.png
+_tmp_*.py
+
 # fastdeploy 临时缓存等
 *.crdownload
 

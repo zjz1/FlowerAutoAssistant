@@ -1,0 +1,8 @@
+{
+    "name": "挂机任务",
+    "description": "挂机任务功能待开发。当前为空流程, 不执行任何动作(模块通过)。",
+    "status": "pending",
+    "steps": [
+        { "type": "sleep", "seconds": 0.3 }
+    ]
+}

@@ -57,12 +57,15 @@ def ocr_image(image) -> list[dict]:
     return out
 
 
-def ocr_find(blocks, keyword: str) -> list[dict]:
+def ocr_find(blocks, keyword: str, exact=False) -> list[dict]:
     """在 OCR 结果中筛选包含 keyword 的文字块。keyword 可为 str 或 str 列表（任一命中）。
+    exact=True 时要求块文本与 keyword 完全相等(去掉首尾空白), 避免『家园』误命中『勇气国花园』等子字符串。
     返回命中块列表。
     """
     if isinstance(keyword, str):
         keyword = [keyword]
+    if exact:
+        return [b for b in blocks if any(b["text"].strip() == k for k in keyword)]
     return [b for b in blocks if any(k in b["text"] for k in keyword)]
 
 

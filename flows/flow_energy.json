@@ -1,0 +1,70 @@
+{
+    "name": "体力任务",
+    "description": "关关闭按钮(循环直到无) -> 进菜单->点闪耀变身 -> 循环(loop_fraction): 读顶栏算 n=ceil((b-a)/57) 与 m=floor(a/20)，取 m=min(m,n)（均<=0不循环），once 点光偶像进星光偶像，再按 m 次重复 do(若区域有成为最闪耀明星则点速通->点确定->等结算确认->点确认)。",
+    "steps": [
+        { "type": "loop_times",
+          "times": 6,
+          "do": [
+              { "type": "close_dialog", "anchor": "提示", "delay": 1.0 }
+          ] },
+        { "type": "if_text",
+          "text": ["闪耀变身"],
+          "min_score": 0.4,
+          "then": [
+              { "type": "click_text", "text": ["闪耀变身"], "delay": 1.5, "fallback_rel": [0.105, 0.625] },
+              { "type": "sleep", "seconds": 1.0 }
+          ],
+          "else": [
+              { "type": "if_text",
+                "text": ["菜单"],
+                "min_score": 0.4,
+                "then": [
+                    { "type": "click_text", "text": ["菜单"], "delay": 1.5, "fallback_rel": [0.054, 0.081] }
+                ],
+                "else": [
+                    { "type": "if_text",
+                      "text": ["家园"],
+                      "min_score": 0.4,
+                      "then": [
+                          { "type": "click_text", "text": ["家园"], "delay": 1.5, "fallback_rel": [0.872, 0.95] }
+                      ] }
+                ] },
+              { "type": "if_text",
+                "text": ["菜单"],
+                "min_score": 0.4,
+                "then": [
+                    { "type": "click_text", "text": ["菜单"], "delay": 1.5, "fallback_rel": [0.054, 0.081] }
+                ] },
+              { "type": "if_text",
+                "text": ["闪耀变身"],
+                "min_score": 0.4,
+                "then": [
+                    { "type": "click_text", "text": ["闪耀变身"], "delay": 1.5, "fallback_rel": [0.105, 0.625] }
+                ] },
+              { "type": "sleep", "seconds": 1.0 }
+          ] },
+        { "type": "loop_fraction",
+          "iterations": [
+              { "region_rel": [0.598, 0.038], "formula": "ceil((b-a)/57)" },
+              { "region_rel": [0.860, 0.038], "formula": "floor(a/20)" }
+          ],
+          "combine": "min",
+          "max_loop": 30,
+          "once": [
+              { "type": "click_text", "text": ["光偶像"], "delay": 1.5, "fallback_rel": [0.0508, 0.5417] }
+          ],
+          "do": [
+              { "type": "if_text",
+                "text": ["成为最闪耀明星"],
+                "min_score": 0.4,
+                "region_rel": [0.05, 0.86, 0.18, 0.94],
+                "then": [
+                    { "type": "click_text", "text": ["速通"], "delay": 1.5, "fallback_rel": [0.817, 0.893] }
+                ] },
+              { "type": "click_text", "text": ["确定"], "delay": 1.2, "fallback_rel": [0.497, 0.644] },
+              { "type": "wait_text", "text": ["确认", "确定"], "timeout": 25, "interval": 1.0 },
+              { "type": "click_text", "text": ["确认", "确定"], "delay": 1.0, "fallback_rel": [0.638, 0.858] },
+              { "type": "sleep", "seconds": 1.0 }
+          ] }
+    ]
+}

@@ -1,20 +1,13 @@
 {
-    "name": "每日挂机",
-    "description": "完整挂机链: 进家园 -> 一键种植 -> 浇水/施肥/收花 -> 关闭面板, 供 main.py 循环调用。",
-    "steps": [
-        { "type": "wait_text", "text": ["家园"], "timeout": 20, "interval": 1.0 },
-        { "type": "click_text", "text": ["家园"], "delay": 2.0 },
-        { "type": "sleep", "seconds": 3.0 },
-
-        { "type": "wait_text", "text": ["一键种植"], "timeout": 15, "interval": 1.0 },
-        { "type": "click_text", "text": ["一键种植"], "delay": 2.0 },
-        { "type": "sleep", "seconds": 3.0 },
-
-        { "type": "click_text", "text": ["浇水"], "delay": 1.0 },
-        { "type": "click_text", "text": ["施肥"], "delay": 1.0 },
-        { "type": "click_text", "text": ["收花"], "delay": 1.0 },
-
-        { "type": "click_text", "text": ["关闭"], "delay": 2.0 },
-        { "type": "sleep", "seconds": 2.0 }
+    "name": "每日挂机编排",
+    "description": "顺序调度 7 大模块: 启动(登录进游戏)->签到->种植->体力->每日任务->挂机->领取奖励. 核心模块失败终止本轮, 可选模块失败自动跳过.",
+    "modules": [
+        { "id": "startup", "flow": "flow_startup.json",     "required": true,  "on_fail": "stop_round" },
+        { "id": "signin",  "flow": "flow_signin.json",      "required": false, "on_fail": "skip" },
+        { "id": "plant",   "flow": "flow_plant.json",       "required": true,  "on_fail": "stop_round" },
+        { "id": "energy",  "flow": "flow_energy.json",      "required": false, "on_fail": "skip" },
+        { "id": "daily",   "flow": "flow_daily_task.json",  "required": false, "on_fail": "skip" },
+        { "id": "idle",    "flow": "flow_idle.json",        "required": false, "on_fail": "skip" },
+        { "id": "claim",   "flow": "flow_claim.json",       "required": false, "on_fail": "skip" }
     ]
 }

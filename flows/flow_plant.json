@@ -1,0 +1,8 @@
+{
+    "name": "种植任务",
+    "description": "点「家园」进入家园。花田作业(浇水/施肥/授粉/收花)后续待开发。",
+    "steps": [
+        { "type": "click_text", "text": ["家园"], "delay": 2.5, "fallback_rel": [0.8719, 0.9514] },
+        { "type": "sleep", "seconds": 1.0 }
+    ]
+}

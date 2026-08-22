@@ -22,7 +22,7 @@ import sys
 import time
 from pathlib import Path
 
-from ocr_engine import OCREngine, load_flows, ADB_ADDRESS, ADB_PATH
+from ocr_engine import OCREngine, load_flows, select_flow, ADB_ADDRESS, ADB_PATH
 
 _RUNNING = True
 
@@ -55,7 +55,7 @@ def main():
             print(f"  - {f.get('name')}  [{f.get('_file')}]")
         return
 
-    target = next((f for f in flows if args.flow in f.get("name", "")), None)
+    target = select_flow(flows, args.flow)
     if target is None:
         print(f"未找到流程包含关键字 '{args.flow}'. 可用: {[f.get('name') for f in flows]}")
         return
@@ -81,7 +81,7 @@ def main():
         count += 1
         print(f"\n--------- 第 {count} 轮 ---------")
         try:
-            eng.run_flow(target)
+            eng.run_flow(target) if "modules" not in target else eng.run_daily(target)
         except KeyboardInterrupt:
             break
         except Exception as e:

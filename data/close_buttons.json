@@ -1,0 +1,27 @@
+[
+  {
+    "name": "提示锚点右侧关闭",
+    "type": "anchor_color",
+    "anchor": "提示",
+    "dx_range": [150, 400],
+    "dy_tol": 60,
+    "min_score": 0.4,
+    "color": {
+      "hsv_lower": [150, 80, 90],
+      "hsv_upper": [175, 255, 255],
+      "area_min": 300,
+      "area_max": 3000
+    }
+  },
+  {
+    "name": "整体画面右上角关闭",
+    "type": "corner",
+    "region_rel": [0.93, 0.0, 1.0, 0.1],
+    "color": {
+      "hsv_lower": [150, 80, 90],
+      "hsv_upper": [175, 255, 255],
+      "area_min": 100,
+      "area_max": 3000
+    }
+  }
+]
