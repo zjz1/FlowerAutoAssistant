@@ -1,0 +1,20 @@
+{
+    "name": "每日挂机",
+    "description": "完整挂机链: 进家园 -> 一键种植 -> 浇水/施肥/收花 -> 关闭面板, 供 main.py 循环调用。",
+    "steps": [
+        { "type": "wait_text", "text": ["家园"], "timeout": 20, "interval": 1.0 },
+        { "type": "click_text", "text": ["家园"], "delay": 2.0 },
+        { "type": "sleep", "seconds": 3.0 },
+
+        { "type": "wait_text", "text": ["一键种植"], "timeout": 15, "interval": 1.0 },
+        { "type": "click_text", "text": ["一键种植"], "delay": 2.0 },
+        { "type": "sleep", "seconds": 3.0 },
+
+        { "type": "click_text", "text": ["浇水"], "delay": 1.0 },
+        { "type": "click_text", "text": ["施肥"], "delay": 1.0 },
+        { "type": "click_text", "text": ["收花"], "delay": 1.0 },
+
+        { "type": "click_text", "text": ["关闭"], "delay": 2.0 },
+        { "type": "sleep", "seconds": 2.0 }
+    ]
+}

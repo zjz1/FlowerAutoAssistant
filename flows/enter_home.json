@@ -1,0 +1,21 @@
+{
+    "name": "进入家园",
+    "description": "在主界面等待并点击「家园」按钮，进入家园界面。",
+    "steps": [
+        {
+            "type": "wait_text",
+            "text": ["家园"],
+            "timeout": 15,
+            "interval": 1.0
+        },
+        {
+            "type": "click_text",
+            "text": ["家园"],
+            "delay": 2.0
+        },
+        {
+            "type": "sleep",
+            "seconds": 3.0
+        }
+    ]
+}

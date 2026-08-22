@@ -1,0 +1,15 @@
+{
+    "name": "测试关闭按钮",
+    "description": "点击右上角关闭按钮（颜色特征检测），验证种植面板能否关闭。",
+    "steps": [
+        {
+            "type": "click_text",
+            "text": ["关闭"],
+            "delay": 2.0
+        },
+        {
+            "type": "sleep",
+            "seconds": 3.0
+        }
+    ]
+}

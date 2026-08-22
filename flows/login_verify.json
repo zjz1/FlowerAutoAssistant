@@ -1,0 +1,21 @@
+{
+    "name": "进入游戏",
+    "description": "OCR 数据驱动流程：等待「点击进入游戏」按钮出现并点击，进入游戏主界面。",
+    "steps": [
+        {
+            "type": "wait_text",
+            "text": ["点击进入游戏"],
+            "timeout": 15,
+            "interval": 1.0
+        },
+        {
+            "type": "click_text",
+            "text": ["点击进入游戏"],
+            "delay": 2.0
+        },
+        {
+            "type": "sleep",
+            "seconds": 3.0
+        }
+    ]
+}

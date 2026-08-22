@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+
+# 运行产物（游戏截图，勿提交 —— 规避 IP 风险）
+debug/
+logs/
+
+# 旧方案 / 解包脚本（勿提交）
+legacy/
+resource/
+
+# 临时/备份
+*.bak
+*.tmp
+
+# fastdeploy 临时缓存等
+*.crdownload
+
+# OS
+Thumbs.db
+.DS_Store
