@@ -40,7 +40,12 @@
 
 ### 🚧 进行中 / 待确认
 - 挂机流程可运行，但作业动作的"真实挂机"仍需结合游戏机制微调（如浇水/收花次数、花田选择）。
-- GitHub 同步待办（见待办）。
+
+### ✅ GitHub 已同步（2026-08-22）
+- 仓库：`https://github.com/zjz1/FlowerAutoAssistant`（Public）
+- 已推送白名单：`main.py`、`ocr_engine.py`、`ocr_ui.py`、`requirements.txt`、`PROGRESS.md`、`flows/*.json`、`data/click_log.json`、`.gitignore`
+- 因规避个人信息/IP风险，仓库级 `.gitignore` 排除了：`.venv/`、`debug/`（游戏截图）、`legacy/`（Unity 解包脚本）、`resource/`（旧模板/素材图）、`__pycache__/`
+- git 提交用户配置用 `-c user.name/-c user.email`（GitHub noreply 邮箱）临时传入，未改全局 config
 
 ---
 
@@ -91,7 +96,7 @@
 ### 🟢 低优先级 / 后续扩展
 - [ ] 更多任务：施肥、领奖、社交、收花批量
 - [ ] 颜色特征按钮扩展：如登录页"点击进入游戏"等无/弱文字元素
-- [ ] 安装 git 做正式版本控制（当前仅靠 legacy/ 复制备份）
+- [x] ~~安装 git 做正式版本控制~~（已同步 GitHub，见第 2.3 节）
 - [ ] README.md 完善
 
 ---
