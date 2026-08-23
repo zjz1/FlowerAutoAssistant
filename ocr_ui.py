@@ -28,7 +28,16 @@ def get_engine():
     if _engine is None:
         from rapidocr_onnxruntime import RapidOCR
 
-        _engine = RapidOCR()
+        # 检测参数调优: 关闭膨胀(use_dilation=False), 避免「半透明按钮/相邻文字」被膨胀成
+        # 一个合并块导致子串命中整块中心而误点。box_thresh 降、unclip_ratio 降, 检测框更紧贴文字。
+        # 注意: 传任意 det_* 参数时该库强制读取 det_model_path, 需显式传 None 以沿用默认模型路径。
+        _engine = RapidOCR(
+            det_model_path=None,
+            det_use_dilation=False,
+            det_thresh=0.2,
+            det_box_thresh=0.3,
+            det_unclip_ratio=1.4,
+        )
     return _engine
 
 

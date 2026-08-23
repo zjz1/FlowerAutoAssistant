@@ -1,77 +1,69 @@
 {
     "name": "花灵派对",
-    "description": "功能2 花灵派对·领取奖励: 进入花灵派对(菜单) -> 进派对时长礼包 -> 逐个领取6个在线时长礼包(点领取->等'恭喜获得'->点任意处关闭; 已领的按钮消失则该坐标点击无效, 自然跳过) -> 关闭礼包面板。",
+    "description": "功能2 花灵派对·领取奖励: retry_loop(最多3轮)进入花灵派对(目标命中=点到'花灵派对'; 菜单/家园只算导航; 全未命中则脱困关全部类型弹窗重试) -> 进派对时长礼包 -> loop_text(有'领取'就点, 领完按钮消失即自然停止, 每次点->等'恭喜获得'->关闭) -> 关闭礼包面板。",
     "steps": [
-        { "type": "loop_times",
-          "times": 6,
+        { "type": "retry_loop",
+          "max_rounds": 3,
           "do": [
-              { "type": "close_dialog", "anchor": "提示", "delay": 1.0 }
-          ] },
-        { "type": "if_text",
-          "text": ["花灵派对"],
-          "min_score": 0.4,
-          "then": [
-              { "type": "click_text", "text": ["花灵派对"], "delay": 1.5, "fallback_rel": [0.1859, 0.7528] },
-              { "type": "sleep", "seconds": 1.5 }
-          ],
-          "else": [
-              { "type": "if_text",
-                "text": ["菜单"],
-                "min_score": 0.4,
-                "then": [
-                    { "type": "click_text", "text": ["菜单"], "delay": 1.2, "fallback_rel": [0.054, 0.081] }
-                ],
-                "else": [
-                    { "type": "if_text",
-                      "text": ["家园"],
-                      "min_score": 0.4,
-                      "then": [
-                          { "type": "click_text", "text": ["家园"], "delay": 1.2, "fallback_rel": [0.872, 0.95] }
-                      ] }
-                ] },
-              { "type": "if_text",
-                "text": ["菜单"],
-                "min_score": 0.4,
-                "then": [
-                    { "type": "click_text", "text": ["菜单"], "delay": 1.2, "fallback_rel": [0.054, 0.081] }
-                ] },
               { "type": "if_text",
                 "text": ["花灵派对"],
                 "min_score": 0.4,
                 "then": [
-                    { "type": "click_text", "text": ["花灵派对"], "delay": 1.5, "fallback_rel": [0.1859, 0.7528] }
+                    { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5, "fallback_rel": [0.1859, 0.7528] }
                 ],
                 "else": [
-                    { "type": "click_text", "text": ["花灵派对"], "delay": 1.5, "fallback_rel": [0.1859, 0.7528] }
-                ] },
-              { "type": "sleep", "seconds": 1.5 }
+                    { "type": "if_text",
+                      "text": ["菜单"],
+                      "min_score": 0.4,
+                      "then": [
+                          { "type": "click_text", "text": ["菜单"], "delay": 1.5, "fallback_rel": [0.054, 0.081] },
+                          { "type": "sleep", "seconds": 1.0 },
+                          { "type": "if_text",
+                            "text": ["花灵派对"],
+                            "min_score": 0.4,
+                            "then": [
+                                { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5, "fallback_rel": [0.1859, 0.7528] }
+                            ] }
+                      ],
+                      "else": [
+                          { "type": "if_text",
+                            "text": ["家园"],
+                            "min_score": 0.4,
+                            "then": [
+                                { "type": "click_text", "text": ["家园"], "delay": 1.5, "fallback_rel": [0.872, 0.95] },
+                                { "type": "sleep", "seconds": 1.0 },
+                                { "type": "click_text", "text": ["菜单"], "delay": 1.5, "fallback_rel": [0.054, 0.081] },
+                                { "type": "sleep", "seconds": 1.0 },
+                                { "type": "if_text",
+                                  "text": ["花灵派对"],
+                                  "min_score": 0.4,
+                                  "then": [
+                                      { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5, "fallback_rel": [0.1859, 0.7528] }
+                                  ] }
+                            ] }
+                      ] }
+                ] }
           ] },
-        { "type": "click_rel", "rel": [0.0539, 0.4250], "delay": 1.2, "name": "派对时长礼包入口" },
+        { "type": "if_text",
+          "text": ["时长礼包"],
+          "min_score": 0.4,
+          "then": [
+              { "type": "click_text", "text": ["时长礼包"], "delay": 1.2, "fallback_rel": [0.0531, 0.4250] }
+          ],
+          "else": [
+              { "type": "click_rel", "rel": [0.0531, 0.4250], "delay": 1.2, "name": "派对时长礼包入口(兜底)" }
+          ] },
         { "type": "sleep", "seconds": 1.0 },
-        { "type": "click_rel", "rel": [0.2750, 0.4694], "delay": 1.0, "name": "领取1分钟礼包" },
-        { "type": "sleep", "seconds": 1.2 },
-        { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-          "then": [ { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.0, "name": "关闭恭喜获得" } ] },
-        { "type": "click_rel", "rel": [0.5000, 0.4694], "delay": 1.2, "name": "领取5分钟礼包" },
-        { "type": "sleep", "seconds": 1.2 },
-        { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-          "then": [ { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.0, "name": "关闭恭喜获得" } ] },
-        { "type": "click_rel", "rel": [0.7242, 0.4694], "delay": 1.2, "name": "领取15分钟礼包" },
-        { "type": "sleep", "seconds": 1.2 },
-        { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-          "then": [ { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.0, "name": "关闭恭喜获得" } ] },
-        { "type": "click_rel", "rel": [0.2758, 0.8333], "delay": 1.0, "name": "领取30分钟礼包" },
-        { "type": "sleep", "seconds": 1.2 },
-        { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-          "then": [ { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.0, "name": "关闭恭喜获得" } ] },
-        { "type": "click_rel", "rel": [0.5000, 0.8333], "delay": 1.2, "name": "领取60分钟礼包" },
-        { "type": "sleep", "seconds": 1.2 },
-        { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-          "then": [ { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.0, "name": "关闭恭喜获得" } ] },
-        { "type": "click_rel", "rel": [0.7242, 0.8333], "delay": 1.2, "name": "领取90分钟礼包" },
-        { "type": "sleep", "seconds": 1.2 },
-        { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-          "then": [ { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.0, "name": "关闭恭喜获得" } ] },
+        { "type": "loop_text",
+          "text": ["领取"],
+          "min_score": 0.4,
+          "max_loop": 8,
+          "do": [
+              { "type": "click_text", "text": ["领取"], "delay": 1.2, "fallback_rel": [0.5, 0.8333] },
+              { "type": "sleep", "seconds": 1.2 },
+              { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
+                "then": [ { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.0, "name": "关闭恭喜获得" } ] }
+          ] },
         { "type": "close_dialog", "anchor": "提示", "only_types": ["corner_pink_small", "corner", "corner_white"], "delay": 1.0 }
     ]
 }

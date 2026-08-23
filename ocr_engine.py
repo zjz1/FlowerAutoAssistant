@@ -70,6 +70,7 @@ class OCREngine:
         self.click_log: dict[str, dict] = self._load_click_log()  # 按钮名 -> 记录
         self.close_buttons: list[dict] = self._load_close_buttons()  # 关闭按钮特殊逻辑注册表
         self.config: dict = self._load_config()  # 用户配置 (data/config.json), 支持 CLI 覆盖
+        self._rr_hit = False  # retry_loop 本轮命中标记
 
     # ---- 用户配置 (data/config.json) ----
     def _load_config(self) -> dict:
@@ -285,12 +286,13 @@ class OCREngine:
             return []
         blocks = ocr_image(img)
         refined = []
+        sub_blocks = []  # 过宽块 2x 重识别拆出的精确子块, 点击定位时优先(点击点落到目标文字自身中心)
         for b in blocks:
             x1, y1, x2, y2 = b["box"]
-            # 原块始终保留(优先匹配): 即使拆分失败/丢字, 也能整体命中, 中心已落在目标按钮上
+            # 原块始终保留作为兜底: 即使拆分失败/丢字, 也能整体命中, 中心已落在目标按钮上
             refined.append(b)
             w = x2 - x1
-            if w > 90:  # 过宽, 疑似合并: 放大重识别尝试拆出更精确的子按钮
+            if w > 90:  # 过宽, 疑似合并(如「菜单/奇妙花宝」挤在一起): 放大重识别尝试拆出更精确的子按钮
                 crop = img[max(0, y1 - 10):y2 + 10, max(0, x1 - 10):x2 + 10]
                 if crop.size:
                     import cv2
@@ -304,7 +306,9 @@ class OCREngine:
                                       int(nb["box"][1] / 2) + max(0, y1 - 10),
                                       int(nb["box"][2] / 2) + max(0, x1 - 10),
                                       int(nb["box"][3] / 2) + max(0, y1 - 10)]
-                        refined.append(nb2)
+                        sub_blocks.append(nb2)
+        # 精确子块优先(点击点优先落到「菜单」二字自身中心), 原合并块兜底保证整体命中
+        refined = sub_blocks + refined
         if region_rel:
             w, h = self.screen_w, self.screen_h
             rx1, ry1 = int(region_rel[0] * w), int(region_rel[1] * h)
@@ -869,6 +873,8 @@ class OCREngine:
             ok = self.click_text(kws, fallback_rel=step.get("fallback_rel"),
                                  exact=step.get("exact", False))
             print(f"{pad}[click_text] {kws} -> {'ok' if ok else 'fail'}")
+            if ok and step.get("mark"):
+                self._rr_hit = True  # 命中目标步骤, 记为本轮 retry_loop 成功
             time.sleep(step.get("delay", 0.5))
         elif s_type == "click_account_tail":
             # 点击「账号文本尾部数字」匹配的账号条目(账号选择界面)。
@@ -932,6 +938,20 @@ class OCREngine:
             branch = step.get("then") if hit else step.get("else")
             if branch:
                 self.run_steps(branch, indent=indent + 1)
+        elif s_type == "loop_text":
+            # 循环直到找不到某文本: 只要还能识别到 text(领取等动态按钮)就重复执行 do,
+            # 识别不到则退出。用于"有'领取'就点, 领完按钮消失即自然停止"的领取循环。
+            kws = step.get("text", step.get("keywords"))
+            body = step.get("do", [])
+            guard = step.get("max_loop", 20)
+            n = 0
+            while n < guard and \
+                    self.locate(kws, min_score=step.get("min_score", 0.4),
+                                region_rel=step.get("region_rel")) is not None:
+                n += 1
+                print(f"{pad}[loop_text] {kws} 存在, 执行第 {n} 次领取/操作")
+                self.run_steps(body, indent=indent + 1)
+            print(f"{pad}[loop_text] {kws} 不存在, 领取/操作完成, 退出")
         elif s_type == "loop_fraction":
             # 按分数区域算出的次数重复执行 do (n=ceil((b-a)/57), m=floor(a/20), 取 min)
             self.run_loop_fraction(step, indent)
@@ -942,6 +962,28 @@ class OCREngine:
             for i in range(times):
                 print(f"{pad}[loop_times] 第 {i+1}/{times} 次")
                 self.run_steps(body, indent=indent + 1)
+        elif s_type == "retry_loop":
+            # 脱困重试循环: 最多 max_rounds 轮。
+            # 每轮执行 do; 只要 do 内任一带 mark 的正常点击真实命中(本轮回成),
+            # 本轮即成功, 退出循环。若整轮无命中(被弹窗/无关界面挡住), 执行
+            # fail_do 脱困(未提供则自动 close_dialog 尝试全部关闭类型)再进入下一轮。
+            # 跑满 max_rounds 仍无命中 → 放弃, 继续流程后续步骤(不抛错)。
+            rounds = step.get("max_rounds", 3)
+            body = step.get("do", [])
+            fail_do = step.get("fail_do")
+            for i in range(rounds):
+                print(f"{pad}[retry_loop] 第 {i+1}/{rounds} 轮")
+                self._rr_hit = False
+                self.run_steps(body, indent=indent + 1)
+                if self._rr_hit:
+                    print(f"{pad}[retry_loop] 第 {i+1} 轮命中目标, 退出")
+                    break
+                print(f"{pad}[retry_loop] 第 {i+1} 轮未命中, 脱困重试")
+                if fail_do:
+                    self.run_steps(fail_do, indent=indent + 1)
+                else:
+                    self.close_dialog()
+                    time.sleep(step.get("delay", 1.0))
         else:
             print(f"[未知步骤] {s_type}")
 

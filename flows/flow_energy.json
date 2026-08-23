@@ -1,47 +1,49 @@
 {
     "name": "体力任务",
-    "description": "关关闭按钮(循环直到无) -> 进菜单->点闪耀变身 -> 循环(loop_fraction): 读顶栏算 n=ceil((b-a)/57) 与 m=floor(a/20)，取 m=min(m,n)（均<=0不循环），once 点光偶像进星光偶像，再按 m 次重复 do(若区域有成为最闪耀明星则点速通->点确定->等结算确认->点确认)。",
+    "description": "retry_loop(最多3轮)进入闪耀变身(目标命中=点到'闪耀变身'; 菜单/家园只算导航; 全未命中则脱困关全部类型弹窗重试) -> loop_fraction: 读顶栏算 n=ceil((b-a)/57) 与 m=floor(a/20)，取 m=min(m,n)（均<=0不循环），once 点光偶像进星光偶像，再按 m 次重复 do(若区域有成为最闪耀明星则点速通->点确定->等结算确认->点确认)。",
     "steps": [
-        { "type": "loop_times",
-          "times": 6,
+        { "type": "retry_loop",
+          "max_rounds": 3,
           "do": [
-              { "type": "close_dialog", "anchor": "提示", "delay": 1.0 }
-          ] },
-        { "type": "if_text",
-          "text": ["闪耀变身"],
-          "min_score": 0.4,
-          "then": [
-              { "type": "click_text", "text": ["闪耀变身"], "delay": 1.5, "fallback_rel": [0.105, 0.625] },
-              { "type": "sleep", "seconds": 1.0 }
-          ],
-          "else": [
-              { "type": "if_text",
-                "text": ["菜单"],
-                "min_score": 0.4,
-                "then": [
-                    { "type": "click_text", "text": ["菜单"], "delay": 1.5, "fallback_rel": [0.054, 0.081] }
-                ],
-                "else": [
-                    { "type": "if_text",
-                      "text": ["家园"],
-                      "min_score": 0.4,
-                      "then": [
-                          { "type": "click_text", "text": ["家园"], "delay": 1.5, "fallback_rel": [0.872, 0.95] }
-                      ] }
-                ] },
-              { "type": "if_text",
-                "text": ["菜单"],
-                "min_score": 0.4,
-                "then": [
-                    { "type": "click_text", "text": ["菜单"], "delay": 1.5, "fallback_rel": [0.054, 0.081] }
-                ] },
               { "type": "if_text",
                 "text": ["闪耀变身"],
                 "min_score": 0.4,
                 "then": [
-                    { "type": "click_text", "text": ["闪耀变身"], "delay": 1.5, "fallback_rel": [0.105, 0.625] }
-                ] },
-              { "type": "sleep", "seconds": 1.0 }
+                    { "type": "click_text", "text": ["闪耀变身"], "mark": true, "delay": 1.5, "fallback_rel": [0.105, 0.625] },
+                    { "type": "sleep", "seconds": 1.0 }
+                ],
+                "else": [
+                    { "type": "if_text",
+                      "text": ["菜单"],
+                      "min_score": 0.4,
+                      "then": [
+                          { "type": "click_text", "text": ["菜单"], "delay": 1.5, "fallback_rel": [0.054, 0.081] },
+                          { "type": "sleep", "seconds": 1.0 },
+                          { "type": "if_text",
+                            "text": ["闪耀变身"],
+                            "min_score": 0.4,
+                            "then": [
+                                { "type": "click_text", "text": ["闪耀变身"], "mark": true, "delay": 1.5, "fallback_rel": [0.105, 0.625] }
+                            ] }
+                      ],
+                      "else": [
+                          { "type": "if_text",
+                            "text": ["家园"],
+                            "min_score": 0.4,
+                            "then": [
+                                { "type": "click_text", "text": ["家园"], "delay": 1.5, "fallback_rel": [0.872, 0.95] },
+                                { "type": "sleep", "seconds": 1.0 },
+                                { "type": "click_text", "text": ["菜单"], "delay": 1.5, "fallback_rel": [0.054, 0.081] },
+                                { "type": "sleep", "seconds": 1.0 },
+                                { "type": "if_text",
+                                  "text": ["闪耀变身"],
+                                  "min_score": 0.4,
+                                  "then": [
+                                      { "type": "click_text", "text": ["闪耀变身"], "mark": true, "delay": 1.5, "fallback_rel": [0.105, 0.625] }
+                                  ] }
+                            ] }
+                      ] }
+                ] }
           ] },
         { "type": "loop_fraction",
           "iterations": [
