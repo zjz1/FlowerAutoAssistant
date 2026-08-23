@@ -132,6 +132,28 @@
      - `ocr_engine.py`：`_locate_close_by_entry` 支持 `corner_white`（与 `corner` 同走 region_rel+color）；`close_dialog()`/`run_step` 新增 **`only_types`** 参数（按类型过滤遍历，退出整屏面板时避免误点「提示」锚点弹窗）。
      - 实测：`corner`→(1228,66)、`corner_white`→(1228,71) 双命中；`close_dialog(only_types=["corner","corner_white"])` 成功退出签到界面 → 回到主界面（寻梦童话/手账/在线礼包等）。
 
+20. **✅ 新增功能2「花灵派对」独立流程（AS OF 2026-08-23）**：
+   - [`flow_party.json`](flows/flow_party.json)（`party` 候选，独立流程）参照「闪耀变身」进入结构，但**入口走「菜单」**（非更多活动）：①关弹窗(loop 6×close_dialog anchor=提示) ②`if_text` 就近直达「花灵派对」→点 ③否则回主界面(点菜单, 若只有家园先点家园再点菜单) ④从菜单 OCR 找「花灵派对」→点。
+   - `--list` 已识别「花灵派对」流程；**暂未挂载 daily.json**（先独立测试，实机校准菜单内「花灵派对」坐标后再决定是否挂载）。
+   - ⚠️「花灵派对」在菜单内的相对坐标未校准，`fallback_rel` 暂用 [0.105,0.625] 占位，需实机 `--ocr-screen` 校准。
+
+21. **✅ 花灵派对·领取奖励（时长礼包）实机跑通（AS OF 2026-08-23）**：
+   - `flow_party.json` 扩展为完整领取流程：进花灵派对 → 点「派对时长礼包」rel(0.0539,0.4250) → 顺序领取6个在线时长礼包 → 关面板。
+   - **派对时长礼包面板校准**：6礼包分两行3列，标题「派对时长礼包」rel(0.5,0.0806)；第1行「1分钟/5分钟/15分钟在线礼包」(y=0.2167)，各「领取」按钮 rel(0.2750,0.4694)/(0.5000,0.4694)/(0.7242,0.4694)；第2行「30/60/90分钟在线礼包」(y=0.5806)，领取 rel(0.2758,0.8333)/(0.5000,0.8333)/(0.7242,0.8333)。
+   - **领取机制**：点「领取」→ 弹「恭喜获得」窗 → 点「点击任意处关闭」(0.5,0.9375)→ 该礼包「领取」按钮消失。已领的按钮消失后，固定坐标点击无效（自然跳过，流程健壮）。
+   - 实测领完1/5/15/30分钟，弹窗+关闭全程正常。
+   - **面板关闭**：派对时长礼包/爱心记录面板的关闭按钮 = `corner_pink_small` 类型，命中 (1108,80)。**注意每日任务/爱心记录面板被覆盖时 `corner`/`corner_white` 也测过无效，只有 `corner_pink_small` 有效**。
+   - 花灵派对场景：进入他人派对时顶部有「点赞」、左侧功能栏(时长礼包/每白任务/排行榜/爱心记录)；`corner_pink_small` 关闭面板回到派对场景。
+   - test flow JSON 23 步，`json.load` 合法。
+   - **✅ 已挂载为「领取奖励」功能2**：花灵派对领取流程合并进 [`flow_claim.json`](flows/flow_claim.json)（27步），在功能1在线礼包后顺序执行；`daily.json` 的 claim 模块不变，自动继承。`flow_party.json` 保留为独立流程便于单独测试。
+
+22. **✅ 领取奖励·功能1/功能2 可选开关 + Web UI 模块 ⚙ 设置面板（AS OF 2026-08-23）**：
+   - **config.json** 新增 `claim_online`、`claim_party` 布尔开关(默认 true)，`_comment` 已说明。
+   - **flow_claim.json** 重构为 2 个 `if_config` 块：`claim_online`(功能1, then=4步) 与 `claim_party`(功能2, then=23步)；任一关 skip 该整段。引擎已支持 `if_config`(见课内 eval_config/run_step if_config)。
+   - **webui.py**：`/api/config` GET 新增返回 `claim_online`/`claim_party`；`/api/set_config` POST 支持写这两个开关并写日志；`/api/daily` 每个模块新增 `settings` meta——`claim` 模块含功能1/2 的 switch、`startup` 模块含 enable_switch/target_tail，其它模块为空数组。
+   - **webui.html**：使用界面改三栏布局(任务|设置|账号连接提示)；左栏任务行加 `⚙` 键(无独立设置的模块置灰禁用)；点击 ⚙ 展开该模块「模块设置」面板(在左栏面板内)，渲 switch/text 设置项，"保存设置"调 `/api/set_config`。
+   - **已验证**：`/api/daily` 返回 claim/startup settings、`/api/config` 含新字段、`set_config` 写回 config.json 正常；测试后已将 claim_party 恢复为 true。
+
 ### 🚧 进行中 / 待确认（实机作业校准）
 - **种植模块作业未真正执行**：每日编排里对"一键种植/种植箱"MISS（8s 超时）→ 未进花田 → 浇水/施肥/授粉/收花循环全部空转。编排框架 OK，实机作业动作需校准。
 - **离线诊断为有效线索**：`after_home.png` 上 OCR 把「种植箱一键种植」识别为**单一合并块**（box [930,672,1078,698]，宽 148>90，score 0.82）；`ocr_find` 用严格方式能命中。**MISS 根因疑似与 `find_text()` 中"过宽块放大重识别"（宽>90 触发）有关**，需下个会话重点排查（见待办 🔴-1）。

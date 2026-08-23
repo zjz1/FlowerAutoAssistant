@@ -28,7 +28,8 @@
   /* ---------- MAA 风格 (使用界面) ---------- */
   .maa-top{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--accent);margin:0 0 12px}
   .maa-top b{font-size:15px;color:var(--fg)}
-  .maa-layout{display:grid;grid-template-columns:minmax(340px,5fr) minmax(340px,5fr);gap:14px;padding:14px}
+  .maa-layout{display:grid;grid-template-columns:minmax(300px,4fr) minmax(300px,4fr) minmax(300px,4fr);gap:14px;padding:14px}
+  @media(max-width:1200px){.maa-layout{grid-template-columns:1fr 1fr}}
   @media(max-width:760px){.maa-layout{grid-template-columns:1fr}}
   .maa-panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
   .maa-panel h2{margin:0 0 8px;font-size:14px;color:var(--accent);border-bottom:1px solid var(--line);padding-bottom:6px}
@@ -103,7 +104,7 @@
   <div class="maa-layout">
     <!-- 左栏: 每日挂机任务 -->
     <div class="maa-panel">
-      <div class="maa-top"><b>每日挂机任务</b><span class="muted">勾选本轮要执行的任务</span></div>
+      <div class="maa-top"><b>每日挂机任务</b><span class="muted">勾选本轮要执行的任务 · 点 ⚙ 设置</span></div>
       <div id="task-list"></div>
       <div class="maa-actions">
         <button id="maa-all">全选</button>
@@ -119,6 +120,12 @@
       </div>
       <button id="maa-start" class="start-btn">开始一轮</button>
       <p class="maa-note" id="maa-status"></p>
+
+      <!-- 模块设置面板 (⚙ 点击展开) -->
+      <div id="mod-settings" class="hidden">
+        <h2>模块设置</h2>
+        <div id="mod-settings-body"><span class="muted">点击左侧任一任务的 ⚙ 查看其设置</span></div>
+      </div>
     </div>
 
     <!-- 右栏: 账号 + 连接 -->
@@ -362,11 +369,11 @@ async function refreshKb(){
 function esc(s){ const d=document.createElement("div"); d.textContent=String(s??""); return d.innerHTML; }
 
 // ---- 使用界面: 任务列表 ----
-let maaTasks = [];  // [{id,name,flow,checked}]
+let maaTasks = [];  // [{id,name,flow,settings,checked}]
 async function refreshMaa(){
   try{
     const d = await api("/api/daily");
-    maaTasks = (d.modules||[]).map(m=>({id:m.id, name:m.name, flow:m.flow, checked:true}));
+    maaTasks = (d.modules||[]).map(m=>({id:m.id, name:m.name, flow:m.flow, settings:m.settings||[], checked:true}));
     $("maa-switch-chk").checked = !!d.enable_switch;
     $("maa-switch-tail").value = d.target_tail || "";
     renderMaaTasks();
@@ -376,18 +383,71 @@ function renderMaaTasks(){
   const box = $("task-list");
   let html = "";
   for(const t of maaTasks){
+    const hasSettings = t.settings.length > 0;
     html +=
-      `<label class="task-row">
+      `<div class="task-row" data-id="${esc(t.id)}">
         <input type="checkbox" data-id="${esc(t.id)}" ${t.checked?"checked":""}>
         <span class="name">${esc(t.name)}</span>
-        <span class="gear" title="流程: ${esc(t.flow)}">⚙</span>
-      </label>`;
+        <button class="gear" data-gear="${esc(t.id)}" title="${hasSettings ? t.flow + " · 设置" : t.flow + "（无独立设置）"}" ${hasSettings ? "" : 'style="opacity:.35" disabled'}>⚙</button>
+      </div>`;
   }
-  // 切换账号默认可选(仅作为勾选项)
   box.innerHTML = html;
   box.querySelectorAll("input[type=checkbox]").forEach(cb=>{
     cb.onchange = ()=>{ const t = maaTasks.find(x=>x.id===cb.dataset.id); if(t) t.checked = cb.checked; };
   });
+  box.querySelectorAll("[data-gear]").forEach(g=>{
+    g.onclick = (ev)=>{ ev.stopPropagation(); showModuleSettings(g.dataset.gear); };
+  });
+}
+// ---- 使用界面: 模块设置面板 (⚙) ----
+let maaActiveMod = null;
+function showModuleSettings(mid){
+  const t = maaTasks.find(x=>x.id===mid);
+  maaActiveMod = mid;
+  const panel = $("mod-settings");
+  const body = $("mod-settings-body");
+  if(!t || !t.settings.length){
+    panel.classList.remove("hidden");
+    body.innerHTML = `<div class="maa-note">模块「${esc(t?t.name:mid)}」暂无独立子功能。</div>`;
+    return;
+  }
+  let html = `<div style="margin-bottom:6px;color:var(--muted);font-size:12px">${esc(t.name)} · ${esc(t.flow||"")}</div>`;
+  for(const s of t.settings){
+    if(s.type === "switch"){
+      html += `<div class="cfg-row"><span class="lbl"><span style="display:block;font-weight:600;color:var(--fg)">${esc(s.label)}</span><span class="muted" style="font-size:11px">${esc(s.desc)}</span></span>
+        <label class="cfg-hint"><input type="checkbox" data-key="${esc(s.key)}" ${s.value?"checked":""}> ${s.value?"开":"关"}</label></div>`;
+    } else if(s.type === "text"){
+      html += `<div class="cfg-row"><span class="lbl"><span style="display:block;font-weight:600;color:var(--fg)">${esc(s.label)}</span><span class="muted" style="font-size:11px">${esc(s.desc)}</span></span>
+        <span class="cfg-hint"><input type="text" data-key="${esc(s.key)}" value="${esc(s.value)}" style="width:80px"></span></div>`;
+    }
+  }
+  html += `<div class="maa-actions" style="border:none;padding-top:6px;margin-top:2px">
+    <button id="mod-settings-save" class="primary">保存设置</button>
+    <span class="muted" id="mod-settings-status"></span></div>`;
+  body.innerHTML = html;
+  panel.classList.remove("hidden");
+  // 开关即时刷新文案(只更新开关旁的 span, 保留 checkbox)
+  body.querySelectorAll("input[type=checkbox][data-key]").forEach(cb=>{
+    cb.onchange = ()=>{ const txt = cb.parentElement.querySelector(".cfg-sw-txt"); if(txt) txt.textContent = cb.checked ? "开" : "关"; };
+  });
+  $("mod-settings-save").onclick = async ()=>{
+    const cfg = {};
+    body.querySelectorAll("[data-key]").forEach(el=>{
+      if(el.type === "checkbox") cfg[el.dataset.key] = el.checked;
+      else cfg[el.dataset.key] = el.value;
+    });
+    try{
+      const d = await api("/api/set_config", {method:"POST", body:JSON.stringify(cfg)});
+      $("mod-settings-status").textContent = d.ok ? "已保存 ✓" : "保存失败";
+      // 保存成功后把新值回写内存, 下次点 ⚙ 显示最新值
+      if(d.ok && t && t.settings){
+        for(const s of t.settings){
+          if(s.key in cfg) s.value = cfg[s.key];
+        }
+      }
+      setTimeout(()=>{ $("mod-settings-status").textContent = ""; }, 2000);
+    }catch(e){ $("mod-settings-status").textContent = "失败: " + e.message; }
+  };
 }
 $("maa-all").onclick = ()=>{ maaTasks.forEach(t=>t.checked=true); renderMaaTasks(); };
 $("maa-clear").onclick = ()=>{ maaTasks.forEach(t=>t.checked=false); renderMaaTasks(); };

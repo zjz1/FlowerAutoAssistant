@@ -483,6 +483,69 @@ class OCREngine:
             return best
         return None
 
+    def parse_count_at(self, region_rel, img=None, tol=120) -> "int | None":
+        """OCR 整图, 找形如 '关键字:N' 或纯数字('N') 的数字块, 取中心离 region_rel*屏 最近且距离<=tol 的, 返回 N。
+        用于解析『剩余抽奖次数:3』这类带关键字的单值数字。未找到返回 None。
+        """
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return None
+        w, h = self.screen_w, self.screen_h
+        tx, ty = int(region_rel[0] * w), int(region_rel[1] * h)
+        best, best_d = None, float("inf")
+        for b in ocr_image(img):
+            m = re.search(r"[:：]?\s*(\d+)\s*$", b.get("text", "").strip())
+            if not m:
+                continue
+            cx, cy = b["center"]
+            d = (cx - tx) ** 2 + (cy - ty) ** 2
+            if d < best_d:
+                best_d, best = d, int(m[1])
+        if best is not None and best_d ** 0.5 <= tol:
+            return best
+        return None
+
+    def eval_count(self, step, img=None) -> bool:
+        """判断指定相对位置处 '关键字:N' 的数字 N 是否满足 condition (变量 N)。如 N>0。"""
+        reg = step.get("region_rel")
+        if not reg:
+            print("[if_greater] 缺少 region_rel")
+            return False
+        n = self.parse_count_at(reg, img=img)
+        if n is None:
+            print(f"[if_greater] 区域{reg} 未识别到 '关键字:N' 数字")
+            return False
+        cond = step.get("condition", "N>0")
+        if not re.fullmatch(r"[N0-9+\-*/<>!= ().,]+", cond):
+            print(f"[if_greater] 非法条件 '{cond}'")
+            return False
+        try:
+            ok = bool(eval(cond, {"__builtins__": {}}, {"N": n}))
+        except Exception as e:
+            print(f"[if_greater] 条件求值异常 '{cond}': {e}")
+            return False
+        print(f"[if_greater] 区域{reg} N={n} 条件'{cond}' -> {'TRUE' if ok else 'FALSE'}")
+        return ok
+
+    def count_text(self, kws, region_rel=None, img=None) -> int:
+        """统计文本关键字在(限定时)区域内出现的总次数。跨 OCR 块去重: 挡块文本本身可能含多个关键字时按出现次数计。"""
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return 0
+        w, h = self.screen_w, self.screen_h
+        hits = 0
+        for b in ocr_image(img):
+            x1, y1, x2, y2 = b["box"]
+            if region_rel:
+                rx1, ry1, rx2, ry2 = region_rel
+                if not (rx1 * w <= x1 and x2 <= rx2 * w and ry1 * h <= y1 and y2 <= ry2 * h):
+                    continue
+            text = b.get("text", "")
+            for kw in (kws if isinstance(kws, list) else [kws]):
+                hits += text.count(kw)
+        print(f"[count_text] {kws} 区域{region_rel or '全屏'} 命中 {hits} 次")
+        return hits
+
     def eval_fraction(self, step, img=None) -> bool:
         """判断某个相对位置处 'a/b' 数字是否满足 condition。
         condition 使用变量 a(分子)/b(分母) 的表达式, 如 'a<b'、'a>=20'。返回 True/False。
@@ -618,7 +681,7 @@ class OCREngine:
                 dx_range=entry.get("dx_range", (150, 400)),
                 dy_tol=entry.get("dy_tol", 60),
                 img=img, min_score=entry.get("min_score", 0.4))
-        if t in ("corner", "corner_white"):
+        if t in ("corner", "corner_white", "corner_pink_small"):
             # region_rel: [x1,y1,x2,y2] 相对坐标(0~1) → 转绝对坐标
             rx = entry.get("region_rel", [0.82, 0.0, 1.0, 0.18])
             cfg = dict(color)
@@ -849,6 +912,20 @@ class OCREngine:
         elif s_type == "store_fraction":
             # 读取区域 'a/b' 的分子存入 config(带日期), 用于记录浇水/每日上限等状态
             self.store_fraction(step)
+        elif s_type == "if_greater":
+            # 条件分支: 读取指定相对位置处 '关键字:N' 数字(如 剩余抽奖次数:3), 满足 condition(变量 N) 则执行 then, 否则 else
+            hit = self.eval_count(step)
+            branch = step.get("then") if hit else step.get("else")
+            if branch:
+                self.run_steps(branch, indent=indent + 1)
+        elif s_type == "count_text":
+            # 统计数据文本出现次数; 若 >= threshold 执行 then(默认空), 否则执行 else (若有)
+            n = self.count_text(step.get("text"), region_rel=step.get("region_rel"))
+            ok = n >= step.get("threshold", 1)
+            branch = step.get("then") if ok else step.get("else")
+            print(f"{pad}[count_text] {step.get('text')} 计数={n} threshold={step.get('threshold',1)} -> {'TRUE' if ok else 'FALSE'}")
+            if branch:
+                self.run_steps(branch, indent=indent + 1)
         elif s_type == "if_config":
             # 配置开关分支: config[key] 满足 op/value 则执行 then, 否则 else(可选)
             hit = self.eval_config(step)

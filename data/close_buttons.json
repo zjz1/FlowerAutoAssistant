@@ -34,5 +34,16 @@
       "area_min": 600,
       "area_max": 3000
     }
+  },
+  {
+    "name": "在线礼包右上角粉色圆形关闭（标题同高偏右）",
+    "type": "corner_pink_small",
+    "region_rel": [0.84, 0.11, 0.89, 0.16],
+    "color": {
+      "hsv_lower": [0, 0, 200],
+      "hsv_upper": [180, 30, 255],
+      "area_min": 40,
+      "area_max": 600
+    }
   }
 ]

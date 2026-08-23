@@ -181,6 +181,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({
                 "enable_switch": bool(eng.config.get("enable_switch", False)),
                 "target_tail": eng.config.get("target_tail", ""),
+                "claim_online": bool(eng.config.get("claim_online", True)),
+                "claim_party": bool(eng.config.get("claim_party", True)),
             })
         if api == "daily" and self.command == "GET":
             return self._daily()
@@ -194,10 +196,20 @@ class Handler(BaseHTTPRequestHandler):
                 eng.update_config(enable_switch=bool(data["enable_switch"]))
             if "target_tail" in data:
                 eng.update_config(target_tail=str(data["target_tail"]))
+            if "claim_online" in data:
+                eng.update_config(claim_online=bool(data["claim_online"]))
+            if "claim_party" in data:
+                eng.update_config(claim_party=bool(data["claim_party"]))
             now = bool(eng.config.get("enable_switch", False))
             log_append(f"[config] 切换账号功能 {'启用' if now else '关闭'}"
                        + (f", 目标尾部={eng.config.get('target_tail')}" if now else ""))
-            return self._send_json({"ok": True, "changed": pre != now, "enable_switch": now})
+            log_append(f"[config] 领取奖励功能1在线礼包={'开' if eng.config.get('claim_online') else '关'}"
+                       f", 功能2花灵派对={'开' if eng.config.get('claim_party') else '关'}")
+            return self._send_json({
+                "ok": True, "changed": pre != now, "enable_switch": now,
+                "claim_online": bool(eng.config.get("claim_online", True)),
+                "claim_party": bool(eng.config.get("claim_party", True)),
+            })
 
         if api == "connect" and self.command == "POST":
             return self._connect()
@@ -315,6 +327,23 @@ class Handler(BaseHTTPRequestHandler):
             "claim": "领取奖励",
         }
         modules = []
+        # 各模块的可配置面板 meta (右侧 ⚙ 设置面板渲染数据)
+        def _module_settings(mid):
+            if mid == "claim":
+                return [
+                    {"key": "claim_online", "type": "switch", "label": "功能1 · 在线礼包",
+                     "desc": "抽奖耗尽次数 + 时间档位领取", "value": bool(eng.config.get("claim_online", True))},
+                    {"key": "claim_party", "type": "switch", "label": "功能2 · 花灵派对",
+                     "desc": "进入派对并领取 6 个在线时长礼包", "value": bool(eng.config.get("claim_party", True))},
+                ]
+            if mid == "startup":
+                return [
+                    {"key": "enable_switch", "type": "switch", "label": "切换账号",
+                     "desc": "登录前自动切换到目标账号", "value": bool(eng.config.get("enable_switch", False))},
+                    {"key": "target_tail", "type": "text", "label": "目标账号尾部",
+                     "desc": "匹配 abc****de 的末尾数字", "value": eng.config.get("target_tail", "")},
+                ]
+            return []
         if plan and plan.get("modules"):
             for m in plan["modules"]:
                 mid = m.get("id")
@@ -323,6 +352,7 @@ class Handler(BaseHTTPRequestHandler):
                     "flow": m.get("flow"),
                     "name": id2name.get(mid, mid),
                     "required": bool(m.get("required", False)),
+                    "settings": _module_settings(mid),
                 })
         return self._send_json({
             "name": plan.get("name") if plan else "每日挂机编排",
