@@ -23,5 +23,16 @@
       "area_min": 100,
       "area_max": 3000
     }
+  },
+  {
+    "name": "右上角白色圆形关闭（签到面板）",
+    "type": "corner_white",
+    "region_rel": [0.9, 0.0, 1.0, 0.16],
+    "color": {
+      "hsv_lower": [0, 0, 200],
+      "hsv_upper": [180, 30, 255],
+      "area_min": 600,
+      "area_max": 3000
+    }
   }
 ]

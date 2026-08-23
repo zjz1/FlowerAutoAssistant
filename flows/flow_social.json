@@ -1,0 +1,29 @@
+{
+    "name": "社交任务",
+    "description": "①清弹窗 -> ②家族活动: 进社交->家族->家族活动; 2.1摇钱树浇水: 读今日浇水次数 X/3, 未满则浇一次(浇水->关奖励框->store_fraction记录water_count), 已满 a>=b 则当天不再浇; 右上角关闭返回; 2.2矿洞/2.3闪耀/2.4守望待采集; ③点赞/④家园社交 待开发。",
+    "steps": [
+        { "type": "loop_times",
+          "times": 6,
+          "do": [
+              { "type": "close_dialog", "anchor": "提示", "delay": 1.0 }
+          ] },
+        { "type": "click_text", "text": ["社交"], "delay": 1.5, "fallback_rel": [0.3312, 0.9486] },
+        { "type": "click_text", "text": ["家族"], "delay": 1.5, "fallback_rel": [0.3305, 0.8264] },
+        { "type": "click_text", "text": ["家族活动"], "delay": 1.5, "fallback_rel": [0.0773, 0.4569] },
+
+        { "type": "click_rel", "rel": [0.2727, 0.4917], "delay": 2.0 },
+        { "type": "if_fraction",
+          "region_rel": [0.888, 0.7847],
+          "condition": "a<b",
+          "then": [
+              { "type": "click_rel", "rel": [0.8484, 0.6875], "delay": 2.5 },
+              { "type": "click_rel", "rel": [0.5, 0.9389], "delay": 2.0 },
+              { "type": "store_fraction",
+                "region_rel": [0.888, 0.7847],
+                "key": "water_count" }
+          ] },
+        { "type": "click_rel",
+          "rel": [0.9375, 0.125],
+          "delay": 2.0 }
+    ]
+}

@@ -509,6 +509,62 @@ class OCREngine:
         print(f"[if_fraction] 区域{reg} a={a}/b={b} 条件'{cond}' -> {'TRUE' if ok else 'FALSE'}")
         return ok
 
+    def store_fraction(self, step: dict, img=None) -> bool:
+        """读取指定相对位置处 'a/b' 数字的分子(a), 存入 config 并持久化。
+        用于记录『已浇水次数』等带冷却/每日上限的行为, 便于流程判断当天是否已满。
+        键名规则: config[step.key]=a, config[step.key+"_date"]=YYYYMMDD。
+        读取不到 a/b 时返回 False (不写入)。
+        """
+        reg = step.get("region_rel")
+        key = step.get("key")
+        if not reg or not key:
+            print("[store_fraction] 缺少 region_rel/key")
+            return False
+        res = self.parse_fraction_at(reg, img=img)
+        if res is None:
+            print(f"[store_fraction] 区域{reg} 未识别到 'a/b', 不写入")
+            return False
+        a, _b = res
+        self.update_config(**{key: a, key + "_date": time.strftime("%Y%m%d")})
+        print(f"[store_fraction] 区域{reg} a/b={a}/{_b} -> 已存 {key}={a}")
+        return True
+
+    def eval_config(self, step: dict) -> bool:
+        """判断 config 中键值是否满足条件, 用于流程内做配置开关。返回 True/False。
+        step: {key, value, op} op ∈ {==,!=,>=,<=,>,<}, 默认 ==。
+        value 支持 ${key} 占位符解析与 bool/int/str 自动转换。
+        """
+        key = step.get("key")
+        if not key:
+            print("[if_config] 缺少 key")
+            return False
+        raw = self.config.get(key)
+        want_raw = self.resolve(str(step.get("value", "")))
+        if want_raw in ("True", "true"):
+            want = True
+        elif want_raw in ("False", "false"):
+            want = False
+        else:
+            try:
+                want = int(want_raw)
+            except (TypeError, ValueError):
+                want = want_raw
+        op = step.get("op", "==")
+        try:
+            ok = {
+                "==": lambda: raw == want,
+                "!=": lambda: raw != want,
+                ">=": lambda: raw >= want,
+                "<=": lambda: raw <= want,
+                ">": lambda: raw > want,
+                "<": lambda: raw < want,
+            }[op]()
+        except Exception as e:
+            print(f"[if_config] 比较失败 {key}={raw} {op} {want}: {e}")
+            return False
+        print(f"[if_config] config[{key}]={raw} {op} {want} -> {'TRUE' if ok else 'FALSE'}")
+        return ok
+
     def _calc_int(self, formula, a, b) -> int:
         """受信配置内安全求值整数公式。可用变量 a=分子, b=分母, 函数 ceil()/floor(), 四则运算。
         非法字符/求值异常抛 ValueError / 返回 0。
@@ -552,57 +608,83 @@ class OCREngine:
             print(f"{pad} --- 逻辑 {i + 1}/{m} ---")
             self.run_steps(step.get("do", []), indent=indent + 1)
 
-    def find_close_button(self, img=None) -> "Point | None":
-        """遍历『关闭按钮-特殊逻辑』注册表, 返回第一个命中的关闭按钮 Point; 全未命中返回 None。
+    def _locate_close_by_entry(self, entry: dict, img, w, h) -> "Point | None":
+        """按单条『关闭按钮-特殊逻辑』注册项尝试定位, 返回命中 Point 或 None。"""
+        t = entry.get("type")
+        color = entry.get("color", {})
+        if t == "anchor_color":
+            return self.locate_anchor_color(
+                entry.get("anchor", "提示"), color,
+                dx_range=entry.get("dx_range", (150, 400)),
+                dy_tol=entry.get("dy_tol", 60),
+                img=img, min_score=entry.get("min_score", 0.4))
+        if t in ("corner", "corner_white"):
+            # region_rel: [x1,y1,x2,y2] 相对坐标(0~1) → 转绝对坐标
+            rx = entry.get("region_rel", [0.82, 0.0, 1.0, 0.18])
+            cfg = dict(color)
+            cfg["region"] = [max(0, int(rx[0] * w)), max(0, int(rx[1] * h)),
+                             min(w, int(rx[2] * w)), min(h, int(rx[3] * h))]
+            return self.locate_color(cfg, img=img)
+        return None
+
+    def find_all_close_buttons(self, img=None) -> list:
+        """遍历『关闭按钮-特殊逻辑』注册表, 返回**所有**可定位到的关闭按钮候选。
+        每个已注册类型一个条目 `{"name":..., "type":..., "pt": Point}`, 未命中/异常类型不入列。
         支持的特殊逻辑 type:
           - "anchor_color": 以锚点文字(如「提示」)为锚, 在其右侧 dx_range 内按颜色找关闭按钮
           - "corner": 在画面固定相对区域(如右上角)按颜色找关闭按钮
         """
         img = img if img is not None else self.screenshot()
         w, h = self.screen_w, self.screen_h
+        hits = []
         for entry in self.close_buttons:
             name = entry.get("name", "?")
-            t = entry.get("type")
-            color = entry.get("color", {})
             try:
-                if t == "anchor_color":
-                    pt = self.locate_anchor_color(
-                        entry.get("anchor", "提示"), color,
-                        dx_range=entry.get("dx_range", (150, 400)),
-                        dy_tol=entry.get("dy_tol", 60),
-                        img=img, min_score=entry.get("min_score", 0.4))
-                elif t == "corner":
-                    # region_rel: [x1,y1,x2,y2] 相对坐标(0~1) → 转绝对坐标
-                    rx = entry.get("region_rel", [0.82, 0.0, 1.0, 0.18])
-                    cfg = dict(color)
-                    cfg["region"] = [max(0, int(rx[0] * w)), max(0, int(rx[1] * h)),
-                                     min(w, int(rx[2] * w)), min(h, int(rx[3] * h))]
-                    pt = self.locate_color(cfg, img=img)
-                else:
-                    print(f"[关闭按钮] 未知特殊逻辑类型 '{t}' ({name}), 跳过")
-                    continue
+                pt = self._locate_close_by_entry(entry, img, w, h)
             except Exception as e:
                 print(f"[关闭按钮] 逻辑 '{name}' 执行异常: {e}")
                 pt = None
             if pt is not None:
-                print(f"[关闭按钮] 特殊逻辑 '{name}' 命中 -> {pt.x},{pt.y}")
-                return pt
+                hits.append({"name": name, "type": entry.get("type"), "pt": pt})
+        return hits
+
+    def find_close_button(self, img=None) -> "Point | None":
+        """遍历注册表返回**第一个**命中的关闭按钮; 全未命中返回 None。
+        （兼容调用方/--close-test; 需要"逐个试所有类型"请用 find_all_close_buttons() 或 close_dialog()）
+        """
+        hits = self.find_all_close_buttons(img=img)
+        if hits:
+            h = hits[0]
+            print(f"[关闭按钮] 特殊逻辑 '{h['name']}' 命中 -> {h['pt'].x},{h['pt'].y}")
+            return h["pt"]
         return None
 
     def close_dialog(self, img=None, anchor_kw="提示", dx_range=(150, 400),
-                     dy_tol=60, min_score=0.4) -> bool:
-        """关闭通用弹窗: 遍历『关闭按钮-特殊逻辑』注册表找一个可点的关闭按钮并点击。
+                     dy_tol=60, min_score=0.4, only_types=None) -> bool:
+        """关闭通用弹窗: 遍历『关闭按钮-特殊逻辑』注册表, **逐个尝试满足类型的关闭按钮并点击**。
+        含义: 当前画面上能识别的多种关闭按钮(弹窗式/右上角式等)都会被各点一次, 直到试完。
+        only_types: 可选, 字符串或类型列表; 仅在注册表中挑选指定类型(如 ["corner","corner_white"])定位,
+                   用于退出整屏面板(右上角关闭)时避免误点「提示」锚点弹窗。None 表示全部类型。
         （anchor_kw/dx_range/dy_tol 参数仅为兼容旧调用保留, 实际以注册表为准。）
-        成功点击后写入知识库。返回 True/False。
+        成功点击任一写入知识库。返回是否至少点击了一次。
         """
         img = img if img is not None else self.screenshot()
-        pt = self.find_close_button(img=img)
-        if pt is None:
-            print("[关闭弹窗] 未定位到任何关闭按钮")
+        hits = self.find_all_close_buttons(img=img)
+        # 按 only_types 过滤
+        if only_types:
+            allowed = [only_types] if isinstance(only_types, str) else list(only_types)
+            hits = [h for h in hits if h["type"] in allowed]
+        if not hits:
+            print("[关闭弹窗(only_types)] 未定位到匹配类型的关闭按钮")
             return False
-        self.click_abs(pt.x, pt.y)
-        self._log_click("弹窗关闭", [anchor_kw], pt, "color")
-        return True
+        clicked = False
+        for h in hits:
+            pt = h["pt"]
+            print(f"[关闭弹窗] 点击 '{h['name']}' ({h['type']}) -> {pt.x},{pt.y}")
+            self.click_abs(pt.x, pt.y)
+            self._log_click("弹窗关闭", [anchor_kw], pt, "color")
+            clicked = True
+        return clicked
 
     def click_text(self, keywords, img=None, fallback_rel=None, min_score=0.5, exact=False) -> bool:
         """OCR 定位关键字并点击。命中返回 True。
@@ -746,6 +828,7 @@ class OCREngine:
                 anchor_kw=step.get("anchor", "提示"),
                 dx_range=step.get("dx_range", (150, 400)),
                 dy_tol=step.get("dy_tol", 60),
+                only_types=step.get("only_types"),
             )
             time.sleep(step.get("delay", 1.0))
         elif s_type == "if_text":
@@ -760,6 +843,15 @@ class OCREngine:
         elif s_type == "if_fraction":
             # 条件分支: 读取指定相对位置处 'a/b' 数字, 满足 condition(变量 a=分子,b=分母) 则执行 then, 否则 else
             hit = self.eval_fraction(step)
+            branch = step.get("then") if hit else step.get("else")
+            if branch:
+                self.run_steps(branch, indent=indent + 1)
+        elif s_type == "store_fraction":
+            # 读取区域 'a/b' 的分子存入 config(带日期), 用于记录浇水/每日上限等状态
+            self.store_fraction(step)
+        elif s_type == "if_config":
+            # 配置开关分支: config[key] 满足 op/value 则执行 then, 否则 else(可选)
+            hit = self.eval_config(step)
             branch = step.get("then") if hit else step.get("else")
             if branch:
                 self.run_steps(branch, indent=indent + 1)
@@ -827,11 +919,6 @@ class OCREngine:
         print(f"\n########## 编排: {name} ##########")
         for m in plan.get("modules", []):
             mid = m.get("id")
-            # 可选功能开关: 「切换账号」未启用则跳过(不执行)
-            if mid == "switch" and not bool(self.config.get("enable_switch", False)):
-                print(f"[编排] 切换账号功能未启用(enable_switch=false), 跳过模块 '{mid}'")
-                result["skip"].append(mid)
-                continue
             res = self.run_module(m, registry)
             result[res if res in result else "fail"].append(mid)
             if res == "fail" and m.get("on_fail", "stop_round") == "stop_round":

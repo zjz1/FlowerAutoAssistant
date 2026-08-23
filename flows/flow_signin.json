@@ -1,8 +1,16 @@
 {
     "name": "签到",
-    "description": "每日签到功能待开发。当前为空流程, 不执行任何动作(模块通过)。",
-    "status": "pending",
+    "description": "开始启动后游戏自动弹出签到面板(仅当日未签时)。OCR 实时找「点击签到」按钮点击(不留存坐标,位置每日变化) -> 弹『恭喜获得』奖励框 -> 点『点击任意处关闭』-> 用右上角关闭按钮(corner/corner_white,颜色定位)退出签到界面。当日已签则不弹出,OCR 找不到「点击签到」自动跳过,流程天然兼容。",
     "steps": [
-        { "type": "sleep", "seconds": 0.3 }
+        { "type": "if_text",
+          "text": ["点击签到"],
+          "min_score": 0.4,
+          "then": [
+              { "type": "click_text", "text": ["点击签到"], "delay": 2.0 },
+              { "type": "click_text", "text": ["点击任意处关闭", "点击任意处"], "delay": 2.0 },
+              { "type": "close_dialog",
+                "only_types": ["corner", "corner_white"],
+                "delay": 2.0 }
+          ] }
     ]
 }

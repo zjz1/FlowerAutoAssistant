@@ -305,10 +305,10 @@ class Handler(BaseHTTPRequestHandler):
                 plan = None
         # 中文任务名映射 (id -> 显示名)
         id2name = {
-            "switch": "切换账号",
-            "startup": "启动就绪",
+            "startup": "开始启动",
             "signin": "签到",
             "plant": "种植任务",
+            "social": "社交任务",
             "energy": "体力任务",
             "daily": "每日任务",
             "idle": "挂机",

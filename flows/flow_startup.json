@@ -1,7 +1,18 @@
 {
-    "name": "启动就绪",
-    "description": "登录进游戏: 点「登录」->点「点击进入游戏」。切换账号功能待开发。",
+    "name": "开始启动",
+    "description": "登录进游戏。可选功能: 若启用切换账号(enable_switch=true, 来自 data/config.json), 先点「切换账号」折角图标展开账号列表, 再按目标账号尾部数字(target_tail)点击切换; 然后点「登录」->点「点击进入游戏」。",
     "steps": [
+        { "type": "if_config",
+          "key": "enable_switch",
+          "value": true,
+          "then": [
+              { "type": "click_text", "text": ["切换账号"], "delay": 1.8 },
+              { "type": "click_account_tail",
+                "tail": "${target_tail}",
+                "region_rel": [0.45, 0.35, 0.58, 0.56],
+                "min_score": 0.4,
+                "delay": 1.5 }
+          ] },
         { "type": "if_text",
           "text": ["登录"],
           "min_score": 0.35,

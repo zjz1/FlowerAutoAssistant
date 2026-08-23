@@ -113,6 +113,25 @@
    - 前端 [webui.html](webui.html)：header 右上角新增红色「⏻ 关闭服务」按钮（确认弹窗 → 请求 `/api/shutdown` → 页面提示已关闭）。为避免改变 `.view-link` 布局，`shutdown` 不加 `margin-left:auto`（`view-link` 上的 auto 已生效，默认间距不变）。
    - 实测：POST `/api/shutdown` 返回 `{"ok":true,"message":"服务已关闭"}`，监听进程退出、端口释放（`LISTENERS_LEFT=0`）。
 
+18. **✅ 架构调整：启动就绪→开始启动，切换账号并入作为可选功能**（AS OF 2026-08-22）：
+   - **「启动就绪」更名为「开始启动」**；**「切换账号」合并进开始启动**（不再是独立模块），作为启动内的可选功能存在。
+   - 引擎 [ocr_engine.py](ocr_engine.py) 新增步骤类型 **`if_config`**（`eval_config()`）：流程内按 `data/config.json` 键值做条件分支（`key`/`value`/`op` ∈ == != >= <= > <；value 支持 `${key}` 占位符与 bool/int 自动转换）。
+   - [flow_startup.json](flows/flow_startup.json)：更名为「开始启动」；步骤前方包一层 `if_config`（`enable_switch=true` 才执行：点切换账号 → `click_account_tail` 点目标账号），随后点「登录」→「点击进入游戏」。
+   - `flow_switch.json` **已删除**（逻辑并入 startup，不再独立）。
+   - [daily.json](flows/daily.json)：编排从 **9 → 8 模块**，移除独立 `switch` 模块；`startup` 描述为「开始启动(登录进游戏, 含可选切换账号)」。
+   - 后端 [webui.py](webui.py)：`id2name` 移除 `switch`、`startup` 改名「开始启动」，使用界面任务列表同步更新。
+   - `run_daily()` 中原先针对 `switch` 的 `enable_switch` 特判已删除（开关判断下沉到 startup 流程内部 `if_config`，逻辑等价的职责内聚）。
+   - 验证：daily 8 模块无 switch、startup 首步 if_config、flow_switch 已删、`eval_config` 对 enable_switch true/false 判断正确。
+
+19. **✅ 签到功能开发 + 新增右上角白色圆形关闭按钮类型**（AS OF 2026-08-22）：
+   - **签到面板**：游戏自动弹出（仅当日未签时）；「兔尔电波/双生签到」日历，8/23 位置 `点击签到(abs(624,327))`，21/22 已显示「已签到」，累计 9/41→10/41。
+   - [flow_signin.json](flows/flow_signin.json)（`signin` 模块）：① `if_text` 全屏 OCR 找「点击签到」→ 命中才执行（不留存坐标，位置随日历每日变化）②点「点击签到」③点「点击任意处关闭」关『恭喜获得』弹窗 ④ `close_dialog only_types=["corner","corner_white"]` 退出签到面板。当日已签则不弹、OCR 找不到「点击签到」自动跳过（天然兼容）。
+   - 实测：签到+关弹窗成功、累计 10/41。
+   - **🔴 修复：签到面板右上角关闭按钮未能退出**——它是**白色圆形**（中心 abs(1228,71)，边缘粉色描边 HSV(172,42%,96%)），而旧逻辑用摇钱树坐标 `click_rel(0.938,0.125)=(1200,90)` 点到背景色，退不出。
+     - `data/close_buttons.json` 新增第 3 种关闭类型 **`corner_white`**：右上角 rel 区域 `(0.9,0,1.0,0.16)` 内找白色块（HSV V>200,S<30,面积600~3000），精确命中 (1228,71)。
+     - `ocr_engine.py`：`_locate_close_by_entry` 支持 `corner_white`（与 `corner` 同走 region_rel+color）；`close_dialog()`/`run_step` 新增 **`only_types`** 参数（按类型过滤遍历，退出整屏面板时避免误点「提示」锚点弹窗）。
+     - 实测：`corner`→(1228,66)、`corner_white`→(1228,71) 双命中；`close_dialog(only_types=["corner","corner_white"])` 成功退出签到界面 → 回到主界面（寻梦童话/手账/在线礼包等）。
+
 ### 🚧 进行中 / 待确认（实机作业校准）
 - **种植模块作业未真正执行**：每日编排里对"一键种植/种植箱"MISS（8s 超时）→ 未进花田 → 浇水/施肥/授粉/收花循环全部空转。编排框架 OK，实机作业动作需校准。
 - **离线诊断为有效线索**：`after_home.png` 上 OCR 把「种植箱一键种植」识别为**单一合并块**（box [930,672,1078,698]，宽 148>90，score 0.82）；`ocr_find` 用严格方式能命中。**MISS 根因疑似与 `find_text()` 中"过宽块放大重识别"（宽>90 触发）有关**，需下个会话重点排查（见待办 🔴-1）。
