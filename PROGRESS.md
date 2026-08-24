@@ -178,13 +178,25 @@
 25. **✅ 花灵派对·整流程实机跑通 + 「时长礼包」入口改为 OCR 驱动（AS OF 2026-08-23，未提交）**：
    - **问题（用户指出，此前已确认）**：进入花灵派对后流程**没有点「时长礼包」按钮**，导致 `loop_text('领取')` 一开始就找不到按钮而直接结束。
    - **实机定位**：`--ocr-screen` 确认登录「花灵派对」主面板左侧栏有「时长礼包」tab `rel(0.0531,0.425)=(68,306)`；点它进入「派对时长礼包」面板（标题 rel0.5,0.079），面板内当时有 **2 个「领取」按钮** `(0.499,0.833)`/`(0.723,0.833)`（其余已领完即消失）。
-   - **修复**（[`flow_party.json`](flows/flow_party.json) 步骤47-55）：把裸 `click_rel(0.0539,0.425)` 改为 **`if_text('时长礼包')` → `click_text('时长礼包')`（OCR 定位点）+ else 兜底 `click_rel(0.0531,0.425)`**。
+   - **修复**（原 `flow_party.json` 步骤47-55，已合一进 [`flow_claim.json`](flows/flow_claim.json) 功能2）：把裸 `click_rel(0.0539,0.425)` 改为 **`if_text('时长礼包')` → `click_text('时长礼包')`（OCR 定位点）+ else 兜底 `click_rel(0.0531,0.425)`**。
    - **实机验证**（`--flow 花灵派对` 完整跑通）：retry_loop 第3轮从脱困恢复→识别「菜单」(68,59)→点「花灵派对」(237,542)→mark 命中；`if_text('时长礼包')` 本轮 **MISS**（文字未识别到），靠**兜底坐标** `click_rel(67,306)` 点中面板；`loop_text('领取')` 连续点 2 次 `(639,600)/(926,600)`，每次→`if_text('恭喜获得')`→点 `(0.5,0.9375)` 关闭，直到按钮消失结束；最后 `close_dialog(corner_pink_small)` 关面板。**全程领取+关弹窗正常**。
    - **残留注意**：①`if_text('时长礼包')` 实机有 MISS，当前靠兜底坐标救回的，OCR 对该字样识别不稳定，后续可再加强；② OCR 精度修复（`det_use_dilation=False`，见第 6 节）本次实机有效——`菜单` 干净识别 `(68,59)`，未误点「奇妙花宝」。
 
-26. **⚠️ retry_loop 改造了 4 个功能，仅「花灵派对」实机验证，其余 3 个待验证（AS OF 2026-08-23）**：
-   - 「retry_loop 脱困式重试」（里程碑 23）共改造 4 处：`flow_party`（花灵派对）、`flow_energy`（闪耀变身）、`flow_social`（家族活动/摇钱树浇水）、`flow_claim` 功能2（claim_party 花灵派对）。
-   - **目前唯一实机验证通过的是「花灵派对」（flow_party）**；其余 3 个 `${mark}` 命中/脱困/后段逻辑均**尚未在真机实测**，需逐一验证（见待办 🟠）。
+26. **✅ 领取奖励←合一 + 功能1 补 retry_loop（AS OF 2026-08-23，未提交）**：
+   - **纠偏概念**：花灵派对 ≡ 领取奖励·功能2，是**同一实体**。原先 `flow_party.json` 与 `flow_claim.json` 功能2 各持一份几乎相同的代码 → 重复且易漂移（今日 flow_party 的「时长礼包 OCR 驱动」修复就未同步到功能2）。
+   - **合一**：删除 `flow_party.json`（无任何引用），权威副本收敛到 `flow_claim.json` 功能2；将今日「时长礼包 OCR 驱动入口(`if_text('时长礼包')→click_text`+兜底 `(0.0531,0.425)`)+sleep」同步进功能2，坐标统一。
+   - **功能1 claim_online 补 retry_loop（入口脱困化）**：原开场直接 `click_rel(0.8258,0.2167)` 点「在线礼包」，可能停留在其它页面而点空。改为 `retry_loop=max3`：每轮 `if_text('在线礼包')` → `click_text mark:true`(fallback 0.8258,0.2167)，**无导航层**（功能1 入口固定可见）；未命中→失败→`close_dialog`(corner_pink_small/corner/corner_white)脱困→下轮。后段(抽奖 loop×3 / 时间礼包 50→30→10 / 关面板)原样保留。
+   - flow_claim.json `json.load` 校验通过。**待实机验证**（见待办 🟠）。
+
+26. **⚠️ retry_loop 改造点，仅「花灵派对/功能2」实机验证，其余待验证（AS OF 2026-08-23）**：
+   - 「retry_loop 脱困式重试」（里程碑 23）改造的 retry_loop 位置现共 **3 处**：`flow_claim` 功能1（在线礼包，本轮新增）、`flow_claim` 功能2（花灵派对，原 flow_party 已合一）、`flow_energy`（闪耀变身）、`flow_social`（家族活动/摇钱树浇水）。
+   - **目前实机验证通过的仅「花灵派对」（功能2，原 flow_party）**；功能1（本轮改造）、`flow_energy`、`flow_social` 均**尚未真机实测**，需逐一验证（见待办 🟠）。
+
+28. **✅ 领取奖励功能1+功能2 端到端实机跑通（AS OF 2026-08-23，未提交）**：
+   - 配置：`config.claim_online` 从脱敏态 false 临时置 true 施测（`claim_party` 本就 true），`--flow 领取奖励` 全程一次跑通，退出码 0。
+   - **功能1 claim_online**：retry_loop 第1轮 mark 命中「在线礼包」(1058,155)→抽奖 `N:3→2→1`(每次 wait_text『点击任意处关闭』→点(0.5,0.9375)关恭喜获得)→`count_text('已领取')=0<threshold=3`→if_text「50分钟」HIT→点(0.166,0.692)领取→wait_text→关闭→关面板 corner_pink_small(1105,97)。
+   - **功能2 claim_party（合一后回归）**：retry_loop 直达/脱困——首轮花灵派对MISS、菜单MISS→家园HIT(1115,684)→菜单(68,58)→花灵派对(237,542) mark命中；`if_text('时长礼包')` **MISS→兜底** click_rel(67,306) 进时长礼包面板；`loop_text('领取')` 本轮 6 档全未领：连续领 6 个 `(352,337)/(639,338)/(926,338)/(351,600)/(639,600)/(926,600)`，每项 `if_text('恭喜获得')`→点(0.5,0.9375)关闭，**全部领完按钮消失**→loop_text 自然退出→关面板 corner_pink_small(1108,80)。
+   - **结论**：功能1（新增 retry_loop 入口脱困）、功能2（合一+时长礼包兜底+loop_text 动态领取）均实测通过；retry_loop 脱困式进入、抽奖耗尽、时间礼包按档领取、恭喜获得弹窗关闭、关面板各环节正常。剩 `flow_energy`/`flow_social` 待验证（见待办 🟠）。
 
 ### 🚧 进行中 / 待确认（实机作业校准）
 - **种植模块作业未真正执行**：每日编排里对"一键种植/种植箱"MISS（8s 超时）→ 未进花田 → 浇水/施肥/授粉/收花循环全部空转。编排框架 OK，实机作业动作需校准。
@@ -292,14 +304,16 @@
 - [ ] **修复「一键种植」MISS 根因**：排查 `find_text()` 的"过宽块放大重识别"逻辑（宽>90 触发）对合并块「种植箱一键种植」的处理。离线证据：`after_home.png` 上该块 score0.82、`ocr_find`严格能命中，但补点后仍 MISS。可临时把 90 阈值调大 / 关闭合并块重识别 / 改用 exact 匹配验证。
 - [ ] **修正流程名匹配歧义**：`main.py` 与 `ocr_engine.main` 用 `key in name` 取第一个，`--flow 种植` 误选「进入种植界面」。改为"先精确名匹配，再关键字子串匹配"。
 - [ ] **更新过期回退坐标**：click_log 与 flow 里「一键种植」回退 (0.7508)→(0.784)；同步旧流程 enter_garden.json。
-- [ ] **清理干扰文件**：删除/归档 `flows/enter_garden.json`、`enter_home.json`、`login_verify.json`、`test_close.json`、`diag.py`、`validate_daily.py`、`debug/`，避免干扰 `--flow` 匹配。
+- [x] **清理干扰文件**：`flows/` 已确认仅剩 `daily.json`+`flow_*.json`（enter_garden/enter_home/login_verify/test_close 早前已删）；根目录 `diag.py`/`validate_daily.py`/`debug/` 已不存在；本次删除根目录残留临时调试截图 `debug_menu_frame.png`、`debug_now.png`。`git status` 工作树干净。
 - [ ] 校准后重跑 `main.py --flow 每日` 验证种植作业真实执行（浇水/施肥/收花）。
 
 ### 🟠 中优先级
-- [ ] **实机验证 retry_loop 其余 3 个功能**（里程碑 23 改造、里程碑 26 记录；仅花灵派对已验证）：逐一跑 `--flow` 复核 `${mark}` 目标命中 / 脱困重试 / 后段逻辑。
-  - [ ] **体力·闪耀变身**（`flow_energy.json`）目标=「闪耀变身」(mark)，导航=菜单/家园，后段 loop_fraction 速通循环。
-  - [ ] **社交·家族活动/摇钱树浇水**（`flow_social.json`）目标=「家族活动」(mark)，导航=社交/家族(嵌套)，后段摇钱树浇水（含 10 分钟冷却 + store_fraction 计次）。
-  - [ ] **领取奖励·功能2 claim_party**（`flow_claim.json` 功能2，独立于 flow_party 的挂载形态）：`if_config claim_party` then 内的 retry_loop + 时长礼包 + loop_text 领取连贯性。
+- [ ] **实机验证 retry_loop 其余 2 处**（里程碑 26/里程碑28 记录；功能1、功能2 已验证）：逐一跑 `--flow` 复核 `${mark}` 目标命中 / 脱困重试 / 后段逻辑。
+  - [x] **领取奖励·功能1 claim_online**（`flow_claim.json` 功能1，本轮新增 retry_loop）：`--flow 领取奖励` 实机跑通——retry_loop 第1轮命中「在线礼包」(1058,155)→抽奖耗尽 N:3→2→1→时间礼包领取 50分钟档(cur (0.166,0.692))→关面板 corner_pink_small(1105,97)。✅ 2026-08-23
+  - [x] **领取奖励·功能2 claim_party**：`--flow 领取奖励` 实机跑通（合一后回归）——retry_loop 家园(1115,684)→菜单(68,58)→`花灵派对`(237,542) mark命中；`if_text('时长礼包')` MISS→兜底(67,306)；`loop_text('领取')` 连续领 **6 个**(352,337/639,338/926,338/351,600/639,600/926,600)，每项→恭喜获得→关闭，全部领完按钮消失→关面板 corner_pink_small(1108,80)。✅ 2026-08-23（验证时 config.claim_online 已置 true 实机测试）
+  - [x] **体力·闪耀变身**（`flow_energy.json`）目标=「闪耀变身」(mark)，导航=菜单/家园，后段 loop_fraction 速通循环。`--flow 体力` 实机跑通——从随机页面起跑，retry_loop 第3轮命中「闪耀变身」(134,449) mark（前2轮菜单弹窗内无该钮，脱困后回到能见左侧快捷栏画面）；loop_fraction 读数 a=570/600→1、a=47/100→2、取 min=1；once 光偶像(65,390)→速通(1046,643)→确定(636,464)→结算确认(817,618)。✅ 2026-08-24
+  - [x] **社交·家族活动/摇钱树浇水**（`flow_social.json`）目标=「家族活动」(mark)，导航=社交/家族(嵌套)，后段摇钱树浇水（含 10 分钟冷却 + store_fraction 计次）。`--flow 社交` 实机跑通——从体力任务残留画面起跑，前2轮全 MISS 脱困 close 回主界面，第3轮 社交(423,683)→家族(422,595)→家族活动(98,329) mark 命中→进入；if_fraction 读「0/3」a<b TRUE→浇水(1085,495)→关奖励(640,676)→store_fraction water_count=1→右上关闭(1200,90)。✅ 2026-08-24
+- [ ] **每日礼包（在线礼包）进入方式重构**（2026-08-24 实机确认）：每日礼包**已领取时主界面不显示「在线礼包」按钮**，现行 `flow_claim` 功能1 retry_loop 对此盲跳——3 轮「在线礼包」MISS 后仍脱困连点 close(corner/corner_white/corner_pink_small)，既白白点改知识库，又把画面带离主界面，累及后续功能2（连「菜单」都 MISS）。现行逻辑"够用"，**暂不改动**；重构思路：入口不可见 → 判定"今日已领完" → 直接跳过该功能，不脱困、不点 close。
 - [ ] **方案②：点击位置"立体化分级 + 均值 + 偏差复核"加固定位**：把可点击按钮按其定位方式**分级/分类/命名**（普通相对坐标 / 锚点-像素偏移(固定尺寸界面如登录页) / 颜色特征）。每次点击成功 `_log_click` 时记录该按钮的相对位置样本，累积求**平均值**；下次 `click_text` 命中坐标与该均值**偏差过大**（如 > N px）→ 判为可疑 → 进行**二次更精细处理**（如放大局部重识别 / 用均值点补齐）。**注意**：部分按钮用「锚点-相对绝对位置法」而非「整体相对坐标法」，必须按其类别各维护独立样本，不能混用整体相对均值。
 - [ ] `main.py` 主程序入口：参数化（adb 地址、流程选择、循环次数/无限）、日志、状态反馈
 - [ ] 循环机制：流程结束后自动回到起点反复执行至手动停止
@@ -322,11 +336,11 @@
 | `data/click_log.json` | **按钮知识库**：按钮名→相对/绝对坐标、识别方式(ocr/color/fallback)、时间（自动积累） |
 | `data/close_buttons.json` | **关闭按钮-特殊逻辑注册表**：`corner`/`anchor_color` 两种关闭按钮定位逻辑，可扩展 |
 | `flows/*.json` | 数据驱动流程定义（`type: wait_text/click_text/click_rel/sleep/close_dialog/if_text/if_fraction/loop_fraction/loop_times`） |
-| `flows/daily.json` | **编排**：按序调度 7 大模块（启动→签到→种植→体力→每日→挂机→领取），含 `required`/`on_fail` 容错 |
-| `flows/flow_*.json` | 各模块流程：startup/signin/plant/**energy**/daily_task/idle/claim |
+| `flows/daily.json` | **编排**：按序调度 8 大模块（startup→signin→plant→energy→daily_task→social→idle→claim），含 `required`/`on_fail` 容错 |
+| `flows/flow_*.json` | 各模块流程：startup/signin/plant/**energy**/daily_task/social/idle/claim/party |
 | `legacy/` | 已弃用的旧 MAA 模板路线 & Unity 解包脚本**备份**（不参与运行） |
 | `.gitignore`（项目根） | 已忽略 `.venv/`、`debug/`、`legacy/`、`__pycache__/` 等 |
-| ⚠️ 旧流程残留 | `flows/enter_garden~test_close.json`、`diag.py`、`validate_daily.py` 会干扰 `--flow` 关键字匹配，待清理（见待办 🔴） |
+| ✅ `flows/` 已清理 | 仅剩 `daily.json`+`flow_*.json`，无旧流程残留（enter_garden~test_close 等已删，diag.py/validate_daily.py/debug/ 已不存在，根目录临时调试截图已清） |
 
 ### 运行环境（务必用 venv）
 - 系统 `python`(3.13) 无依赖 → **必须用 `.\.venv\Scripts\python.exe`**。

@@ -6,7 +6,17 @@
           "key": "claim_online",
           "value": true,
           "then": [
-              { "type": "click_rel", "rel": [0.8258, 0.2167], "delay": 1.5, "name": "在线礼包入口" },
+              { "type": "retry_loop",
+                "max_rounds": 3,
+                "do": [
+                    { "type": "if_text",
+                      "text": ["在线礼包"],
+                      "min_score": 0.4,
+                      "then": [
+                          { "type": "click_text", "text": ["在线礼包"], "mark": true, "delay": 1.5, "fallback_rel": [0.8258, 0.2167] },
+                          { "type": "sleep", "seconds": 1.5 }
+                      ] }
+                ] },
               { "type": "loop_times",
                 "times": 3,
                 "do": [
@@ -107,7 +117,15 @@
                             ] }
                       ] }
                 ] },
-              { "type": "click_rel", "rel": [0.0539, 0.4250], "delay": 1.2, "name": "派对时长礼包入口" },
+              { "type": "if_text",
+                "text": ["时长礼包"],
+                "min_score": 0.4,
+                "then": [
+                    { "type": "click_text", "text": ["时长礼包"], "delay": 1.2, "fallback_rel": [0.0531, 0.4250] }
+                ],
+                "else": [
+                    { "type": "click_rel", "rel": [0.0531, 0.4250], "delay": 1.2, "name": "派对时长礼包入口(兜底)" }
+                ] },
               { "type": "sleep", "seconds": 1.0 },
               { "type": "loop_text",
                 "text": ["领取"],
