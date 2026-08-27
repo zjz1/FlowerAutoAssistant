@@ -87,6 +87,28 @@
   .muted{color:var(--muted)}
   .mono{font-family:Consolas;font-size:11px}
   .section-t{font-size:12px;color:var(--muted);margin:14px 0 6px;font-weight:600}
+  .kb-scene{margin:4px 0 10px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .kb-scene-h{padding:7px 10px;background:var(--panel2);font-weight:600;font-size:12.5px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px}
+  .kb-scene-h:hover{color:var(--accent)}
+  .kb-scene-h .count{margin-left:auto;color:var(--muted);font-weight:400;font-size:11.5px}
+  .kb-scene-h .cnt-cat{color:var(--accent)}
+  .kb-scene-h .arrow{display:inline-block;transition:transform .15s}
+  .kb-scene.collapsed .arrow{transform:rotate(-90deg)}
+  .kb-scene.collapsed .scroll{display:none}
+  .kb-scene .scroll{max-height:220px;overflow-y:auto}
+  .kb-row{display:flex;align-items:center;gap:6px;padding:4px 10px;border-top:1px solid var(--line)}
+  .kb-row:hover{background:var(--panel2)}
+  .kb-row .name{min-width:110px}
+  .kb-row .rel{font-family:Consolas;color:var(--ok);font-size:11px;white-space:nowrap}
+  .tag{display:inline-block;font-size:10.5px;color:#0b1220;background:var(--purple);border-radius:10px;padding:1px 8px;white-space:nowrap}
+  .tag.cat-导航{background:var(--accent)}
+  .tag.cat-作业{background:var(--ok)}
+  .tag.cat-活动{background:var(--warn)}
+  .tag.cat-账号{background:#ff7ab8}
+  .tag.cat-弹窗{background:#d29922}
+  .tag.cat-关闭按钮{background:#e07;}
+  .tag.cat-状态{background:#6e7681}
+  .tag.cat-其他{background:#6e7681}
 </style>
 </head>
 <body>
@@ -357,12 +379,44 @@ async function refreshKb(){
   try{
     const d = await api("/api/kb");
     const cl = d.click_log || {};
-    let html = "<table><tr><th>按钮</th><th>相对坐标</th></tr>";
-    for(const k in cl){
-      const r = cl[k];
-      html += `<tr><td>${esc(k)}</td><td class="rel">${JSON.stringify(r.rel)}</td></tr>`;
+    const cb = d.close_buttons || [];
+    let html = "";
+    let total = 0;
+    const catcls = c => "tag" + (/^(导航|作业|活动|账号|弹窗|关闭按钮|状态|其他)$/.test(c||"") ? " cat-"+(c||"其他") : "");
+    const kbRow = b => `<div class="kb-row"><span class="name">${esc(b.name||"")}</span><span class="${catcls(b.category||"其他")}">${esc(b.category||"其他")}</span><span class="rel" title="相对坐标/均值样本">${JSON.stringify(b.rel||[])}${b.sample_n > 1 ? " · 均" + b.sample_n : ""}</span></div>`;
+    if(cl && typeof cl === "object" && cl.scenes){
+      // 两层嵌套: 场景 -> 按钮
+      const scenes = cl.scenes;
+      const names = Object.keys(scenes).sort();
+      for(const sc of names){
+        const btnMap = scenes[sc] || {};
+        const btns = Object.values(btnMap).filter(b => b && typeof b === "object");
+        total += btns.length;
+        const cats = [...new Set(btns.map(b => b.category || "其他"))].join(" / ");
+        html += `<div class="kb-scene" data-scene="${esc(sc)}">
+          <div class="kb-scene-h"><span class="arrow">▾</span>${esc(sc)}<span class="count">${btns.length} 个按钮 · <span class="cnt-cat">${esc(cats)}</span></span></div>
+          <div class="scroll">${btns.map(kbRow).join("")}</div></div>`;
+      }
+      if(cb.length){
+        const rows = cb.map(b => `<div class="kb-row"><span class="name">${esc(b.name||"")}</span><span class="tag cat-关闭按钮">关闭按钮</span><span class="muted">${esc(b.scene||"通用")}</span><span class="muted">${esc(b.type||"")}</span></div>`).join("");
+        html += `<div class="kb-scene"><div class="kb-scene-h"><span class="arrow">▾</span>关闭按钮库 (close_buttons.json)<span class="count">${cb.length} 条</span></div><div class="scroll">${rows}</div></div>`;
+      }
+      $("kb-wrap").innerHTML = html + `<div class="muted" style="margin-top:6px">知识库共 ${total} 个按钮 / ${names.length} 个场景</div>`;
+    } else {
+      // 旧扁平格式回退
+      let rows = "";
+      for(const k in cl){
+        const r = cl[k];
+        if(typeof r !== "object" || r === null) continue;
+        rows += kbRow({name: k, category: r.category, rel: r.rel});
+      }
+      $("kb-wrap").innerHTML = `<div class="kb-scene"><div class="kb-scene-h"><span class="arrow">▾</span>知识库（旧版扁平格式）</div><div class="scroll">${rows}</div></div>` +
+        `<div class="muted" style="margin-top:6px">共 ${Object.keys(cl).length} 条</div>`;
     }
-    $("kb-wrap").innerHTML = html + "</table> <div class='muted'>共 "+Object.keys(cl).length+" 条</div>";
+    // 场景分组可折叠
+    $("kb-wrap").querySelectorAll(".kb-scene-h").forEach(h=>{
+      h.onclick = ()=> h.parentElement.classList.toggle("collapsed");
+    });
   }catch(e){}
 }
 

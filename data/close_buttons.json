@@ -2,6 +2,8 @@
   {
     "name": "提示锚点右侧关闭",
     "type": "anchor_color",
+    "scene": "通用弹窗",
+    "category": "关闭按钮",
     "anchor": "提示",
     "dx_range": [150, 400],
     "dy_tol": 60,
@@ -16,6 +18,8 @@
   {
     "name": "整体画面右上角关闭",
     "type": "corner",
+    "scene": "通用",
+    "category": "关闭按钮",
     "region_rel": [0.93, 0.0, 1.0, 0.1],
     "color": {
       "hsv_lower": [150, 80, 90],
@@ -27,6 +31,8 @@
   {
     "name": "右上角白色圆形关闭（签到面板）",
     "type": "corner_white",
+    "scene": "签到界面",
+    "category": "关闭按钮",
     "region_rel": [0.9, 0.0, 1.0, 0.16],
     "color": {
       "hsv_lower": [0, 0, 200],
@@ -38,6 +44,8 @@
   {
     "name": "在线礼包右上角粉色圆形关闭（标题同高偏右）",
     "type": "corner_pink_small",
+    "scene": "在线礼包界面",
+    "category": "关闭按钮",
     "region_rel": [0.84, 0.11, 0.89, 0.16],
     "color": {
       "hsv_lower": [0, 0, 200],

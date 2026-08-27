@@ -36,6 +36,10 @@ CLICK_LOG_PATH = Path(__file__).parent / "data" / "click_log.json"
 CLOSE_BUTTONS_PATH = Path(__file__).parent / "data" / "close_buttons.json"
 CONFIG_PATH = Path(__file__).parent / "data" / "config.json"
 
+# 方案②「立体化分级+均值+偏差复核」: OCR 命中点与历史均值偏差超过该像素数即视为可疑,
+# 触发二次更精细处理(局部放大重识别, 无更优子块则沿用原命中, 仅记录日志)。
+BIAS_MAX_PX = 60
+
 
 # ---------- 坐标 ----------
 @dataclass
@@ -67,10 +71,14 @@ class OCREngine:
         self.last_rel: dict[str, tuple[float, float]] = {}  # 文字关键字 -> 相对坐标缓存
         self.screen_w = 0
         self.screen_h = 0
-        self.click_log: dict[str, dict] = self._load_click_log()  # 按钮名 -> 记录
+        self.click_log_scenes: dict[str, dict[str, dict]] = self._load_click_log()
+        # 扁平索引 按钮名 -> 记录 (跨场景同名取最新), 供既有查找回退链零改动使用
+        self.click_log: dict[str, dict] = self._build_flat_index(self.click_log_scenes)
         self.close_buttons: list[dict] = self._load_close_buttons()  # 关闭按钮特殊逻辑注册表
         self.config: dict = self._load_config()  # 用户配置 (data/config.json), 支持 CLI 覆盖
         self._rr_hit = False  # retry_loop 本轮命中标记
+        self._scene: str = "未分类"  # 当前界面场景 (流程步骤可声明, 默认未分类)
+        self._step_category: str | None = None  # 步骤临时声明的按钮类别(click_text/click_rel 用)
 
     # ---- 用户配置 (data/config.json) ----
     def _load_config(self) -> dict:
@@ -150,13 +158,32 @@ class OCREngine:
         print(f"[注册表] 已保存关闭按钮特殊逻辑: {new_entry.get('name')}")
 
     # ---- 点击日志 (持久化知识库) ----
-    def _load_click_log(self) -> dict:
+    # 磁盘格式(version 2, 两层嵌套): {"version":2, "scenes": {场景名: {按钮名: {记录, "category":类别}}}}
+    # 兼容: 旧扁平格式 {"按钮名": {记录}} 加载时自动收敛到 "未分类" 场景。
+    @staticmethod
+    def _build_flat_index(scenes: dict) -> dict[str, dict]:
+        """把场景嵌套结构收敛为 按钮名->记录 扁平索引(跨场景同名取最后一个)。"""
+        flat: dict[str, dict] = {}
+        for scene, buttons in scenes.items():
+            for name, entry in buttons.items():
+                flat[name] = entry
+        return flat
+
+    def _load_click_log(self) -> dict[str, dict[str, dict]]:
+        """加载知识库并转为 场景->按钮->记录 两级嵌套。旧扁平格式自动归入「未分类」。"""
         try:
             if CLICK_LOG_PATH.exists():
                 with open(CLICK_LOG_PATH, encoding="utf-8") as fp:
                     data = json.load(fp)
-                    if isinstance(data, dict):
-                        return data
+                if isinstance(data, dict):
+                    if "scenes" in data and isinstance(data["scenes"], dict):
+                        return data["scenes"]
+                    # 旧扁平格式: 每条记录若有 scene 字段则按其归组, 否则归「未分类」
+                    scenes: dict[str, dict[str, dict]] = {}
+                    for name, entry in data.items():
+                        sc = (entry or {}).get("scene") or "未分类"
+                        scenes.setdefault(sc, {})[name] = entry
+                    return scenes
         except Exception as e:
             print(f"[点击日志加载失败] {e}")
         return {}
@@ -164,14 +191,18 @@ class OCREngine:
     def _save_click_log(self) -> None:
         CLICK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(CLICK_LOG_PATH, "w", encoding="utf-8") as fp:
-            json.dump(self.click_log, fp, ensure_ascii=False, indent=2)
+            json.dump({"version": 2, "scenes": self.click_log_scenes}, fp,
+                      ensure_ascii=False, indent=2)
 
-    def _log_click(self, name: str, keywords, pt: "Point", method: str) -> None:
-        """记录一次成功点击: 按钮名 + 文本 + 相对坐标 + 绝对坐标。同名按钮只保留一次。
-        旧条目中人工标注的扩展字段(anchor/color/scene/note)会被保留, 不被自动日志覆盖。
+    def _log_click(self, name: str, keywords, pt: "Point", method: str,
+                   scene: str | None = None, category: str | None = None) -> None:
+        """记录一次成功点击: 按钮名 + 文本 + 相对坐标 + 绝对坐标, 按场景分组存储。
+        scene 缺省用 self._scene; 同场景同名按钮只保留一次(跨场景互不覆盖)。
+        旧条目中人工标注的扩展字段(anchor/color/scene/note/category)会被保留, 不被自动日志覆盖。
         """
         kws = keywords if isinstance(keywords, list) else [keywords]
-        old = self.click_log.get(name) or {}
+        sc = scene or self._scene or "未分类"
+        old = (self.click_log_scenes.get(sc) or {}).get(name) or {}
         entry = {
             "name": name,
             "text": kws,
@@ -181,12 +212,99 @@ class OCREngine:
             "method": method,  # ocr / color / anchor / fallback
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        for k in ("anchor", "color", "scene", "note"):
+        for k in ("anchor", "color", "scene", "note", "category"):
             if k in old:
                 entry[k] = old[k]
-        self.click_log[name] = entry
+        if scene is not None:
+            entry["scene"] = scene
+        elif "scene" not in entry and self._scene != "未分类":
+            entry["scene"] = self._scene
+        # 方案②: 立体化分级 + 均值累积。仅「整体相对坐标」定位(ocr/color)的命中纳入均值样本
+        # (锚点-像素偏移属固定尺寸界面, 整体相对坐标不可比; fallback 是缓存回退, 不产生新位置证据)。
+        if method in ("ocr", "color"):
+            old_n = int(old.get("sample_n", 0) or 0)
+            old_mean = old.get("mean_rel")
+            rel = entry["rel"]
+            if old_n > 0 and old_mean:
+                m = old_n + 1
+                entry["mean_rel"] = [round((old_mean[0] * old_n + rel[0]) / m, 4),
+                                     round((old_mean[1] * old_n + rel[1]) / m, 4)]
+                entry["sample_n"] = m
+            else:
+                entry["mean_rel"] = list(rel)
+                entry["sample_n"] = 1
+        entry.setdefault("category", category or self.auto_category(name))
+        self.click_log_scenes.setdefault(sc, {})[name] = entry
+        self.click_log[name] = entry  # 同步扁平索引, 兼容既有查找回退链
         self._save_click_log()
-        print(f"[记录] 按钮[{name}] 相对{self.click_log[name]['rel']} 已存入 {CLICK_LOG_PATH.name}")
+        tail = f" 均值{entry['mean_rel']}(样本{entry.get('sample_n',1)})" if "mean_rel" in entry else ""
+        print(f"[记录] [{sc}] 按钮[{name}] 相对{entry['rel']}{tail} 已存入 {CLICK_LOG_PATH.name}")
+
+    # ---- 方案②: 立体化分级 + 均值 + 偏差复核 ----
+    def _entry_for(self, name: str) -> dict | None:
+        """按当前场景优先取知识库条目(场景分组), 场景未收录时回退扁平索引(跨场景同名取最新)。"""
+        sc = self._scene
+        if sc:
+            e = (self.click_log_scenes.get(sc) or {}).get(name)
+            if e is not None:
+                return e
+        return self.click_log.get(name)
+
+    @staticmethod
+    def _bias_px(pt: "Point", mean_rel, w: int, h: int) -> float | None:
+        """计算命中点与历史均值点的欧氏像素偏差; 无均值返回 None。"""
+        if not mean_rel:
+            return None
+        dx = pt.x - int(mean_rel[0] * w)
+        dy = pt.y - int(mean_rel[1] * h)
+        return (dx * dx + dy * dy) ** 0.5
+
+    def _refine_hit(self, keywords, pt: "Point", img) -> "Point | None":
+        """二次更精细处理: 以命中点为中心局部截图, 放大 2x 重识别关键字(近似 find_text 的过宽块拆分),
+        返回与均值更吻合的精确子块中心; 无结果返回 None。用于 OCR 命中点偏差过大时校准, 避免点整块中心误触邻钮。
+        """
+        try:
+            import cv2
+            x1 = max(0, pt.x - 60); y1 = max(0, pt.y - 40)
+            x2 = min(self.screen_w, pt.x + 60); y2 = min(self.screen_h, pt.y + 40)
+            crop = img[y1:y2, x1:x2]
+            if crop.size == 0:
+                return None
+            big = cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+            kws = keywords if isinstance(keywords, list) else [keywords]
+            for b in ocr_image(big):
+                text = b.get("text", "")
+                if any(kw in text for kw in kws):
+                    ox = int(b["center"][0] / 2) + x1
+                    oy = int(b["center"][1] / 2) + y1
+                    return Point(ox, oy, self.screen_w, self.screen_h)
+        except Exception as e:
+            print(f"[复核] 局部重识别失败: {e}")
+        return None
+
+    @staticmethod
+    def auto_category(name: str) -> str:
+        """按按钮名语义自动推断功能类别(导航/作业/活动/账号/弹窗/关闭按钮/状态/其他)。"""
+        if "关闭" in name:
+            return "关闭按钮"
+        if name in ("家园", "菜单", "社交", "世界", "家族", "离开"):
+            return "导航"
+        if name in ("在线礼包", "花灵派对", "家族活动", "摇钱树", "签到", "点击签到",
+                    "矿洞探险", "闪耀委托挑战", "守望兔子", "花香垂钓", "花仙乐园"):
+            return "活动"
+        if name in ("切换账号", "登录", "点击进入游戏"):
+            return "账号"
+        if name in ("恭喜获得", "点击任意处关闭", "确定", "确认", "弹窗关闭", "提示"):
+            return "弹窗"
+        if any(k in name for k in ("领取", "抽奖", "投喂", "采集")):
+            return "作业"
+        if name in ("浇水", "施肥", "收花", "授粉", "开花", "清理", "照料",
+                    "一键种植", "种植箱", "快捷操作", "造型种植", "随机种植",
+                    "速通", "光偶像"):
+            return "作业"
+        if any(k in name for k in ("/", "：")):
+            return "状态"
+        return "其他"
 
 
     # ---- 设备 ----
@@ -757,13 +875,33 @@ class OCREngine:
         """OCR 定位关键字并点击。命中返回 True。
         回退链: OCR → 颜色特征(若知识库有 color 配置) → 进程缓存 → 知识库坐标 → 失败
         exact=True 时用精确匹配(要求块文本完全等于关键字)。
+        方案②复核: OCR 命中点与该按钮(按当前场景)历史均值偏差 > BIAS_MAX_PX 时判为可疑,
+        触发局部放大重识别(_refine_hit)校准; 无更优子块则沿用原命中并仅记录日志。
         """
+        kw0 = keywords[0] if isinstance(keywords, list) else keywords
         pt = self.locate(keywords, img=img, min_score=min_score, exact=exact)
         if pt is not None:
+            entry = self._entry_for(kw0)
+            mean = entry.get("mean_rel") if entry else None
+            dev = self._bias_px(pt, mean, self.screen_w, self.screen_h)
+            if dev is not None and dev > BIAS_MAX_PX:
+                print(f"[复核] {kw0} OCR命中({pt.x},{pt.y}) 与场景均值{tuple(round(v,3) for v in mean)} "
+                      f"偏差{dev:.0f}px > {BIAS_MAX_PX}px, 二次精细处理…")
+                rx = pt
+                rp = self._refine_hit(kw0, pt, img if img is not None else self.screenshot())
+                if rp is not None:
+                    dev2 = self._bias_px(rp, mean, self.screen_w, self.screen_h)
+                    if dev2 is not None and (dev2 or 0) < dev:
+                        print(f"[复核] 局部重识别得更稳子块({rp.x},{rp.y}) 偏差{dev2:.0f}px, 校准确认")
+                        rx = rp
+                    else:
+                        print(f"[复核] 局部重识别无更优子块, 沿用 OCR 命中")
+                else:
+                    print(f"[复核] 局部重识别未命中, 沿用 OCR 命中")
+                pt = rx
             print(f"[OCR命中] {keywords} -> {pt.x},{pt.y}")
             self.click_abs(pt.x, pt.y)
-            self._log_click(keywords[0] if isinstance(keywords, list) else keywords,
-                            keywords, pt, "ocr")
+            self._log_click(kw0, keywords, pt, "ocr", category=self._step_category)
             return True
         # 锚点偏移定位 (固定尺寸界面, 如登录界面无文字图形按钮)
         kws = keywords if isinstance(keywords, list) else [keywords]
@@ -774,7 +912,7 @@ class OCREngine:
                 if pt_a is not None:
                     print(f"[锚点偏移命中] {kw} -> {pt_a.x},{pt_a.y}")
                     self.click_abs(pt_a.x, pt_a.y)
-                    self._log_click(kw, [kw], pt_a, "anchor")
+                    self._log_click(kw, [kw], pt_a, "anchor", category=self._step_category)
                     return True
         # 颜色特征检测 (针对无文字的图形按钮)
         for kw in kws:
@@ -784,25 +922,30 @@ class OCREngine:
                 if pt_c is not None:
                     print(f"[颜色命中] {kw} -> {pt_c.x},{pt_c.y}")
                     self.click_abs(pt_c.x, pt_c.y)
-                    self._log_click(kw, [kw], pt_c, "color")
+                    self._log_click(kw, [kw], pt_c, "color", category=self._step_category)
                     return True
-        # OCR+颜色均未命中: 尝试回退缓存 (进程内 last_rel, 再查持久化 click_log 知识库)
+        # OCR+颜色均未命中: 尝试回退缓存 (方案②: 均值点补齐优先于进程缓存/最新坐标; 再无知识库坐标)
+        if fallback_rel is None:
+            for kw in kws:
+                e = self._entry_for(kw)
+                if e and e.get("mean_rel"):
+                    fallback_rel = tuple(e["mean_rel"])
+                    break
         if fallback_rel is None:
             for kw in kws:
                 if kw in self.last_rel:
                     fallback_rel = self.last_rel[kw]
                     break
-            if fallback_rel is None:
-                for kw in kws:
-                    if kw in self.click_log:
-                        fallback_rel = tuple(self.click_log[kw]["rel"])
-                        break
+        if fallback_rel is None:
+            for kw in kws:
+                if kw in self.click_log:
+                    fallback_rel = tuple(self.click_log[kw]["rel"])
+                    break
         if fallback_rel is not None:
             print(f"[回退缓存] {keywords} 未OCR到, 用缓存 {fallback_rel}")
             pt_fb = Point.from_rel(fallback_rel[0], fallback_rel[1], self.screen_w, self.screen_h)
             self.click_rel(*fallback_rel)
-            self._log_click(keywords[0] if isinstance(keywords, list) else keywords,
-                            keywords, pt_fb, "fallback")
+            self._log_click(kw0, keywords, pt_fb, "fallback", category=self._step_category)
             return True
         print(f"[未命中] {keywords}")
         return False
@@ -867,6 +1010,12 @@ class OCREngine:
         pad = "  " * indent
         s_type = step.get("type")
         kws = step.get("text", step.get("keywords"))
+        # 步骤可声明当前界面场景(如 "scene": "家园主界面"), 之后的点击默认记入该场景
+        if step.get("scene"):
+            self._scene = step["scene"]
+        if step.get("category") and (
+                s_type in ("click_text", "click_rel", "click_account_tail")):
+            self._step_category = step["category"]
         if s_type == "wait_text":
             self.wait_text(kws, timeout=step.get("timeout", 30), interval=step.get("interval", 1.0))
         elif s_type == "click_text":
@@ -988,9 +1137,12 @@ class OCREngine:
             print(f"[未知步骤] {s_type}")
 
     def run_flow(self, flow: dict):
-        """执行整个流程。flow 含 steps 列表。返回值: 接口回调事件列表。"""
+        """执行整个流程。flow 含 steps 列表。返回值: 接口回调事件列表。
+        流程顶层可声明 scene(如 "scene": "家园主界面"), 之后点击默认记入该场景。"""
         name = flow.get("name", "未命名流程")
-        print(f"\n===== 流程: {name} =====")
+        if flow.get("scene"):
+            self._scene = flow["scene"]
+        print(f"\n===== 流程: {name} (scene={self._scene}) =====")
         for step in flow.get("steps", []):
             self.run_step(step)
         print(f"===== 流程完成: {name} =====")
@@ -1047,12 +1199,14 @@ class OCREngine:
         return result
 
     # ---- 界面采集 ----
-    def collect_ui(self, min_score=0.5) -> dict:
-        """采集当前界面所有文字块, 写入 click_log 知识库。
+    def collect_ui(self, min_score=0.5, scene: str | None = None) -> dict:
+        """采集当前界面所有文字块, 写入 click_log 知识库(按场景分组)。
+        scene 缺省用 self._scene(流程步骤声明的当前界面)。
         返回: {文字: 记录} 字典。
         """
         img = self.screenshot()
         blocks = ocr_image(img)
+        sc = scene or self._scene or "未分类"
         new_entries = {}
         for b in blocks:
             if b.get("score", 1.0) < min_score:
@@ -1070,12 +1224,14 @@ class OCREngine:
                 "screen": [self.screen_w, self.screen_h],
                 "method": "ocr",
                 "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "category": self.auto_category(text),
             }
-            # 同名按钮只保留最新
-            self.click_log[text] = entry
+            # 同场景同名按钮只保留最新(跨场景互不覆盖)
+            self.click_log_scenes.setdefault(sc, {})[text] = entry
+            self.click_log[text] = entry  # 同步扁平索引
             new_entries[text] = entry
         self._save_click_log()
-        print(f"[采集] 当前界面: {len(new_entries)} 个按钮已写入知识库")
+        print(f"[采集] [{sc}] 当前界面: {len(new_entries)} 个按钮已写入知识库")
         for name, e in sorted(new_entries.items()):
             print(f"  {name:<16} 相对{e['rel']} 绝对{e['abs']}")
         return new_entries
