@@ -7,6 +7,7 @@
         { "id": "plant",   "flow": "flow_plant.json",       "required": true,  "on_fail": "stop_round" },
         { "id": "social",  "flow": "flow_social.json",      "required": false, "on_fail": "skip" },
         { "id": "energy",  "flow": "flow_energy.json",      "required": false, "on_fail": "skip" },
+        { "id": "shine",   "flow": "flow_shine.json",       "required": false, "on_fail": "skip" },
         { "id": "daily",   "flow": "flow_daily_task.json",  "required": false, "on_fail": "skip" },
         { "id": "idle",    "flow": "flow_idle.json",        "required": false, "on_fail": "skip" },
         { "id": "claim",   "flow": "flow_claim.json",       "required": false, "on_fail": "skip" }

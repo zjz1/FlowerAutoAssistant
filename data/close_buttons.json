@@ -21,6 +21,23 @@
     "scene": "通用",
     "category": "关闭按钮",
     "region_rel": [0.93, 0.0, 1.0, 0.1],
+    "template": "close_corner_pink.png",
+    "template_threshold": 0.75,
+    "color": {
+      "hsv_lower": [150, 80, 90],
+      "hsv_upper": [175, 255, 255],
+      "area_min": 100,
+      "area_max": 3000
+    }
+  },
+  {
+    "name": "家族活动右上角关闭",
+    "type": "corner",
+    "scene": "家族活动界面",
+    "category": "关闭按钮",
+    "region_rel": [0.93, 0.0, 1.0, 0.1],
+    "template": "close_family.png",
+    "template_threshold": 0.75,
     "color": {
       "hsv_lower": [150, 80, 90],
       "hsv_upper": [175, 255, 255],
@@ -47,6 +64,8 @@
     "scene": "在线礼包界面",
     "category": "关闭按钮",
     "region_rel": [0.84, 0.11, 0.89, 0.16],
+    "template": "close_online_small.png",
+    "template_threshold": 0.65,
     "color": {
       "hsv_lower": [0, 0, 200],
       "hsv_upper": [180, 30, 255],

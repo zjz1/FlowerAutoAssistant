@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FAA 模板标注工具</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "Microsoft YaHei", system-ui, sans-serif; background:#12141a; color:#e8eaf0; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:10px 14px;
+           background:#1b1e28; border-bottom:1px solid #2c303c; position:sticky; top:0; z-index:5; }
+  header h1 { font-size:15px; margin:0 6px 0 0; color:#ffd77a; }
+  .btn { background:#2a2f3d; color:#e8eaf0; border:1px solid #3a4150; border-radius:6px;
+         padding:6px 12px; cursor:pointer; font-size:13px; }
+  .btn:hover { background:#343b4c; }
+  .btn.active { background:#e5526b; border-color:#ff6b84; color:#fff; }
+  .btn.primary { background:#3b6fe0; border-color:#5b8bff; }
+  .btn.primary:hover { background:#4b7ef0; }
+  input[type=text] { background:#14161c; color:#e8eaf0; border:1px solid #3a4150; border-radius:6px; padding:6px 8px; font-size:13px; width:180px; }
+  .sep { width:1px; height:22px; background:#2c303c; }
+  .hint { color:#98a0b3; font-size:12px; }
+  main { display:flex; height:calc(100vh - 58px); }
+  #stage { flex:1; display:flex; flex-direction:column; padding:12px; gap:8px; min-width:0; }
+  #canvasWrap { position:relative; background:#000; border:1px solid #2c303c; border-radius:8px; flex:1;
+                display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  canvas { max-width:100%; max-height:100%; display:block; background:#000; cursor:crosshair; }
+  #info { color:#98a0b3; font-size:12px; }
+  #side { width:220px; border-left:1px solid #2c303c; padding:12px; background:#1b1e28; overflow:auto; }
+  #side h3 { font-size:13px; margin:4px 0 8px; color:#ffd77a; }
+  .tpl { display:flex; align-items:center; gap:6px; padding:5px 8px; margin-bottom:4px;
+         background:#232734; border:1px solid #2e3446; border-radius:6px; font-size:12px; }
+  .tpl .nm { flex:1; word-break:break-all; }
+  .badge { font-size:10px; padding:1px 5px; border-radius:4px; background:#3a6; color:#fff; }
+  .badge.no { background:#555; }
+  #toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); background:#232734;
+           border:1px solid #3a4150; padding:8px 16px; border-radius:8px; display:none; z-index:20; font-size:13px; }
+  .zoomctr { font-size:12px; color:#98a0b3; }
+  .row { display:flex; align-items:center; gap:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>模板标注工具</h1>
+  <button id="btnHome" class="btn">← 主界面</button>
+  <button id="btnConnect" class="btn">连接设备</button>
+  <button id="btnLoad" class="btn primary">载图</button>
+  <span class="sep" style="margin-left:6px"></span>
+  <button id="modeBox" class="btn active">选框</button>
+  <button id="modeBrush" class="btn">画笔</button>
+  <button id="modeErase" class="btn">橡皮</button>
+  <label class="zoomctr">笔刷 <input id="brushR" type="range" min="1" max="24" value="5" style="width:90px;vertical-align:middle"></label>
+  <button id="btnClearBrush" class="btn" title="清除蒙版">清蒙版</button>
+  <span class="sep" style="margin-left:6px"></span>
+  <button id="btnProbe" class="btn" title="在当前选框内探测候选并回填">探测回填</button>
+  <span style="flex:1"></span>
+  <input id="name" type="text" placeholder="模板名 如 close_corner_pink" value="tpl">
+  <button id="btnSave" class="btn primary">保存模板</button>
+  <button id="btnReset" class="btn">重载列表</button>
+</header>
+<main>
+  <div id="stage">
+    <div id="canvasWrap"><canvas id="cv"></canvas></div>
+    <div id="info">拖动/8角缩放选框；画笔在选框内涂刷按钮主体（红色覆盖）；「探测回填」用颜色候选自动对齐选框。</div>
+  </div>
+  <div id="side">
+    <h3>已采集模板</h3>
+    <div id="tplList"></div>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+const CV = document.getElementById('cv');
+const ctx = CV.getContext('2d');
+const W0 = 1280, H0 = 720;
+
+// ---- 状态 ----
+let img = null;            // Image
+let W = W0, H = H0;
+let box = null;            // {x0,y0,x1,y1} 绝对像素
+let pts = [];              // 画笔点(绝对像素)
+let brushR = 5;
+let mode = 'box';          // box | brush | erase
+let dragging = null;       // 拖拽状态
+let connectOk = false;
+
+// ---- 帮助 ----
+function toast(msg, ms=1800){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(()=>t.style.display='none', ms); }
+function canvasXY(e){ const r=CV.getBoundingClientRect(); return [ (e.clientX-r.left)*W/r.width, (e.clientY-r.top)*H/r.height ]; }
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+// ---- 绘制 ----
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  if(img) ctx.drawImage(img,0,0,W,H);
+  // 蒙版(画笔 -> 红色半透明点)
+  if(pts.length){
+    ctx.save(); ctx.fillStyle='rgba(232,82,107,0.55)';
+    for(const [x,y] of pts){ ctx.beginPath(); ctx.arc(x,y,Math.max(1.5,brushR*0.5),0,7); ctx.fill(); }
+    ctx.restore();
+  }
+  // 选框
+  if(box){
+    const {x0,y0,x1,y1}=box;
+    ctx.save();
+    ctx.strokeStyle='#35e0ff'; ctx.lineWidth=2;
+    ctx.strokeRect(x0,y0,x1-x0,y1-y0);
+    // 8 控制点
+    ctx.fillStyle='#35e0ff';
+    const cs=[[x0,y0],[x0+(x1-x0)/2,y0],[x1,y0],[x1,y0+(y1-y0)/2],[x1,y1],[x0+(x1-x0)/2,y1],[x0,y1],[x0,y0+(y1-y0)/2]];
+    for(const [cx,cy] of cs){ ctx.beginPath(); ctx.rect(cx-3,cy-3,6,6); ctx.fill(); }
+    ctx.restore();
+  }
+}
+
+// ---- 选框命中 ----
+function boxHandles(){ const {x0,y0,x1,y1}=box; return [
+  ['nw',x0,y0],['n',(x0+x1)/2,y0],['ne',x1,y0],['e',x1,(y0+y1)/2],
+  ['se',x1,y1],['s',(x0+x1)/2,y1],['sw',x0,y1],['w',x0,(y0+y1)/2] ]; }
+function inBox(x,y,m=8){ const {x0,y0,x1,y1}=box; return x>=x0-m&&x<=x1+m&&y>=y0-m&&y<=y1+m; }
+
+// ---- 鼠标 ----
+CV.addEventListener('mousedown', e=>{
+  const [x,y]=canvasXY(e); e.preventDefault();
+  if(!img) return;
+  if(mode==='box'){
+    if(box){
+      for(const [id,cx,cy] of boxHandles()){ if(Math.hypot(x-cx,y-cy)<=7){ dragging={t:'resize',id,ax:x,ay:y,hx0:box.x0,hy0:box.y0,hw:box.x1-box.x0,hh:box.y1-box.y0}; return; } }
+      if(inBox(x,y)){ dragging={t:'move',dx:x-box.x0,dy:y-box.y0}; return; }
+    }
+    box={x0:x,y0:y,x1:x+1,y1:y+1}; dragging={t:'new',ax:x,ay:y}; draw(); return;
+  }
+  if(mode==='brush'){ dragging={t:'stroke'}; addPt(x,y); }
+  if(mode==='erase'){ dragging={t:'erase'}; eraseAt(x,y); }
+});
+CV.addEventListener('mousemove', e=>{
+  if(!dragging) return;
+  const [x,y]=canvasXY(e);
+  if(dragging.t==='resize'){
+    const {id,hx0,hy0,hw,hh}=dragging;
+    let x0=hx0,x1=hx0+hw,y0=hy0,y1=hy0+hh;
+    if(id.includes('w')) x0=x; if(id.includes('e')) x1=x;
+    if(id.includes('n')) y0=y; if(id.includes('s')) y1=y;
+    box={x0:Math.min(x0,x1),x1:Math.max(x0,x1),y0:Math.min(y0,y1),y1:Math.max(y0,y1)};
+  } else if(dragging.t==='move'){ box={x0:x-dragging.dx,y0:y-dragging.dy,x1:x-dragging.dx+box.x1-box.x0,y1:y-dragging.dy+box.y1-box.y0}; }
+  else if(dragging.t==='new'){ box.x1=x; box.y1=y; }
+  else if(dragging.t==='stroke'){ addPt(x,y); }
+  else if(dragging.t==='erase'){ eraseAt(x,y); }
+  draw();
+});
+CV.addEventListener('mouseup', ()=>{ const wasResize = dragging && (dragging.t==='resize'||dragging.t==='new') && (box.x1-box.x0>6 && box.y1-box.y0>6);
+  dragging=null; draw(); if(wasResize && box) probe(); });
+CV.addEventListener('mouseleave', ()=>{ dragging=null; draw(); });
+
+function addPt(x,y){
+  const n=pts.length;
+  if(n && Math.hypot(x-pts[n-1][0],y-pts[n-1][1]) < Math.max(2,brushR*0.6)) return;
+  pts.push([clamp(x,0,W-1),clamp(y,0,H-1)]); draw();
+}
+function eraseAt(x,y){
+  const before=pts.length;
+  pts=pts.filter(([px,py])=>Math.hypot(px-x,py-y)>brushR);
+  if(pts.length!==before) draw();
+}
+
+// ---- 探测回填 ----
+async function probe(){
+  if(!box || (box.x1-box.x0)<4 || (box.y1-box.y0)<4) return;
+  const b=box.round();
+  const res=await fetch('/api/tpl_probe',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1})}).then(r=>r.json()).catch(()=>null);
+  if(res && res.boxes && res.boxes[0]){
+    const c=res.boxes[0];
+    // 仅当候选大小合理才回填(避免误吸到大块)
+    if((c.x1-c.x0)>2 && (c.y1-c.y0)>2 && (c.x1-c.x0)<(b.x1-b.x0)*2+30){
+      box={x0:c.x0,y0:c.y0,x1:c.x1,y1:c.y1}; draw();
+      toast('已回填识别框 '+Math.round(c.x1-c.x0)+'x'+Math.round(c.y1-c.y0));
+    }
+  }
+  document.getElementById('btnProbe').disabled=false;
+}
+
+// ---- 网络 ----
+async function api(url,opts){ const r=await fetch(url,opts); return r.json(); }
+async function init(){
+  const res=await api('/api/tpl_init');
+  if(res.error){ toast('载图失败: '+res.error,3000); return; }
+  W=res.w||W0; H=res.h||H0; CV.width=W; CV.height=H;
+  const im=new Image(); im.onload=()=>{ img=im; draw(); };
+  im.src='data:image/jpeg;base64,'+res.jpeg;
+  renderList(res.templates||[]);
+  connectOk=true;
+}
+function renderList(list){
+  const el=document.getElementById('tplList'); el.innerHTML='';
+  if(!list.length){ el.innerHTML='<div class="hint">暂无模板</div>'; return; }
+  for(const t of list){
+    const d=document.createElement('div'); d.className='tpl';
+    d.innerHTML=`<span class="nm">${t.name}</span><span>${t.size}</span><span class="badge ${t.mask?'':'no'}">${t.mask?'蒙版':'无'}</span>`;
+    el.appendChild(d);
+  }
+}
+
+// ---- 事件绑定 ----
+document.getElementById('btnHome').onclick=()=>location.href='/';
+document.getElementById('btnConnect').onclick=async()=>{
+  const res=await api('/api/connect'); toast(res.ok?'已连接':'连接失败'); if(res.ok) init();
+};
+document.getElementById('btnLoad').onclick=init;
+function setMode(m){ mode=m; ['box','brush','erase'].forEach(k=>document.getElementById('mode'+k[0].toUpperCase()+k.slice(1)).classList.toggle('active',k===m)); }
+document.getElementById('modeBox').onclick=()=>setMode('box');
+document.getElementById('modeBrush').onclick=()=>setMode('brush');
+document.getElementById('modeErase').onclick=()=>setMode('erase');
+document.getElementById('brushR').oninput=e=>{ brushR=parseInt(e.target.value); if(mode!=='box') toast('笔刷 '+brushR); };
+document.getElementById('btnClearBrush').onclick=()=>{ pts=[]; draw(); };
+document.getElementById('btnProbe').onclick=async()=>{ const b=document.getElementById('btnProbe'); b.disabled=true; await probe(); };
+document.getElementById('btnReset').onclick=async()=>{ const r=await api('/api/tpl_init'); if(!r.error) renderList(r.templates||[]); };
+document.getElementById('btnSave').onclick=async()=>{
+  if(!img) return toast('请先载图');
+  if(!box || box.x1-box.x0<2) return toast('请先框选按钮');
+  const name=document.getElementById('name').value.trim();
+  const b={x0:Math.round(box.x0),y0:Math.round(box.y0),x1:Math.round(box.x1),y1:Math.round(box.y1)};
+  const res=await api('/api/tpl_save',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name,x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1,maskPts:pts,maskBrush:Math.max(1,brushR)})});
+  if(res.ok){ toast('已保存 '+res.name+' '+res.size+(res.mask?'(含蒙版)':'')); const r=await api('/api/tpl_init'); if(!r.error) renderList(r.templates||[]); }
+  else toast('保存失败: '+(res.error||'未知'));
+};
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ pts=[]; draw(); } });
+
+init();
+</script>
+</body>
+</html>

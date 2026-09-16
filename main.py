@@ -22,7 +22,7 @@ import sys
 import time
 from pathlib import Path
 
-from ocr_engine import OCREngine, load_flows, select_flow, ADB_ADDRESS, ADB_PATH
+from ocr_engine import OCREngine, load_flows, select_flow, ADB_ADDRESS, ADB_PATH, request_stop, stop_requested
 
 _RUNNING = True
 
@@ -31,6 +31,7 @@ def _on_signal(sig, frame):
     global _RUNNING
     print("\n[中断] 收到停止信号, 将在本次流程结束后退出...")
     _RUNNING = False
+    request_stop()  # 同步请求停止正在执行的流程步骤
 
 
 def parse_args():
@@ -79,7 +80,7 @@ def main():
     print(f"模拟器: {args.address}")
     print(f"按 Ctrl+C 停止\n")
 
-    while _RUNNING:
+    while _RUNNING and not stop_requested():
         if rounds > 0 and count >= rounds:
             break
         count += 1

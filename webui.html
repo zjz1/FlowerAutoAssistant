@@ -118,6 +118,7 @@
   <span id="mode-badge" class="badge off">使用模式</span>
   <span id="screen-size" class="muted mono"></span>
   <button id="view-toggle" class="view-link">↔ 切换界面：测试</button>
+  <a href="/tpltool" class="view-link" title="模板标注工具：截图标/调框/自由涂刷蒙版生成模板">模板标注</a>
   <button id="shutdown-btn" class="view-link danger" style="margin-left:0">⏻ 关闭服务</button>
 </header>
 
@@ -141,6 +142,7 @@
         </select>
       </div>
       <button id="maa-start" class="start-btn">开始一轮</button>
+      <button id="maa-stop" class="start-btn" style="background:#c0392b;color:#fff;margin-top:8px">⏹ 停止当前流程</button>
       <p class="maa-note" id="maa-status"></p>
 
       <!-- 模块设置面板 (⚙ 点击展开) -->
@@ -532,6 +534,15 @@ $("maa-start").onclick = async ()=>{
     const d = await api("/api/run_daily", {method:"POST", body:JSON.stringify({selected:sel, mode:"use"})});
     $("maa-status").textContent = "开始: " + d.started + " (" + d.count + " 个任务)。查看运行日志请到测试界面或终端。";
   }catch(e){ alert("无法运行: " + e.message); }
+};
+
+// 使用界面: 停止当前流程 (不关闭服务)
+$("maa-stop").onclick = async ()=>{
+  try{
+    $("maa-status").textContent = "正在请求停止当前流程...";
+    const d = await api("/api/stop", {method:"POST", body:"{}"});
+    $("maa-status").textContent = "已请求停止。当前流程会在最近一个安全点中断, 服务保持运行, 可重新「开始一轮」。";
+  }catch(e){ alert("停止请求失败: " + e.message); }
 };
 
 // 使用界面: 连接

@@ -20,6 +20,7 @@ import math
 import os
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +36,40 @@ FLOW_DIR = Path(__file__).parent / "flows"
 CLICK_LOG_PATH = Path(__file__).parent / "data" / "click_log.json"
 CLOSE_BUTTONS_PATH = Path(__file__).parent / "data" / "close_buttons.json"
 CONFIG_PATH = Path(__file__).parent / "data" / "config.json"
+TEMPLATE_DIR = Path(__file__).parent / "resource" / "template"
+# 公共「进入目标界面」导航注册表(flows/common/entries.json), 供 navigate 步骤按 target 查进入链。
+# 子目录不被 load_flows() 扫入主流程列表(load_flows 只 glob 顶层 *.json), 故作为公共资源单独加载。
+NAV_ENTRIES_PATH = FLOW_DIR / "common" / "entries.json"
+
+
+# ---------------------------------------------------------------------------
+# 全局停止机制: 用于「停止当前所有流程但不关闭服务/进程」。
+# 任意调用方(CLI/WebUI/编排)均可 request_stop() 请求停止;
+# 引擎在 run_flow/run_daily 入口 clear_stop(), 在步骤/模块/等待循环之间检查
+# stop_requested(), 命中即抛出 StopRequested 中断本轮全部流程执行。
+# ---------------------------------------------------------------------------
+_STOP_EV = threading.Event()
+
+
+class StopRequested(BaseException):
+    """流程被 request_stop() 请求停止时抛出, 用于从深层(等待/循环/嵌套步骤)向上冒泡中断。
+    继承 BaseException-> 不会被引擎内的 `except Exception`(run_module 容错)吞掉,
+    从而一路穿透到最外层 run_flow/run_daily 的统一停止处理。"""
+
+
+def request_stop() -> None:
+    """请求停止当前正在进行的所有流程。服务/进程保持运行, 可再次开始新一轮。"""
+    _STOP_EV.set()
+
+
+def clear_stop() -> None:
+    """清除停止请求(新一轮流程开始前自动调用)。"""
+    _STOP_EV.clear()
+
+
+def stop_requested() -> bool:
+    """是否已被请求停止。"""
+    return _STOP_EV.is_set()
 
 # 方案②「立体化分级+均值+偏差复核」: OCR 命中点与历史均值偏差超过该像素数即视为可疑,
 # 触发二次更精细处理(局部放大重识别, 无更优子块则沿用原命中, 仅记录日志)。
@@ -76,9 +111,22 @@ class OCREngine:
         self.click_log: dict[str, dict] = self._build_flat_index(self.click_log_scenes)
         self.close_buttons: list[dict] = self._load_close_buttons()  # 关闭按钮特殊逻辑注册表
         self.config: dict = self._load_config()  # 用户配置 (data/config.json), 支持 CLI 覆盖
+        self._navigation: dict = self._load_navigation()  # 公共「进入目标界面」注册表 (navigate 步骤用)
         self._rr_hit = False  # retry_loop 本轮命中标记
         self._scene: str = "未分类"  # 当前界面场景 (流程步骤可声明, 默认未分类)
         self._step_category: str | None = None  # 步骤临时声明的按钮类别(click_text/click_rel 用)
+
+    # ---- 公共导航注册表 (flows/common/entries.json) ----
+    def _load_navigation(self) -> dict:
+        """加载公共「进入目标界面」注册表。返回 {"targets": {目标名: {scene, mark_text, mark_fallback_rel, max_rounds, nav}}}。"""
+        try:
+            if NAV_ENTRIES_PATH.exists():
+                with open(NAV_ENTRIES_PATH, encoding="utf-8") as fp:
+                    data = json.load(fp)
+                    return data if isinstance(data, dict) else {}
+        except Exception as e:
+            print(f"[导航注册表加载失败] {e}")
+        return {}
 
     # ---- 用户配置 (data/config.json) ----
     def _load_config(self) -> dict:
@@ -806,9 +854,20 @@ class OCREngine:
         if t in ("corner", "corner_white", "corner_pink_small"):
             # region_rel: [x1,y1,x2,y2] 相对坐标(0~1) → 转绝对坐标
             rx = entry.get("region_rel", [0.82, 0.0, 1.0, 0.18])
+            region_abs = [max(0, int(rx[0] * w)), max(0, int(rx[1] * h)),
+                          min(w, int(rx[2] * w)), min(h, int(rx[3] * h))]
+            # 支持模板优先: 注册项带 template 字段时, 先在该区内做模板匹配(纯图形关闭钮更稳);
+            # 未命中再回退原颜色特征定位。
+            tpl = entry.get("template")
+            if tpl:
+                rr = [rx[0], rx[1], rx[2], rx[3]]
+                pt = self.locate_template(tpl, img=img,
+                                          region_rel=rr,
+                                          threshold=entry.get("template_threshold", 0.8))
+                if pt is not None:
+                    return pt
             cfg = dict(color)
-            cfg["region"] = [max(0, int(rx[0] * w)), max(0, int(rx[1] * h)),
-                             min(w, int(rx[2] * w)), min(h, int(rx[3] * h))]
+            cfg["region"] = region_abs
             return self.locate_color(cfg, img=img)
         return None
 
@@ -950,12 +1009,115 @@ class OCREngine:
         print(f"[未命中] {keywords}")
         return False
 
+    # ---- 模板匹配识别(纯图形/无文字按钮, 借鉴 MAA TemplateMatch) ----
+    @staticmethod
+    def _template_path(template: str):
+        """解析模板文件名 -> 绝对路径(resource/template/ 下); 不存在返回 None。
+        支持省略扩展名(自动补 .png)与子路径(相对 TEMPLATE_DIR)。
+        """
+        p = Path(template).expanduser()
+        if not p.name.lower().endswith(".png"):
+            p = p.with_suffix(".png")
+        if p.is_absolute():
+            return str(p) if p.exists() else None
+        full = TEMPLATE_DIR / p
+        return str(full) if full.exists() else None
+
+    def locate_template(self, template: str, img=None, threshold=0.8,
+                        region_rel=None, scale_range=(0.7, 1.0)) -> "Point | None":
+        """模板匹配定位: 在截图中查找与模板图最匹配的位置(多尺度缩放), 返回模板中心 Point。
+        借鉴 MAA TemplateMatch, 用于「纯图形(无文字)按钮」如花形关闭钮/折角切换钮等
+        颜色或文字难以唯一化的图形。template: 模板文件名(资源根 resource/template/<template>)。
+        region_rel: [x1,y1,x2,y2](0~1) 限定搜索区域提速/避干扰。最高分 < threshold 判未命中。
+        """
+        import cv2
+        import numpy as np
+        tpl_path = self._template_path(template)
+        if tpl_path is None:
+            print(f"[模板匹配] 模板不存在: {template}")
+            return None
+        tpl = cv2.imread(tpl_path, cv2.IMREAD_COLOR)
+        if tpl is None:
+            print(f"[模板匹配] 读取模板失败: {template}")
+            return None
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return None
+        th, tw = tpl.shape[:2]
+        if th >= img.shape[0] or tw >= img.shape[1]:
+            print(f"[模板匹配] 模板({tw}x{th})不小于截图({img.shape[1]}x{img.shape[0]}), 无法定位")
+            return None
+        lo, hi = scale_range
+        scales = sorted(set(round(float(s), 2) for s in np.linspace(lo, hi, 4)), reverse=True)
+        best = None  # (score, mx, my, tw_r, th_r)  mx/my 为原图上命中左上角, tw_r/th_r 为该尺度模板宽高
+        for sc in scales:
+            tw_r, th_r = max(1, int(tw * sc)), max(1, int(th * sc))
+            if th_r >= img.shape[0] or tw_r >= img.shape[1]:
+                continue
+            rtpl = cv2.resize(tpl, (tw_r, th_r))
+            # 模板源自截图(同源抠图), 用 SQDIFF_NORMED(值越小越匹配) 对精确匹配最稳;
+            # execute score=1-sqdiff 归一为「越大越匹配」, 语义与阈值一致。
+            shot = cv2.matchTemplate(img, rtpl, cv2.TM_SQDIFF_NORMED)
+            if region_rel is not None:
+                w, h = img.shape[1], img.shape[0]
+                rx1, ry1 = int(region_rel[0] * w), int(region_rel[1] * h)
+                rx2, ry2 = int(region_rel[2] * w), int(region_rel[3] * h)
+                rx1, ry1 = max(0, rx1), max(0, ry1)
+                rx2, ry2 = min(shot.shape[1], rx2), min(shot.shape[0], ry2)
+                if rx2 <= rx1 or ry2 <= ry1:
+                    continue
+                sub = shot[ry1:ry2, rx1:rx2]
+                mval, _, mlo, _ = cv2.minMaxLoc(sub)   # min=最佳
+                mmloc = (mlo[0] + rx1, mlo[1] + ry1)
+            else:
+                mval, _, mmloc, _ = cv2.minMaxLoc(shot)  # min=最佳
+            score = 1.0 - float(mval)
+            if best is None or score > best[0]:
+                best = (score, mmloc[0], mmloc[1], tw_r, th_r)
+        if best is None or best[0] < threshold:
+            top = best[0] if best else 0.0
+            print(f"[模板匹配] {template} 最高分 {top:.3f} < 阈值 {threshold}, 未命中")
+            return None
+        mval, mx, my, tw_r, th_r = best
+        sw, sh = img.shape[1], img.shape[0]
+        cx, cy = mx + tw_r // 2, my + th_r // 2  # 原图模板中心
+        cx = max(0, min(sw - 1, cx))
+        cy = max(0, min(sh - 1, cy))
+        print(f"[模板匹配] {template} score={mval:.3f} -> ({cx},{cy})")
+        return Point(cx, cy, sw, sh)
+
+    def click_template(self, template: str, img=None, threshold=0.8,
+                       region_rel=None, scale_range=(0.7, 1.0), fallback_rel=None) -> "Point | None":
+        """模板匹配点击: locate_template 命中则点击并记知识库(method=template)。
+        未命中且有 fallback_rel 时回退到该相对坐标点击。返回命中的 Point, 否则 None。
+        """
+        pt = self.locate_template(template, img=img, threshold=threshold,
+                                  region_rel=region_rel, scale_range=scale_range)
+        if pt is not None:
+            self.click_abs(pt.x, pt.y)
+            self._log_click(template, [template], pt, "template", category=self._step_category)
+            return pt
+        if fallback_rel is not None:
+            print(f"[回退缓存] 模板 {template} 未命中, 用回退坐标 {fallback_rel}")
+            self.click_rel(*fallback_rel)
+            pt = Point.from_rel(fallback_rel[0], fallback_rel[1], self.screen_w, self.screen_h)
+            self._log_click(template, [template], pt, "fallback", category=self._step_category)
+            return pt
+        return None
+
     # ---- 流程执行 ----
+    @staticmethod
+    def _check_stop():
+        """在需要中断的位置调用: 若已请求停止则抛 StopRequested 中断流程。"""
+        if stop_requested():
+            raise StopRequested("收到停止请求, 中断流程")
+
     def wait_text(self, keywords, timeout=30, interval=1.0):
         """轮询等待某文字出现, 返回 Point; 超时返回 None。"""
         kws = keywords if isinstance(keywords, list) else [keywords]
         deadline = time.time() + timeout
         while time.time() < deadline:
+            self._check_stop()
             img = self.screenshot()
             pt = self.locate(kws, img=img)
             if pt is not None:
@@ -970,6 +1132,7 @@ class OCREngine:
         kws = keywords if isinstance(keywords, list) else [keywords]
         deadline = time.time() + timeout
         while time.time() < deadline:
+            self._check_stop()
             img = self.screenshot()
             if self.locate(kws, img=img, min_score=0.3) is None:
                 print(f"[消失成功] {kws}")
@@ -1004,9 +1167,10 @@ class OCREngine:
 
     def run_step(self, step: dict, indent=1):
         """执行单个步骤。step 为流程 JSON 中的一个节点。
-        支持: wait_text / click_text / click_rel / sleep / close_dialog /
+        支持: wait_text / click_text / click_template / click_rel / sleep / close_dialog /
         if_text / if_fraction / loop_fraction / loop_times
         """
+        self._check_stop()
         pad = "  " * indent
         s_type = step.get("type")
         kws = step.get("text", step.get("keywords"))
@@ -1024,6 +1188,22 @@ class OCREngine:
             print(f"{pad}[click_text] {kws} -> {'ok' if ok else 'fail'}")
             if ok and step.get("mark"):
                 self._rr_hit = True  # 命中目标步骤, 记为本轮 retry_loop 成功
+            time.sleep(step.get("delay", 0.5))
+        elif s_type == "click_template":
+            # 模板匹配点击「纯图形/无文字按钮」(借鉴 MAA TemplateMatch)。
+            # 参数: template(模板文件名, 资源根 resource/template/ 下)、threshold、region_rel、
+            #       scale、fallback_rel(回退坐标)。有文字按钮仍走 click_text(OCR), 本步骤仅用于纯图形。
+            pt = self.click_template(
+                step.get("template"),
+                threshold=step.get("threshold", 0.8),
+                region_rel=step.get("region_rel"),
+                scale_range=step.get("scale_range", (0.7, 1.0)),
+                fallback_rel=step.get("fallback_rel"),
+            )
+            ok = pt is not None
+            print(f"{pad}[click_template] {step.get('template')} -> {'ok' if ok else 'fail'}")
+            if ok and step.get("mark"):
+                self._rr_hit = True
             time.sleep(step.get("delay", 0.5))
         elif s_type == "click_account_tail":
             # 点击「账号文本尾部数字」匹配的账号条目(账号选择界面)。
@@ -1133,18 +1313,73 @@ class OCREngine:
                 else:
                     self.close_dialog()
                     time.sleep(step.get("delay", 1.0))
+        elif s_type == "navigate":
+            # 公共「进入某目标界面」: 从公共注册表按 target 取进入链并执行。
+            # 语义与 retry_loop 一致: 目标 mark 命中即本轮成功(进入后自动切换 self._scene);
+            # 未命中则 close_dialog 脱困, 最多 max_rounds 轮。避免各流程重复内嵌进入链。
+            self.run_navigate(step, indent)
         else:
             print(f"[未知步骤] {s_type}")
 
+    def run_navigate(self, step: dict, indent=1):
+        """按公共导航注册表进入目标界面(target)。返回 True=命中进入, False=轮数耗尽放弃。
+        step: {"type":"navigate","target":"家族活动","max_rounds"?,"delay"?}
+        每轮 do = [顶层 mark_text 探测点击] + entry["nav"]导航链; 期间任一带 mark 的
+        click_text 真实命中会置 self._rr_hit=True -> 本轮成功, 并把 self._scene 切到目标场景。
+        未命中则 close_dialog() 脱困(最外层兜底), 进入下一轮; 跑满轮数仍未命中则放弃(不抛错)。
+        """
+        pad = "  " * indent
+        target = step.get("target")
+        entry = self._navigation.get("targets", {}).get(target)
+        if not entry:
+            print(f"{pad}[navigate] 未在注册表找到目标『{target}』, 跳过")
+            return False
+        mark_text = entry.get("mark_text", [])
+        mfb = entry.get("mark_fallback_rel")
+        scene = entry.get("scene")
+        nav = entry.get("nav", [])
+        rounds = step.get("max_rounds", entry.get("max_rounds", 3))
+        # 每轮 do: 顶层先探测目标文字; 命中则点击(mark)即成功, 否则走上 fail.else? 见下
+        # 注意: target 本身可能出现在任意深度(顶层/菜单后/家园后)。nav 已含内层 mark 点击,
+        # 顶层这里统一补一个"当前画面即可见目标"的探测分支。
+        do = [{
+            "type": "if_text", "text": mark_text, "min_score": 0.4,
+            "then": [{
+                "type": "click_text", "text": mark_text, "mark": True,
+                "delay": 1.5, "fallback_rel": mfb
+            }]
+        }]
+        do.extend(nav)
+        for i in range(rounds):
+            print(f"{pad}[navigate] 《{target}》 第 {i+1}/{rounds} 轮")
+            self._rr_hit = False
+            self.run_steps(do, indent=indent + 1)
+            if self._rr_hit:
+                if scene:
+                    self._scene = scene
+                print(f"{pad}[navigate] 《{target}》 第 {i+1} 轮命中进入, scene={self._scene}")
+                return True
+            print(f"{pad}[navigate] 《{target}》 第 {i+1} 轮未命中, 脱困重试")
+            self.close_dialog()
+            time.sleep(step.get("delay", 1.0))
+        print(f"{pad}[navigate] 《{target}》 {rounds} 轮未命中, 放弃")
+        return False
+
     def run_flow(self, flow: dict):
         """执行整个流程。flow 含 steps 列表。返回值: 接口回调事件列表。
-        流程顶层可声明 scene(如 "scene": "家园主界面"), 之后点击默认记入该场景。"""
+        流程顶层可声明 scene(如 "scene": "家园主界面"), 之后点击默认记入该场景。
+        """
+        clear_stop()
         name = flow.get("name", "未命名流程")
         if flow.get("scene"):
             self._scene = flow["scene"]
         print(f"\n===== 流程: {name} (scene={self._scene}) =====")
-        for step in flow.get("steps", []):
-            self.run_step(step)
+        try:
+            for step in flow.get("steps", []):
+                self.run_step(step)
+        except StopRequested:
+            print(f"===== 流程已由停止请求中断: {name} =====")
+            return
         print(f"===== 流程完成: {name} =====")
 
     def run_module(self, module: dict, registry: dict) -> str:
@@ -1175,7 +1410,9 @@ class OCREngine:
         返回统计: {"ok":[],"skip":[],"fail":[]}。容错规则由每个 module.on_fail 决定:
           skip        -> 失败继续下一个
           stop_round  -> 失败终止本轮后续模块
+        收到停止请求时(StopRequested)立即中断本轮全部模块, 返回已执行统计。
         """
+        clear_stop()
         name = plan.get("name", "每日编排")
         # 预加载所有引用到的流程
         registry = {}
@@ -1188,13 +1425,18 @@ class OCREngine:
                         registry[fname] = json.load(f)
         result = {"ok": [], "skip": [], "fail": []}
         print(f"\n########## 编排: {name} ##########")
-        for m in plan.get("modules", []):
-            mid = m.get("id")
-            res = self.run_module(m, registry)
-            result[res if res in result else "fail"].append(mid)
-            if res == "fail" and m.get("on_fail", "stop_round") == "stop_round":
-                print(f"[编排] 模块 {m.get('id')} 失败且 on_fail=stop_round, 终止本轮")
-                break
+        try:
+            for m in plan.get("modules", []):
+                self._check_stop()
+                mid = m.get("id")
+                res = self.run_module(m, registry)
+                result[res if res in result else "fail"].append(mid)
+                if res == "fail" and m.get("on_fail", "stop_round") == "stop_round":
+                    print(f"[编排] 模块 {m.get('id')} 失败且 on_fail=stop_round, 终止本轮")
+                    break
+        except StopRequested:
+            print(f"########## 编排已由停止请求中断 ({len(result['ok'])} ok) ##########")
+            return result
         print(f"########## 编排结束: ok={len(result['ok'])} skip={len(result['skip'])} fail={len(result['fail'])} ##########")
         return result
 

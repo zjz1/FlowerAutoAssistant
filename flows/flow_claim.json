@@ -1,6 +1,6 @@
 {
     "name": "领取奖励",
-    "description": "领取奖励(含两个可用 if_config 开关): 功能1 claim_online【在线礼包】: 进面板->抽奖耗尽剩余次数->时间礼包从长到短领取->关闭; 功能2 claim_party【花灵派对】: 进花灵派对->派对时长礼包->loop_text 有'领取'就点(领完按钮消失即停)->关闭。任一开关设 false 则该功能整段跳过。",
+    "description": "领取奖励(含两个可用 if_config 开关): 功能1 claim_online【在线礼包】: 进面板->抽奖耗尽剩余次数->时间礼包从长到短领取->关闭; 功能2 claim_party【花灵派对】: navigate(公共注册表)进花灵派对->派对时长礼包->loop_text 有'领取'就点(领完按钮消失即停)->关闭。任一开关设 false 则该功能整段跳过。",
     "steps": [
         { "type": "if_config",
           "key": "claim_online",
@@ -67,56 +67,15 @@
                         ] }
                     ] }
                 ] },
-              { "type": "close_dialog", "only_types": ["corner_pink_small", "corner", "corner_white"], "delay": 1.0 }
+              { "type": "click_template", "template": "close_online_small.png", "threshold": 0.65, "region_rel": [0.84, 0.11, 0.89, 0.16], "fallback_rel": [0.8633, 0.1347], "delay": 1.0, "name": "关闭在线礼包面板(模板优先)" },
+              { "type": "close_dialog", "only_types": ["corner_pink_small"], "delay": 1.0 }
           ],
           "else": [] },
         { "type": "if_config",
           "key": "claim_party",
           "value": true,
           "then": [
-              { "type": "retry_loop",
-                "max_rounds": 3,
-                "do": [
-                    { "type": "if_text",
-                      "text": ["花灵派对"],
-                      "min_score": 0.4,
-                      "then": [
-                          { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5, "fallback_rel": [0.1859, 0.7528] },
-                          { "type": "sleep", "seconds": 1.5 }
-                      ],
-                      "else": [
-                          { "type": "if_text",
-                            "text": ["菜单"],
-                            "min_score": 0.4,
-                            "then": [
-                                { "type": "click_text", "text": ["菜单"], "delay": 1.5, "fallback_rel": [0.054, 0.081] },
-                                { "type": "sleep", "seconds": 1.0 },
-                                { "type": "if_text",
-                                  "text": ["花灵派对"],
-                                  "min_score": 0.4,
-                                  "then": [
-                                      { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5, "fallback_rel": [0.1859, 0.7528] }
-                                  ] }
-                            ],
-                            "else": [
-                                { "type": "if_text",
-                                  "text": ["家园"],
-                                  "min_score": 0.4,
-                                  "then": [
-                                      { "type": "click_text", "text": ["家园"], "delay": 1.5, "fallback_rel": [0.872, 0.95] },
-                                      { "type": "sleep", "seconds": 1.0 },
-                                      { "type": "click_text", "text": ["菜单"], "delay": 1.5, "fallback_rel": [0.054, 0.081] },
-                                      { "type": "sleep", "seconds": 1.0 },
-                                      { "type": "if_text",
-                                        "text": ["花灵派对"],
-                                        "min_score": 0.4,
-                                        "then": [
-                                            { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5, "fallback_rel": [0.1859, 0.7528] }
-                                        ] }
-                                  ] }
-                            ] }
-                      ] }
-                ] },
+              { "type": "navigate", "target": "花灵派对", "max_rounds": 3 },
               { "type": "if_text",
                 "text": ["时长礼包"],
                 "min_score": 0.4,

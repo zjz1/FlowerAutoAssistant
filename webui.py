@@ -18,17 +18,22 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from ocr_engine import OCREngine, load_flows, select_flow, ADB_ADDRESS, ADB_PATH
+from ocr_engine import OCREngine, load_flows, select_flow, ADB_ADDRESS, ADB_PATH, request_stop
 
 BASE = Path(__file__).parent
 ENGINE: OCREngine | None = None
 ENGINE_LOCK = threading.Lock()
 _SERVER = None  # 当前 http server 实例, 用于 /api/shutdown
+
+_TPL_DIR = BASE / "resource" / "template"          # 模板目录
+_TPL_IMG = None                                    # 模板标注工具最近一次截图缓存(BGR)
+_TPL_IMG_LOCK = threading.Lock()
 
 # ---- 运行日志环形缓冲 (支持增量拉取) ----
 _LOG_LOCK = threading.Lock()
@@ -72,6 +77,35 @@ def get_engine() -> OCREngine:
         if ENGINE is None:
             ENGINE = OCREngine(adb_path=ADB_PATH, address=ADB_ADDRESS)
         return ENGINE
+
+
+def _tpl_probe_boxes(img, x0, y0, x1, y1, n=3):
+    """区域内按前景颜色连通域探测图形按钮候选框(返回绝对像素 bbox 列表, 按面积降序)。"""
+    import cv2
+    import numpy as np
+    reg = img[y0:y1, x0:x1]
+    h, w = reg.shape[:2]
+    if h < 4 or w < 4 or reg.size == 0:
+        return []
+    # 背景色: 取区域四围边框像素的中值
+    edge = np.concatenate([reg[0:2].reshape(-1, 3), reg[-2:].reshape(-1, 3),
+                           reg[:, 0:2].reshape(-1, 3), reg[:, -2:].reshape(-1, 3)])
+    bg = np.median(edge, axis=0)
+    diff = np.sqrt(((reg.astype(np.int16) - bg.astype(np.int16)) ** 2).sum(-1))
+    fg = (diff > 28).astype(np.uint8)
+    # 去噪后找连通域
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    cnt, labels, stats, _ = cv2.connectedComponentsWithStats(fg, 8)
+    cand = []
+    max_area = 0.85 * w * h
+    for i in range(1, cnt):
+        _x, _y, _w, _h, a = stats[i]
+        if a < 24 or a > max_area:
+            continue
+        cand.append({"x0": x0 + int(_x), "y0": y0 + int(_y),
+                     "x1": x0 + int(_x + _w), "y1": y0 + int(_y + _h), "area": int(a)})
+    cand.sort(key=lambda b: -b["area"])
+    return cand[:n]
 
 
 def _img_to_jpeg_b64(img) -> str:
@@ -155,6 +189,8 @@ class Handler(BaseHTTPRequestHandler):
         p = self.path.split("?", 1)[0]
         if p == "/" and self.command == "GET":
             return self._serve_page()
+        if p == "/tpltool" and self.command == "GET":
+            return self._serve_tpl_page()
         # API 全部带 /api 前缀
         if not p.startswith("/api/"):
             self._send_json({"error": "notfound"}, 404)
@@ -225,10 +261,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._back()
         if api == "run" and self.command == "POST":
             return self._run()
+        if api == "stop" and self.command == "POST":
+            return self._stop()
         if api == "log" and self.command == "GET":
             return self._log()
         if api == "shutdown" and self.command == "POST":
             return self._shutdown()
+
+        # ---- 模板标注工具 API ----
+        if api == "tpl_init" and self.command == "GET":
+            return self._tpl_init()
+        if api == "tpl_probe" and self.command == "POST":
+            return self._tpl_probe()
+        if api == "tpl_save" and self.command == "POST":
+            return self._tpl_save()
 
         self._send_json({"error": "no such api"}, 404)
 
@@ -244,6 +290,97 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    # ---- 模板标注工具 ----
+    def _serve_tpl_page(self):
+        html = BASE / "tpltool.html"
+        if not html.exists():
+            return self._send_json({"error": "tpltool.html missing"}, 500)
+        body = html.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    @staticmethod
+    def _tpl_files() -> list[dict]:
+        """返回模板目录文件(名称+是否含蒙版)。"""
+        _TPL_DIR.mkdir(parents=True, exist_ok=True)
+        out = []
+        for f in sorted(_TPL_DIR.glob("*.png")):
+            name = f.name[:-4]
+            if name.endswith(".mask"):
+                continue
+            out.append({"name": name, "size": f"{f.stat().st_size} B",
+                        "mask": (_TPL_DIR / f"{name}.mask.png").exists()})
+        return out
+
+    def _tpl_init(self):
+        """连接并截图, 返回图像(jpeg)+尺寸+现有模板列表+可选区内探测候选。"""
+        eng = get_engine()
+        if not _is_connected(eng):
+            return self._send_json({"error": "未连接", "status": _status()}, 503)
+        img = eng.screenshot()
+        if img is None:
+            return self._send_json({"error": "截图失败"}, 500)
+        with _TPL_IMG_LOCK:
+            global _TPL_IMG
+            _TPL_IMG = img.copy()
+        jpg = _img_to_jpeg_b64(img)
+        return self._send_json({"jpeg": jpg, "w": int(img.shape[1]), "h": int(img.shape[0]),
+                                "templates": self._tpl_files()})
+
+    def _tpl_probe(self):
+        """在指定区域内按颜色前景连通域探测图形按钮候选框(回填识别框)。"""
+        with _TPL_IMG_LOCK:
+            img = _TPL_IMG
+        if img is None:
+            return self._send_json({"error": "请先载图"}, 400)
+        data = self._read_json()
+        x0, y0, x1, y1 = (int(data[k]) for k in ("x0", "y0", "x1", "y1"))
+        x0, x1 = sorted((x0, x1)); y0, y1 = sorted((y0, y1))
+        boxes = _tpl_probe_boxes(img, x0, y0, x1, y1)
+        return self._send_json({"boxes": boxes})
+
+    def _tpl_save(self):
+        """按选框裁模板, 可选用画笔蒙版生成匹配掩码 <name>.mask.png。"""
+        with _TPL_IMG_LOCK:
+            img = _TPL_IMG
+        if img is None:
+            return self._send_json({"error": "请先载图"}, 400)
+        data = self._read_json()
+        name = re.sub(r"[^0-9A-Za-z_.\-]", "_", str(data.get("name", "")).strip() or "tpl")
+        base = name[:-4] if name.lower().endswith(".png") else name
+        if not base:
+            return self._send_json({"error": "模板名不能为空"}, 400)
+        x0, y0, x1, y1 = (int(data[k]) for k in ("x0", "y0", "x1", "y1"))
+        x0, x1 = sorted((x0, x1)); y0, y1 = sorted((y0, y1))
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            return self._send_json({"error": "选框过小"}, 400)
+        h, w = img.shape[:2]
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(w, x1), min(h, y1)
+        _TPL_DIR.mkdir(parents=True, exist_ok=True)
+        crop = img[y0:y1, x0:x1].copy()
+        tw, th = x1 - x0, y1 - y0
+        mask_pts = [p for p in data.get("maskPts") or []
+                    if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if mask_pts:
+            import cv2
+            import numpy as np
+            brush = int(data.get("maskBrush", 4)) or 4
+            mask = np.zeros((th, tw), np.uint8)
+            for (px, py) in mask_pts:
+                ix = int(min(max(px, x0), x1 - 1)) - x0
+                iy = int(min(max(py, y0), y1 - 1)) - y0
+                cv2.circle(mask, (ix, iy), max(1, brush), 255, -1)
+            cv2.imwrite(str(_TPL_DIR / f"{base}.mask.png"), mask)
+        cv2.imwrite(str(_TPL_DIR / f"{base}.png"), crop)
+        log_append(f"[tpltool] 已采集模板 {base} {tw}x{th} 蒙版{'有' if mask_pts else '无'}")
+        return self._send_json({"ok": True, "name": base, "size": f"{tw}x{th}",
+                                "mask": bool(mask_pts)})
 
     # ---- API: KB ----
     def _kb(self):
@@ -450,6 +587,12 @@ class Handler(BaseHTTPRequestHandler):
             lines = _LOGS[after:]
         return self._send_json({"next": after + len(lines), "lines": lines})
 
+    # ---- API: 停止流程 (UI「停止」按钮, 不关闭服务) ----
+    def _stop(self):
+        request_stop()
+        log_append("[stop] 已请求停止当前所有流程 (WebUI 服务保持运行)")
+        return self._send_json({"ok": True, "message": "已请求停止当前流程"})
+
     # ---- API: 关闭服务 (UI「关闭服务」按钮) ----
     def _shutdown(self):
         global _SERVER
@@ -481,7 +624,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         resource = self.path.split("?", 1)[0]
-        if resource != "/api/connect" and resource != "/api/set_mode" and resource != "/api/click" and resource != "/api/back" and resource != "/api/run" and resource != "/api/set_config" and resource != "/api/run_daily" and resource != "/api/shutdown":
+        if resource != "/api/connect" and resource != "/api/set_mode" and resource != "/api/click" and resource != "/api/back" and resource != "/api/run" and resource != "/api/set_config" and resource != "/api/run_daily" and resource != "/api/shutdown" and resource != "/api/tpl_probe" and resource != "/api/tpl_save":
             self._send_json({"error": "method not allowed"}, 405)
             return
         try:

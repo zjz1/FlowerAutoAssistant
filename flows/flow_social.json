@@ -1,54 +1,8 @@
 {
     "name": "社交任务",
-    "description": "retry_loop(最多3轮)进入家族活动(目标命中=点到'家族活动'; 社交/家族只算导航; 全未命中则脱困关全部类型弹窗重试) -> 摇钱树浇水: 读今日浇水次数 X/3, 未满则浇一次(浇水->关奖励框->store_fraction记录water_count), 已满 a>=b 则当天不再浇; 右上角关闭返回; 矿洞/闪耀/守望待采集; 点赞/家园社交待开发。",
+    "description": "navigate(公共导航注册表 entries.json)进入家族活动 -> 摇钱树浇水: 读今日浇水次数 X/3, 未满则浇一次(浇水->关奖励框->store_fraction记录water_count), 已满 a>=b 则当天不再浇; 右上角关闭返回; 矿洞/闪耀/守望待采集; 点赞/家园社交待开发。",
     "steps": [
-        { "type": "retry_loop",
-          "max_rounds": 3,
-          "do": [
-              { "type": "if_text",
-                "text": ["家族活动"],
-                "min_score": 0.4,
-                "then": [
-                    { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5, "fallback_rel": [0.0773, 0.4569] }
-                ],
-                "else": [
-                    { "type": "if_text",
-                      "text": ["社交"],
-                      "min_score": 0.4,
-                      "then": [
-                          { "type": "click_text", "text": ["社交"], "delay": 1.5, "fallback_rel": [0.3312, 0.9486] },
-                          { "type": "sleep", "seconds": 1.0 },
-                          { "type": "if_text",
-                            "text": ["家族"],
-                            "min_score": 0.4,
-                            "then": [
-                                { "type": "click_text", "text": ["家族"], "delay": 1.5, "fallback_rel": [0.3305, 0.8264] },
-                                { "type": "sleep", "seconds": 1.0 },
-                                { "type": "if_text",
-                                  "text": ["家族活动"],
-                                  "min_score": 0.4,
-                                  "then": [
-                                      { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5, "fallback_rel": [0.0773, 0.4569] }
-                                  ] }
-                            ] }
-                      ],
-                      "else": [
-                          { "type": "if_text",
-                            "text": ["家族"],
-                            "min_score": 0.4,
-                            "then": [
-                                { "type": "click_text", "text": ["家族"], "delay": 1.5, "fallback_rel": [0.3305, 0.8264] },
-                                { "type": "sleep", "seconds": 1.0 },
-                                { "type": "if_text",
-                                  "text": ["家族活动"],
-                                  "min_score": 0.4,
-                                  "then": [
-                                      { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5, "fallback_rel": [0.0773, 0.4569] }
-                                  ] }
-                            ] }
-                      ] }
-                ] }
-          ] },
+        { "type": "navigate", "target": "家族活动", "max_rounds": 3 },
 
         { "type": "click_rel", "rel": [0.2727, 0.4917], "delay": 2.0 },
         { "type": "if_fraction",
