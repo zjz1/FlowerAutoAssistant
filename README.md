@@ -53,7 +53,8 @@ FlowerAutoAssistant/
 ├── data/
 │   ├── click_log.json      # 按钮知识库（v2 场景两层嵌套 + 均值/样本数）
 │   ├── close_buttons.json  # 关闭按钮-特殊逻辑注册表
-│   ├── config.json         # 功能开关与目标账号尾号等配置
+│   ├── config.example.json # 功能开关模板（复制为 config.json 后填写）
+│   ├── config.json         # 功能开关与目标账号尾号等配置（本地私有，已 gitignore）
 │   ├── tplt_annotations.jsonl / annot_shots/  # tpltool 标注产物（坐标+绑定截图）
 ├── resource/template/   # 模板匹配模板（已 gitignore）
 ├── workbench/           # 未确认功能的暂存区（用户确认后才并入主体）
@@ -190,7 +191,7 @@ start_webui.bat            # 或双击：优先用 .venv，启动后自动开浏
 
 ## 提交前注意
 
-本仓库为公开仓库，提交前请确认 `data/config.json` **未内置真实账号信息**：`target_tail` 置空 `""`（或 `enable_switch:false`），并清理 `water_count*` 等本地运行状态；同时筛查 `data/click_log.json` 是否含账号类条目。详见 [`PROGRESS.md`](PROGRESS.md)「提交 GitHub 方法」。
+本仓库为公开仓库。`data/config.json` **已取消版本跟踪并加入 `.gitignore`**（它含 `target_tail`、`water_count*` 等本机运行状态）——首次使用请复制 [`data/config.example.json`](data/config.example.json) 为 `data/config.json` 再填写；提交模板时 `target_tail` 必须留空 `""`。此外仍需筛查 `data/click_log.json` 是否混入账号类条目（2026-09-18 已改为 `账号条目#N` 行序键名，不再写入真实账号文本）。详见 [`PROGRESS.md`](PROGRESS.md)「提交 GitHub 方法」与「敏感数据清除记录」。
 
 ---
 

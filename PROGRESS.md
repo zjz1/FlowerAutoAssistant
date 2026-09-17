@@ -597,6 +597,7 @@
    - 若报 `Recv failure: Connection was reset`（多为临时网络/代理抖动）：提交已在本地（不丢），稍后重跑 `git push origin main` 即可。
 
    - **绝不** **`git push --force`**，不 `--force-with-lease`，不直接改 `git config`。
+   - **唯一例外**：2026-09-18 清除已泄漏的账号数据时，经**用户明确授权**执行过一次 `--force-with-lease`（详见本节末「敏感数据清除记录」）。除此之外不得使用。
 
 5. **验证**：
 
@@ -609,6 +610,43 @@
    - 仓库不纳入版本管理的文件：`.venv/`、`debug/`、`legacy/`、`resource/`、`__pycache__/`（已在 `.gitignore`）。
 
 > ⚠️ 注意：`data/config.json` 的 `target_tail`、`data/click_log.json` 属坐标/配置数据，提交前严格筛查账号类信息；不能确定时先脱敏或暂不提交（讨论后再定）。
+
+### 🧹 2026-09-18 敏感数据清除记录（历史重写）
+
+**背景**：`data/config.json` 与 `data/click_log.json` 一直是**受版本控制的文件**，`0e61c34`（当时的 `origin/main`）中已含真实账号信息（账号尾号、`enable_switch` 为开、浇水计数、以及**以真实账号文本为键**的知识库条目），`webui.html` 还**硬编码了账号下拉框** → **已推送到公开仓库**。
+
+**处置（用户明确授权「方案②：重写历史 + force push」）**：
+
+1. **安全网**：重写前整仓镜像备份到 `E:\my_project\trae project\FAA_2026-9-18\_backup\FlowerAutoAssistant.git`（`git clone --mirror`，来源 `HEAD=0e61c34`）。
+2. **先提交再重写**：把本轮改动（脱敏 + 文档同步 + 未提交工作）先提交为 `b344653`，保证工作树干净后再重写。
+3. **修掉泄露源头**（工作区）：
+   - `.gitignore` 新增 `data/config.json`（本地私有配置，并 `git rm --cached` **取消跟踪**）与 `data/annot_shots/`（游戏截图，IP 风险）；新增可提交的模板 `data/config.example.json`。
+   - `webui.html`：硬编码真实账号的 `<select>` → 手填尾号的 `<input>`；清掉尾号 `placeholder`。
+   - `ocr_engine.py`：`click_account_tail()` 的写库键名由 `账号:<真实文本>` 改为 `账号条目#N`（按账号列表行序编号，仍保留分行坐标缓存）。
+   - `data/click_log.json`：账号类条目键名同步脱敏。
+4. **重写全部历史**（工具为 `git-filter-repo` 单文件版，存于 `_backup\git-filter-repo.py`）：
+
+   ```powershell
+   python _backup\git-filter-repo.py --force `
+     --invert-paths --path data/config.json `
+     --replace-text _backup\replace-text.txt
+   ```
+
+   - `--invert-paths`：把 `data/config.json` 从**所有提交**中移除。
+   - `--replace-text`：按 `_backup\replace-text.txt` 的规则替换全部 blob（账号文本 / 尾号 / 占位符 / 旧版裸尾号键 / 非空 `target_tail`）。
+   - **不用 `--tree-filter` 的原因**：本机 `core.autocrlf=true`，tree-filter 的「检出—提交」往返会把全仓行尾改写，污染历史。
+5. **推送**：`git push --force-with-lease origin main`，并把 tag `templates-20260916` 由旧提交改指到重写后的等价提交 `f581bec`。
+   - ⚠️ 这是本文档「绝不 force push」规则的**唯一例外**，经用户明确授权（内容为已公开的真实账号信息，不重写无法真正清除）。
+
+**验证证据**（脚本 `_backup\scan_sensitive.py`：遍历 `--branches --tags` 可达的全部 blob 做正则匹配）：
+
+| 时点 | 结果 |
+| --- | --- |
+| 重写前 | **54 处命中**（账号文本 / 尾号 / `placeholder` / `target_tail` 等） |
+| 重写后（本地） | 仅 8 处 `water_count`——合法配置键名，非敏感 |
+| 远端全新 `git clone` 后 | 16 个提交、`HEAD=9d35117`，同样仅 8 处 `water_count` |
+
+**残留风险（须知）**：旧提交对象（如 `0e61c34`）在 GitHub 侧已无任何 ref 指向，但短期内仍可能通过**已知 SHA** 直接访问（缓存/API）；如需彻底清理可联系 GitHub Support 或转私有仓库。今后**切勿再把 `target_tail` 等真实值写进受控文件**——`data/config.json` 已移出版本库，`data/click_log.json` 的账号条目也已改为行序键名。
 
 ***
 
@@ -805,6 +843,8 @@
 
 ### F. 本轮待办
 - [x] **同步文档 + 固化未提交改动**（本节 + 顶部声明 + README 刷新）
+- [x] 🔴 **清除已泄漏的账号数据**：取消跟踪 `data/config.json` + 修正硬编码账号 + `git filter-repo` 重写全部历史 + `force-with-lease` 推送（详见 §2 末「敏感数据清除记录」）
+- [x] **新工作区环境**：`.git`/`.gitignore`/`legacy/` 已迁入；`git fetch/push/clone`、`gh` 鉴权、原 `.venv` 均验证可用；工作区 `.venv` 为指向原项目 `.venv` 的**目录联接**（免复制 353MB，若原目录退役需改为真实复制或重建）
 - [ ] **好友采粉并入** `flow_social.json` + WebUI 子面板 —— 前置：用户 Ctrl+F5 后用新画笔重描「可采粉图标」→ 校准达标（模板/mask + 离线在绑定截图上验证命中）后并入
 - [ ] 🔴-1 「一键种植/种植箱」MISS 根因排查（`find_text()` 过宽块逻辑）；🔴-2 签到面板 A2 白色圆关闭钮补采
 - [ ] 交接期遗留（沿用旧待办）：流程名匹配"精确优先"、`click_log` 过期回退坐标更新
