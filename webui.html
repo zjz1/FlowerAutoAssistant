@@ -53,6 +53,18 @@
   .account-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .maa-note{margin:12px 0 0;color:var(--muted);font-size:12px;line-height:1.6}
 
+  /* ---------- 模块子面板 (可折叠) ---------- */
+  .mod-panels{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+  .mod-panel{background:var(--panel2);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .mod-panel>summary{list-style:none;cursor:pointer;user-select:none;padding:8px 10px;display:flex;align-items:center;gap:8px;font-weight:600;font-size:12.5px;color:var(--fg)}
+  .mod-panel>summary:hover{color:var(--accent)}
+  .mod-panel>summary::-webkit-details-marker{display:none}
+  .mod-panel>summary::before{content:"▶";font-size:9px;color:var(--muted);transition:transform .15s;display:inline-block}
+  .mod-panel[open]>summary::before{transform:rotate(90deg)}
+  .mod-panel .mod-desc{margin-left:auto;color:var(--muted);font-weight:400;font-size:11px}
+  .mod-body{padding:2px 10px 10px;border-top:1px solid var(--line)}
+  .mod-body .cfg-row:first-of-type{border-top:none}
+
   /* ---------- 测试界面 (原有能力) ---------- */
   .layout{display:grid;grid-template-columns:minmax(380px,7fr) minmax(320px,5fr);gap:14px;padding:14px}
   @media(max-width:980px){.layout{grid-template-columns:1fr}}
@@ -150,6 +162,59 @@
         <h2>模块设置</h2>
         <div id="mod-settings-body"><span class="muted">点击左侧任一任务的 ⚙ 查看其设置</span></div>
       </div>
+
+      <!-- 模块子面板 (可折叠, 归位各配置开关) -->
+      <div class="mod-panels">
+        <details class="mod-panel" open>
+          <summary><span>① 开始启动</span><span class="mod-desc">切换账号 · 目标尾部</span></summary>
+          <div class="mod-body">
+            <div class="cfg-row"><span class="lbl">切换账号</span><label class="cfg-hint"><input type="checkbox" id="mp-startup-switch"> 启用</label></div>
+            <div class="cfg-row"><span class="lbl">目标账号尾部</span><span class="cfg-hint"><input type="text" id="mp-startup-tail" style="width:64px" placeholder="账号尾号"></span></div>
+            <div class="maa-actions" style="border:none;padding-top:6px;margin-top:2px">
+              <button class="primary" data-save="startup">保存</button><span class="muted" data-status="startup"></span>
+            </div>
+          </div>
+        </details>
+        <details class="mod-panel">
+          <summary><span>② 签到</span></summary>
+          <div class="mod-body"><div class="maa-note">待补充</div></div>
+        </details>
+        <details class="mod-panel">
+          <summary><span>③ 种植</span></summary>
+          <div class="mod-body"><div class="maa-note">待补充</div></div>
+        </details>
+        <details class="mod-panel">
+          <summary><span>④ 社交 + 闪耀挑战</span></summary>
+          <div class="mod-body">
+            <div class="cfg-row"><span class="lbl">闪耀委托挑战</span><label class="cfg-hint"><input type="checkbox" id="mp-social-shine"> 启用</label></div>
+            <div class="maa-actions" style="border:none;padding-top:6px;margin-top:2px">
+              <button class="primary" data-save="social">保存</button><span class="muted" data-status="social"></span>
+            </div>
+          </div>
+        </details>
+        <details class="mod-panel">
+          <summary><span>⑤ 体力</span></summary>
+          <div class="mod-body"><div class="maa-note">待补充</div></div>
+        </details>
+        <details class="mod-panel">
+          <summary><span>⑥ 每日任务</span></summary>
+          <div class="mod-body"><div class="maa-note">待补充</div></div>
+        </details>
+        <details class="mod-panel">
+          <summary><span>⑦ 领取奖励</span></summary>
+          <div class="mod-body">
+            <div class="cfg-row"><span class="lbl">功能1 · 在线礼包</span><label class="cfg-hint"><input type="checkbox" id="mp-claim-online"> 启用</label></div>
+            <div class="cfg-row"><span class="lbl">功能2 · 花灵派对</span><label class="cfg-hint"><input type="checkbox" id="mp-claim-party"> 启用</label></div>
+            <div class="maa-actions" style="border:none;padding-top:6px;margin-top:2px">
+              <button class="primary" data-save="claim">保存</button><span class="muted" data-status="claim"></span>
+            </div>
+          </div>
+        </details>
+        <details class="mod-panel">
+          <summary><span>⑧ 挂机</span></summary>
+          <div class="mod-body"><div class="maa-note">待补充</div></div>
+        </details>
+      </div>
     </div>
 
     <!-- 右栏: 账号 + 连接 -->
@@ -239,16 +304,6 @@
         </div>
         <div class="row" style="margin-top:8px">
           <label>流程运行在后台, 日志实时滚动下方。</label>
-        </div>
-        <h2 style="margin-top:12px">可选功能</h2>
-        <div class="row">
-          <label><input type="checkbox" id="switch-chk"> 切换账号</label>
-          <label>目标尾部 <input type="text" id="switch-tail" style="width:56px" placeholder="账号尾号"></label>
-          <button id="save-cfg-btn">保存</button>
-          <span class="muted" id="cfg-status"></span>
-        </div>
-        <div class="row" style="margin-top:6px">
-          <span class="muted">勾选后在每日编排登录前切换账号, 目标 = 账号末尾数字(如 89)。</span>
         </div>
         <h2 style="margin-top:12px">运行日志</h2>
         <div id="log"><span class="muted">暂无日志</span></div>
@@ -580,24 +635,39 @@ $("run-btn").onclick = async ()=>{
     pollLog();
   }catch(e){ alert("无法运行: "+e.message); }
 };
-async function refreshConfig(){
+// ---- 模块子面板: 加载 config 到各开关 + 保存 ----
+const MP_FIELDS = {
+  startup: {check:{enable_switch:"mp-startup-switch"}, text:{target_tail:"mp-startup-tail"}},
+  social:  {check:{enable_shine:"mp-social-shine"}, text:{}},
+  claim:   {check:{claim_online:"mp-claim-online", claim_party:"mp-claim-party"}, text:{}},
+};
+async function loadModulePanels(){
   try{
     const d = await api("/api/config");
-    $("switch-chk").checked = !!d.enable_switch;
-    $("switch-tail").value = d.target_tail ?? "";
+    document.querySelectorAll("[data-save]").forEach(btn=>{
+      const key = btn.dataset.save;
+      const f = MP_FIELDS[key];
+      if(!f) return;
+      for(const k in f.check||{}) $(f.check[k]).checked = !!d[k];
+      for(const k in f.text||{}) $(f.text[k]).value = d[k] ?? "";
+    });
   }catch(e){}
 }
-$("save-cfg-btn").onclick = async ()=>{
-  try{
-    const body = {
-      enable_switch: $("switch-chk").checked,
-      target_tail: $("switch-tail").value.trim(),
-    };
-    const d = await api("/api/set_config", {method:"POST", body:JSON.stringify(body)});
-    $("cfg-status").textContent = d.changed ? "已保存 ✓" : "已应用 ✓";
-    setTimeout(()=>{ $("cfg-status").textContent = ""; }, 2000);
-  }catch(e){ alert("保存失败: "+e.message); }
-};
+document.querySelectorAll("[data-save]").forEach(btn=>{
+  btn.onclick = async ()=>{
+    const key = btn.dataset.save;
+    const f = MP_FIELDS[key];
+    const body = {};
+    for(const k in f.check||{}) body[k] = $(f.check[k]).checked;
+    for(const k in f.text||{}) body[k] = $(f.text[k]).value.trim();
+    const status = document.querySelector(`[data-status="${key}"]`);
+    try{
+      const res = await api("/api/set_config", {method:"POST", body:JSON.stringify(body)});
+      status.textContent = res.ok ? "已保存 ✓" : "保存失败";
+      setTimeout(()=>{ status.textContent = ""; }, 2000);
+    }catch(e){ status.textContent = "失败: " + e.message; }
+  };
+});
 async function pollLog(){
   try{
     const d = await api("/api/log?after="+logCursor);
@@ -644,7 +714,7 @@ $("screen-wrap").addEventListener("click", async (ev)=>{
   await refreshMaa();
   await refreshFlows();
   await refreshKb();
-  await refreshConfig();
+  await loadModulePanels();
   clearInterval(autoTimer);
   autoTimer = setInterval(()=>{ refreshScreen(); }, 1500);
   $("auto-chk").checked = true;

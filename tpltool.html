@@ -3,68 +3,84 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FAA 模板标注工具</title>
+<title>FAA 模板标注工具（人机协同标注）</title>
 <style>
   * { box-sizing: border-box; }
   body { margin:0; font-family: "Microsoft YaHei", system-ui, sans-serif; background:#12141a; color:#e8eaf0; }
-  header { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:10px 14px;
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 14px;
            background:#1b1e28; border-bottom:1px solid #2c303c; position:sticky; top:0; z-index:5; }
-  header h1 { font-size:15px; margin:0 6px 0 0; color:#ffd77a; }
+  header h1 { font-size:15px; margin:0 8px 0 0; color:#ffd77a; }
   .btn { background:#2a2f3d; color:#e8eaf0; border:1px solid #3a4150; border-radius:6px;
          padding:6px 12px; cursor:pointer; font-size:13px; }
   .btn:hover { background:#343b4c; }
   .btn.active { background:#e5526b; border-color:#ff6b84; color:#fff; }
   .btn.primary { background:#3b6fe0; border-color:#5b8bff; }
   .btn.primary:hover { background:#4b7ef0; }
+  .btn.good { background:#2e7d32; border-color:#43a047; }
+  .btn.mini { padding:2px 8px; font-size:12px; }
+  .btn.danger { background:#8b1a2b; border-color:#c62839; }
   input[type=text] { background:#14161c; color:#e8eaf0; border:1px solid #3a4150; border-radius:6px; padding:6px 8px; font-size:13px; width:180px; }
+  input[type=text].sm { width:120px; }
   .sep { width:1px; height:22px; background:#2c303c; }
   .hint { color:#98a0b3; font-size:12px; }
   main { display:flex; height:calc(100vh - 58px); }
   #stage { flex:1; display:flex; flex-direction:column; padding:12px; gap:8px; min-width:0; }
   #canvasWrap { position:relative; background:#000; border:1px solid #2c303c; border-radius:8px; flex:1;
-                display:flex; align-items:center; justify-content:center; overflow:hidden; }
-  canvas { max-width:100%; max-height:100%; display:block; background:#000; cursor:crosshair; }
+                overflow:auto; }
+  canvas { display:block; background:#000; cursor:crosshair; image-rendering:pixelated; }
+  .zoomTag { position:absolute; right:8px; top:8px; background:rgba(18,20,26,.8); border:1px solid #3a4150;
+             border-radius:6px; padding:3px 8px; font-size:12px; color:#ffd77a; pointer-events:none; z-index:2; }
   #info { color:#98a0b3; font-size:12px; }
-  #side { width:220px; border-left:1px solid #2c303c; padding:12px; background:#1b1e28; overflow:auto; }
+  #side { width:300px; border-left:1px solid #2c303c; padding:12px; background:#1b1e28; overflow:auto; }
   #side h3 { font-size:13px; margin:4px 0 8px; color:#ffd77a; }
-  .tpl { display:flex; align-items:center; gap:6px; padding:5px 8px; margin-bottom:4px;
-         background:#232734; border:1px solid #2e3446; border-radius:6px; font-size:12px; }
-  .tpl .nm { flex:1; word-break:break-all; }
-  .badge { font-size:10px; padding:1px 5px; border-radius:4px; background:#3a6; color:#fff; }
-  .badge.no { background:#555; }
+  .card { border:1px solid #2e3446; border-radius:8px; background:#232734; padding:8px; margin-bottom:8px; }
+  .card.sel { border-color:#5b8bff; box-shadow:0 0 0 1px #5b8bff; }
+  .card .hd { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+  .card .hd input { flex:1; min-width:0; }
+  .card .meta { display:flex; flex-wrap:wrap; gap:4px 10px; font-size:12px; color:#98a0b3; margin-top:4px; }
+  .tag { flex:0 0 auto; font-size:10px; padding:1px 5px; border-radius:4px; color:#fff; }
+  .tag.rect { background:#35e0ff; }
+  .tag.brush { background:#e5526b; }
+  .tag.contour { background:#7be052; }
+  .row { display:flex; align-items:center; gap:6px; }
+  .zoomctr { font-size:12px; color:#98a0b3; }
   #toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); background:#232734;
            border:1px solid #3a4150; padding:8px 16px; border-radius:8px; display:none; z-index:20; font-size:13px; }
-  .zoomctr { font-size:12px; color:#98a0b3; }
-  .row { display:flex; align-items:center; gap:6px; }
 </style>
 </head>
 <body>
 <header>
   <h1>模板标注工具</h1>
   <button id="btnHome" class="btn">← 主界面</button>
-  <button id="btnConnect" class="btn">连接设备</button>
-  <button id="btnLoad" class="btn primary">载图</button>
-  <span class="sep" style="margin-left:6px"></span>
-  <button id="modeBox" class="btn active">选框</button>
-  <button id="modeBrush" class="btn">画笔</button>
-  <button id="modeErase" class="btn">橡皮</button>
-  <label class="zoomctr">笔刷 <input id="brushR" type="range" min="1" max="24" value="5" style="width:90px;vertical-align:middle"></label>
-  <button id="btnClearBrush" class="btn" title="清除蒙版">清蒙版</button>
-  <span class="sep" style="margin-left:6px"></span>
-  <button id="btnProbe" class="btn" title="在当前选框内探测候选并回填">探测回填</button>
+  <button id="btnShot" class="btn primary">连接并截图</button>
+  <button id="btnRefresh" class="btn">刷新</button>
+  <span class="sep" style="margin-left:4px"></span>
+  <button id="modeBox" class="btn active">区域框选</button>
+  <button id="modeBrush" class="btn">画笔重点</button>
+  <button id="modeContour" class="btn">描边轮廓</button>
+  <label class="zoomctr">笔刷 <input id="brushR" type="range" min="1" max="16" value="2" style="width:90px;vertical-align:middle"></label>
+  <span class="sep" style="margin-left:4px"></span>
+  <button id="btnCrop" class="btn" title="裁剪：在画面上拖出矩形后确认，后续标注/缩放/提交都在裁剪区域内进行">裁剪</button>
+  <button id="btnAutoCon" class="btn" title="自动生成连续轮廓：基于当前框选矩形在后端截图内提取主体轮廓，回填为黄线底稿供你再微调">生成轮廓</button>
+  <span class="sep" style="margin-left:4px"></span>
+  <button id="btnZoomOut" class="btn" title="缩小">－缩放</button>
+  <button id="btnZoomIn" class="btn" title="放大">＋放大</button>
+  <button id="btnZoomReset" class="btn" title="重置缩放">重置</button>
+  <span class="sep" style="margin-left:4px"></span>
+  <button id="btnUndo" class="btn" title="删除最后一个已保存标记">删除最后</button>
+  <button id="btnClear" class="btn" title="清空所有已保存标记">清空</button>
   <span style="flex:1"></span>
-  <input id="name" type="text" placeholder="模板名 如 close_corner_pink" value="tpl">
-  <button id="btnSave" class="btn primary">保存模板</button>
-  <button id="btnReset" class="btn">重载列表</button>
+  <button id="btnSave" class="btn good" title="把当前画的框选/重点/描边保存为一个标记条目">保存标记</button>
+  <button id="btnSubmit" class="btn primary">提交给助手</button>
 </header>
 <main>
   <div id="stage">
-    <div id="canvasWrap"><canvas id="cv"></canvas></div>
-    <div id="info">拖动/8角缩放选框；画笔在选框内涂刷按钮主体（红色覆盖）；「探测回填」用颜色候选自动对齐选框。</div>
+    <div id="canvasWrap"><canvas id="cv"></canvas><div id="zoomTag" class="zoomTag">100%</div></div>
+    <div id="info">「区域框选」拖拽出关注矩形；「画笔重点」自由涂画提醒重点（散点/灰色提示层）；「描边轮廓」沿图标轮廓连续画一条闭合线（有序点列，供生成 mask）。可在右侧条目里改名/备注、删除、复制 id；支持缩/放/重置缩放观察。</div>
   </div>
   <div id="side">
-    <h3>已采集模板</h3>
-    <div id="tplList"></div>
+    <h3>标注列表<span class="hint" id="countHint"></span></h3>
+    <div id="annotList"><div class="hint">暂无（在画面中标注后点「保存标记」）</div></div>
   </div>
 </main>
 <div id="toast"></div>
@@ -72,162 +88,414 @@
 <script>
 const CV = document.getElementById('cv');
 const ctx = CV.getContext('2d');
+const canvasWrap = document.getElementById('canvasWrap');
+const zoomTag = document.getElementById('zoomTag');
 const W0 = 1280, H0 = 720;
 
 // ---- 状态 ----
-let img = null;            // Image
+let img = null;            // Image（原始截图，不写像素）
 let W = W0, H = H0;
-let box = null;            // {x0,y0,x1,y1} 绝对像素
-let pts = [];              // 画笔点(绝对像素)
-let brushR = 5;
-let mode = 'box';          // box | brush | erase
-let dragging = null;       // 拖拽状态
-let connectOk = false;
+let fullW = W0, fullH = H0; // 当前截图原始完整尺寸(裁剪后不变, 用于相对坐标计算)
+let scale = 1;             // 缩放倍数（0.1 ~ 64）
+let annotations = [];      // 已保存标记 [{id,intent,rect|null,points:[],contour:[]|null}]
+let selectedId = null;     // 列表被选中的 id（高亮）
+let working = { rect:null, points:[], contour:[] };  // 当前在画但未保存的综合体
+let drag = null;           // 拖拽状态
+let brushR = 2;
+let mode = 'box';          // box | brush | contour | crop
+let cropMode = false;      // 裁剪模式(拖矩形确认后裁剪画面)
+let cropRect = null;       // 裁剪拖拽中的矩形(画面坐标)
+let offsetX = 0, offsetY = 0;  // 当前画面相对原始截图的左上偏移(裁剪后累计)
+let autoId = 1;            // 自动 id 计数
 
 // ---- 帮助 ----
 function toast(msg, ms=1800){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._tm); t._tm=setTimeout(()=>t.style.display='none', ms); }
-function canvasXY(e){ const r=CV.getBoundingClientRect(); return [ (e.clientX-r.left)*W/r.width, (e.clientY-r.top)*H/r.height ]; }
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function cssXY(e){ const r=CV.getBoundingClientRect(); return [ (e.clientX-r.left)/scale, (e.clientY-r.top)/scale ]; }
+const nid=()=>'ann_'+(autoId++)+'_'+(Date.now()%100000);
+const annHasWork=()=> working.rect || working.points.length || (working.contour && working.contour.length);
 
-// ---- 绘制 ----
-function draw(){
-  ctx.clearRect(0,0,W,H);
-  if(img) ctx.drawImage(img,0,0,W,H);
-  // 蒙版(画笔 -> 红色半透明点)
-  if(pts.length){
-    ctx.save(); ctx.fillStyle='rgba(232,82,107,0.55)';
-    for(const [x,y] of pts){ ctx.beginPath(); ctx.arc(x,y,Math.max(1.5,brushR*0.5),0,7); ctx.fill(); }
-    ctx.restore();
-  }
-  // 选框
-  if(box){
-    const {x0,y0,x1,y1}=box;
-    ctx.save();
-    ctx.strokeStyle='#35e0ff'; ctx.lineWidth=2;
-    ctx.strokeRect(x0,y0,x1-x0,y1-y0);
-    // 8 控制点
-    ctx.fillStyle='#35e0ff';
-    const cs=[[x0,y0],[x0+(x1-x0)/2,y0],[x1,y0],[x1,y0+(y1-y0)/2],[x1,y1],[x0+(x1-x0)/2,y1],[x0,y1],[x0,y0+(y1-y0)/2]];
-    for(const [cx,cy] of cs){ ctx.beginPath(); ctx.rect(cx-3,cy-3,6,6); ctx.fill(); }
-    ctx.restore();
-  }
+// ---- 缩放 ----
+const DPR = window.devicePixelRatio || 1;  // 高分屏(Windows 显示缩放>100%)时按设备像素渲染, 避免浏览器就近放大把矢量笔触变成方块像素
+function fitScale(){ const cw=canvasWrap.clientWidth, ch=canvasWrap.clientHeight; return Math.max(0.1, Math.min((cw-16)/W,(ch-16)/H)); }
+function applyZoom(){
+  const fits = scale <= fitScale()*1.05;
+  canvasWrap.style.justifyContent = fits ? 'center' : 'flex-start';
+  canvasWrap.style.alignItems   = fits ? 'center'  : 'flex-start';
+  // 背板用设备像素(DPr), CSS 尺寸仍按 W*scale, 坐标空间仍是缩放前的图像像素
+  CV.width  = Math.max(1, Math.round(W*scale*DPR));
+  CV.height = Math.max(1, Math.round(H*scale*DPR));
+  CV.style.width  = Math.round(W*scale)+'px';
+  CV.style.height = Math.round(H*scale)+'px';
+  zoomTag.textContent = Math.round(scale*100)+'%';
+  draw();
 }
+function zoomReset(){ scale=fitScale(); applyZoom(); toast('已重置缩放 '+(scale*100|0)+'%'); }
+CV.addEventListener('wheel',e=>{ e.preventDefault(); scale=clamp(scale*(e.deltaY<0?1.15:1/1.15),0.1,64); applyZoom(); },{passive:false});
 
-// ---- 选框命中 ----
-function boxHandles(){ const {x0,y0,x1,y1}=box; return [
-  ['nw',x0,y0],['n',(x0+x1)/2,y0],['ne',x1,y0],['e',x1,(y0+y1)/2],
-  ['se',x1,y1],['s',(x0+x1)/2,y1],['sw',x0,y1],['w',x0,(y0+y1)/2] ]; }
-function inBox(x,y,m=8){ const {x0,y0,x1,y1}=box; return x>=x0-m&&x<=x1+m&&y>=y0-m&&y<=y1+m; }
+// ---- 绘制（底图不修改，标注作半透明叠加层；坐标空间=画面像素） ----
+function draw(){
+  ctx.setTransform(scale*DPR,0,0,scale*DPR,0,0);  // 乘 DPR 使矢量(框/笔触/文字)按设备像素渲染, 保持清晰
+  ctx.clearRect(0,0,W,H);
+  if(img){
+    ctx.imageSmoothingEnabled=false;
+    // 已裁剪时只画当前区域（原图从 offsetX/Y 起取 W×H）
+    ctx.drawImage(img, offsetX, offsetY, W, H, 0, 0, W, H);
+  }
+
+  // 所有已保存标记的矩形
+  for(const a of annotations) if(a.rect) drawRect(a.rect, a.id===selectedId);
+  if(working.rect) drawRect(working.rect, true);
+  // 裁剪模式拖拽矩形
+  if(mode==='crop' && cropRect){
+    ctx.save(); ctx.strokeStyle='#ffd166'; ctx.lineWidth=2; ctx.setLineDash([6,4]);
+    ctx.strokeRect(cropRect.x0, cropRect.y0, cropRect.x1-cropRect.x0, cropRect.y1-cropRect.y0);
+    ctx.restore();
+  }
+  // 拖拽中的临时矩形
+  if(drag && drag.t==='new' && drag.r) drawRect(drag.r, false);
+
+  // 画笔重点：按笔径(brushR 图像像素, 随缩放放大)绘制连续半透明红色粗描边(圆头圆角, 无断点; 远距自动断笔)
+  brushPoly(annotations.map(a=>a.points));
+  brushPoly([working.points]);
+  if(drag && drag.t==='brush' && drag.pts) brushPoly([drag.pts]);
+  // 描边轮廓: 实时预览沿用细绿色连线
+  if(drag && drag.t==='contour' && drag.pts && drag.pts.length>=2){
+    ctx.save(); ctx.strokeStyle='#7be052'; ctx.lineWidth=3; ctx.globalAlpha=0.9;
+    ctx.beginPath(); ctx.moveTo(drag.pts[0][0],drag.pts[0][1]);
+    for(let i=1;i<drag.pts.length;i++) ctx.lineTo(drag.pts[i][0],drag.pts[i][1]);
+    ctx.stroke(); ctx.restore();
+  }
+
+  // 已保存标记 + working 的描边轮廓（闭合线，保持顺序）
+  ctx.save(); ctx.strokeStyle='#7be052'; ctx.lineWidth=2;
+  for(const a of annotations){ if(a.contour && a.contour.length>=2) path(a.contour, true, a.id===selectedId); }
+  if(working.contour && working.contour.length>=2) path(working.contour, drag&&drag.t==='contour'?false:true, true);
+  ctx.restore();
+}
+// 画笔: 把有序点列按间距断笔, 输出连续子段
+function _brushSegments(group, gapPx){
+  const segs=[]; let cur=[];
+  for(const pts of group){
+    for(let i=0;i<pts.length;i++){
+      const p=pts[i];
+      if(cur.length && Math.hypot(p[0]-cur[cur.length-1][0],p[1]-cur[cur.length-1][1])>gapPx){
+        if(cur.length>=2) segs.push(cur);
+        cur=[p]; continue;
+      }
+      cur.push(p);
+    }
+    if(cur.length>=2) segs.push(cur);
+    cur=[];
+  }
+  return segs;
+}
+// 连续半透明红色圆笔, 直径=brushIm(随截图分辨率归一化的图元px), 圆头圆角连线 + 每个顶点补画等径圆点,
+// 保证即使断笔/单点也呈平滑圆点, 不会出现"几个大方块像素"
+function brushPoly(group){
+  const d=brushIm();
+  const segs=_brushSegments(group, Math.max(2, d*2));
+  ctx.save();
+  ctx.lineWidth=d; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.strokeStyle='rgba(232,82,107,0.4)';
+  for(const seg of segs){
+    if(seg.length>=2){ ctx.beginPath(); ctx.moveTo(seg[0][0],seg[0][1]); for(let i=1;i<seg.length;i++) ctx.lineTo(seg[i][0],seg[i][1]); ctx.stroke(); }
+  }
+  const r=Math.max(1, d/2);                       // 顶点圆点: 补全描边未覆盖的孤立点, 呈圆头笔触
+  ctx.fillStyle='rgba(232,82,107,0.4)';
+  for(const seg of segs){ for(const p of seg){ ctx.beginPath(); ctx.arc(p[0],p[1],r,0,7); ctx.fill(); } }
+  ctx.restore();
+}
+function path(pts, close, hi){
+  ctx.save(); if(hi){ ctx.strokeStyle='#ffffff'; ctx.lineWidth=3; } else ctx.strokeStyle='#7be052';
+  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+  if(close){ ctx.closePath(); ctx.fillStyle='rgba(123,224,82,0.12)'; ctx.fill(); }
+  ctx.stroke(); ctx.restore();
+}
+function drawRect(r, hi){
+  const {x0,y0,x1,y1,intent}=r;
+  ctx.save(); ctx.strokeStyle = hi ? '#ffd77a' : '#35e0ff'; ctx.lineWidth = hi?3:2;
+  ctx.fillStyle='rgba(53,224,255,0.08)'; ctx.fillRect(x0,y0,x1-x0,y1-y0);
+  ctx.strokeRect(x0,y0,x1-x0,y1-y0);
+  if(intent){
+    ctx.font='12px sans-serif'; const tw=ctx.measureText(intent).width+8;
+    const ty=Math.max(y0,16); const bx=clamp(x0,0,W-tw);
+    ctx.fillStyle='rgba(20,60,120,0.85)'; ctx.fillRect(bx,ty-13,tw,16);
+    ctx.fillStyle='#fff'; ctx.fillText(intent,bx+4,ty+0.5);
+  }
+  ctx.restore();
+}
 
 // ---- 鼠标 ----
 CV.addEventListener('mousedown', e=>{
-  const [x,y]=canvasXY(e); e.preventDefault();
-  if(!img) return;
-  if(mode==='box'){
-    if(box){
-      for(const [id,cx,cy] of boxHandles()){ if(Math.hypot(x-cx,y-cy)<=7){ dragging={t:'resize',id,ax:x,ay:y,hx0:box.x0,hy0:box.y0,hw:box.x1-box.x0,hh:box.y1-box.y0}; return; } }
-      if(inBox(x,y)){ dragging={t:'move',dx:x-box.x0,dy:y-box.y0}; return; }
-    }
-    box={x0:x,y0:y,x1:x+1,y1:y+1}; dragging={t:'new',ax:x,ay:y}; draw(); return;
-  }
-  if(mode==='brush'){ dragging={t:'stroke'}; addPt(x,y); }
-  if(mode==='erase'){ dragging={t:'erase'}; eraseAt(x,y); }
+  const [x,y]=cssXY(e); e.preventDefault();
+  if(!img) return toast('请先「连接并截图」');
+  if(mode==='crop'){ cropRect={x0:clamp(x,0,W-1),y0:clamp(y,0,H-1),x1:clamp(x,0,W-1)+1,y1:clamp(y,0,H-1)+1}; draw(); return; }
+  if(mode==='box'){ const r={x0:clamp(x,0,W-1),y0:clamp(y,0,H-1),x1:clamp(x,0,W-1)+1,y1:clamp(y,0,H-1)+1,intent:''}; drag={t:'new',r}; draw(); }
+  else if(mode==='brush'){ drag={t:'brush',pts:[]}; addPtTo(drag, x, y); draw(); }
+  else if(mode==='contour'){ drag={t:'contour',pts:[]}; addPtTo(drag, x, y); draw(); }
 });
 CV.addEventListener('mousemove', e=>{
-  if(!dragging) return;
-  const [x,y]=canvasXY(e);
-  if(dragging.t==='resize'){
-    const {id,hx0,hy0,hw,hh}=dragging;
-    let x0=hx0,x1=hx0+hw,y0=hy0,y1=hy0+hh;
-    if(id.includes('w')) x0=x; if(id.includes('e')) x1=x;
-    if(id.includes('n')) y0=y; if(id.includes('s')) y1=y;
-    box={x0:Math.min(x0,x1),x1:Math.max(x0,x1),y0:Math.min(y0,y1),y1:Math.max(y0,y1)};
-  } else if(dragging.t==='move'){ box={x0:x-dragging.dx,y0:y-dragging.dy,x1:x-dragging.dx+box.x1-box.x0,y1:y-dragging.dy+box.y1-box.y0}; }
-  else if(dragging.t==='new'){ box.x1=x; box.y1=y; }
-  else if(dragging.t==='stroke'){ addPt(x,y); }
-  else if(dragging.t==='erase'){ eraseAt(x,y); }
+  if(!img) return;
+  const [x,y]=cssXY(e);
+  if(mode==='crop' && cropRect){ cropRect.x1=clamp(x,0,W-1); cropRect.y1=clamp(y,0,W-1); draw(); return; }
+  if(!drag) return;
+  const [x2,y2]=cssXY(e);
+  if(drag.t==='new'){ drag.r.x1=clamp(x2,0,W-1); drag.r.y1=clamp(y2,0,W-1); }
+  else if(drag.t==='brush'){ addPtTo(drag, x, y); }
+  else if(drag.t==='contour'){ addPtTo(drag, x, y); }
   draw();
 });
-CV.addEventListener('mouseup', ()=>{ const wasResize = dragging && (dragging.t==='resize'||dragging.t==='new') && (box.x1-box.x0>6 && box.y1-box.y0>6);
-  dragging=null; draw(); if(wasResize && box) probe(); });
-CV.addEventListener('mouseleave', ()=>{ dragging=null; draw(); });
-
-function addPt(x,y){
-  const n=pts.length;
-  if(n && Math.hypot(x-pts[n-1][0],y-pts[n-1][1]) < Math.max(2,brushR*0.6)) return;
-  pts.push([clamp(x,0,W-1),clamp(y,0,H-1)]); draw();
-}
-function eraseAt(x,y){
-  const before=pts.length;
-  pts=pts.filter(([px,py])=>Math.hypot(px-x,py-y)>brushR);
-  if(pts.length!==before) draw();
-}
-
-// ---- 探测回填 ----
-async function probe(){
-  if(!box || (box.x1-box.x0)<4 || (box.y1-box.y0)<4) return;
-  const b=box.round();
-  const res=await fetch('/api/tpl_probe',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1})}).then(r=>r.json()).catch(()=>null);
-  if(res && res.boxes && res.boxes[0]){
-    const c=res.boxes[0];
-    // 仅当候选大小合理才回填(避免误吸到大块)
-    if((c.x1-c.x0)>2 && (c.y1-c.y0)>2 && (c.x1-c.x0)<(b.x1-b.x0)*2+30){
-      box={x0:c.x0,y0:c.y0,x1:c.x1,y1:c.y1}; draw();
-      toast('已回填识别框 '+Math.round(c.x1-c.x0)+'x'+Math.round(c.y1-c.y0));
-    }
+CV.addEventListener('mouseup', ()=>{
+  if(mode==='crop' && cropRect){
+    const x0=Math.min(cropRect.x0,cropRect.x1), y0=Math.min(cropRect.y0,cropRect.y1);
+    const x1=Math.max(cropRect.x0,cropRect.x1), y1=Math.max(cropRect.y0,cropRect.y1);
+    cropRect=null; setMode('box');
+    if(x1-x0>=4 && y1-y0>=4) applyCrop(x0,y0,x1,y1);
+    else toast('裁剪区域过小');
+    return;
   }
-  document.getElementById('btnProbe').disabled=false;
+  if(!drag) return;
+  const t=drag.t;
+  if(t==='new' && drag.r){
+    const x0=Math.min(drag.r.x0,drag.r.x1), x1=Math.max(drag.r.x0,drag.r.x1);
+    const y0=Math.min(drag.r.y0,drag.r.y1), y1=Math.max(drag.r.y0,drag.r.y1);
+    if(x1-x0>=2 && y1-y0>=2){
+      working.rect={x0:Math.round(x0),y0:Math.round(y0),x1:Math.round(x1),y1:Math.round(y1)};
+      toast('已框选，可继续画笔/描边或直接保存标记');
+    }
+  } else if(t==='brush'){
+    if(drag.pts.length) working.points.push(...drag.pts), toast('重点点 '+drag.pts.length+' 个（可继续框选/描边）');
+  } else if(t==='contour'){
+    if(drag.pts.length>=2) working.contour=drag.pts.slice(), toast('描边点 '+drag.pts.length+' 个（闭合轮廓）');
+  }
+  drag=null; draw(); renderSide();
+});
+function brushIm(){ return Math.max(1, Math.round(brushR * fullH / 720)); } // 笔径(直径, 图元px), 按截图高度归一化(720为基准)
+function addPtTo(st, x, y){
+  const p=st.pts, n=p.length;
+  const cx=clamp(Math.round(x),0,W-1), cy=clamp(Math.round(y),0,H-1);
+  if(n){
+    const lx=p[n-1][0], ly=p[n-1][1];
+    const d=Math.hypot(cx-lx, cy-ly);
+    if(d<0.6) return;                 // 过近跳过
+    const step=0.8, k=Math.ceil(d/step);  // 插值补密: 相邻点间距≤0.8px, 保证高缩放/快速落笔也连续
+    for(let i=1;i<=k;i++) p.push([Math.round(lx+(cx-lx)*i/k), Math.round(ly+(cy-ly)*i/k)]);
+  } else {
+    p.push([cx,cy]);
+  }
 }
+
+// ---- 裁剪：把画面缩小到 crop 区域，后续标注/缩放/提交都在该区域内（坐标自动加回偏移） ----
+function applyCrop(x0,y0,x1,y1){
+  const cw=x1-x0, ch=y1-y0;
+  if(cw<4||ch<4) return toast('裁剪区域过小');
+  // 已保存标注的坐标整体平移(相对新区域)
+  for(const a of annotations){
+    if(a.rect){ a.rect.x0-=x0; a.rect.x1-=x0; a.rect.y0-=y0; a.rect.y1-=y0; }
+    a.points=a.points.map(p=>[p[0]-x0,p[1]-y0]);
+    if(a.contour) a.contour=a.contour.map(p=>[p[0]-x0,p[1]-y0]);
+  }
+  if(working.rect){ working.rect.x0-=x0; working.rect.x1-=x0; working.rect.y0-=y0; working.rect.y1-=y0; }
+  working.points=working.points.map(p=>[p[0]-x0,p[1]-y0]);
+  if(working.contour) working.contour=working.contour.map(p=>[p[0]-x0,p[1]-y0]);
+  offsetX+=x0; offsetY+=y0;
+  W=cw; H=ch;
+  scale=Math.max(0.1, Math.min((canvasWrap.clientWidth-16)/W,(canvasWrap.clientHeight-16)/H, 8));
+  draw(); applyZoom();
+  toast(`已裁剪 ${cw}×${ch}（当前偏移 ${offsetX},${offsetY}）`);
+}
+// ---- 保存标记 / 删除 / 清空 ----
+function saveMark(){
+  if(!img) return toast('请先「连接并截图」');
+  if(!annHasWork()) return toast('先在画面上框选/画笔/描边后再保存');
+  const ann={ id:nid(), intent:'', rect:working.rect, points:working.points.slice(),
+              contour: working.contour ? working.contour.slice() : null, __k:mkKey() };
+  annotations.push(ann);
+  autoId++;
+  working={rect:null,points:[],contour:[]};
+  selectedId=ann.id;
+  draw(); renderSide(); toast('已保存标记 '+ann.id);
+}
+function removeAnn(a){ annotations=annotations.filter(x=>x!==a); if(selectedId===a.id) selectedId=null; draw(); renderSide(); }
+function undo(){ if(!annotations.length) return toast('没有可删除的标记'); removeAnn(annotations[annotations.length-1]); toast('已删除最后一个标记'); }
+function clearAll(){ if(!annotations.length) return toast('列表已空'); annotations=[]; selectedId=null; working={rect:null,points:[],contour:[]}; draw(); renderSide(); toast('已清空全部标记'); }
+
+// 生成连续轮廓: 基于 working.rect(画面坐标) → 转绝对坐标(加 offset) → 后端提取 → 回填 working.contour(画面坐标)
+async function autoContour(){
+  if(!img) return toast('请先「连接并截图」');
+  const r=working.rect;
+  if(!r) return toast('先在「区域框选」模式拖出一个矩形再生成');
+  const bx=document.getElementById('btnAutoCon'); bx.disabled=true;
+  try{
+    const res=await api('/api/tplt_contour',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({x0:r.x0+offsetX,y0:r.y0+offsetY,x1:r.x1+offsetX,y1:r.y1+offsetY})});
+    if(!res.ok){ toast('生成失败: '+(res.error||'未知'),4000); return; }
+    if(res.n<3){ toast('轮廓点过少，请扩大框选',3000); return; }
+    working.contour=res.points.map(p=>[p[0]-offsetX,p[1]-offsetY]);
+    toast('已回填 '+res.n+' 点连续轮廓（可拖「描边轮廓」再微调）');
+    draw(); renderSide();
+  } finally { bx.disabled=false; }
+}
+
+// ---- 侧栏清单（可编辑 id/备注、删除、复制 id、选中高亮） ----
+function renderSide(){
+  const el=document.getElementById('annotList');
+  document.getElementById('countHint').textContent = annotations.length ? `（${annotations.length} 项）` : '';
+  if(!annotations.length){
+    el.innerHTML='<div class="hint">暂无（在画面中标注后点「保存标记」）</div>'; return;
+  }
+  el.innerHTML='';
+  annotations.forEach(a=>{
+    const card=document.createElement('div');
+    card.className='card'+(a.id===selectedId?' sel':'');
+    card.onclick=(ev)=>{
+      if(ev.target.closest('input,button')) return; // 输入/按钮不触发重选(避免重建列表打断输入)
+      selectedId=a.id; draw(); renderSide();
+    };
+    const parts=[];
+    if(a.rect) parts.push(`<span class="tag rect">区域</span>${(a.rect.x1-a.rect.x0)}×${(a.rect.y1-a.rect.y0)}`);
+    if(a.points.length) parts.push(`<span class="tag brush">重点</span>${a.points.length}点`);
+    if(a.contour && a.contour.length) parts.push(`<span class="tag contour">描边</span>${a.contour.length}点`);
+    card.innerHTML=`
+      <div class="hd">
+        <input id="id_${a.__k}" class="sm" value="${esc(a.id)}" title="标记id（可改）">
+        <button class="btn mini" data-cp="${a.__k}">复制id</button>
+        <button class="btn mini danger" data-del="${a.__k}">删除</button>
+      </div>
+      <input style="width:100%" placeholder="意图/备注（如：这是可采粉图标）" value="${esc(a.intent)}" data-t="${a.__k}">
+      <div class="meta">${parts.join('')}</div>`;
+    el.appendChild(card);
+  });
+  // 绑定事件（id/备注即时写入 annotation 对象，进而影响后续提交）
+  el.querySelectorAll('input[data-t]').forEach(inp=>{
+    const key=inp.getAttribute('data-t');
+    const ann=annotations.find(x=>String(x.__k)===key);
+    if(ann) inp.addEventListener('input',()=>{ ann.intent=inp.value; });
+  });
+  el.querySelectorAll('input[id^="id_"]').forEach(inp=>{
+    const key=inp.id.split('_')[1];
+    const ann=annotations.find(x=>String(x.__k)===key);
+    if(ann) inp.addEventListener('input',()=>{ ann.id=inp.value.trim()||ann.id; });
+  });
+  el.querySelectorAll('[data-del]').forEach(b=>{
+    const key=b.getAttribute('data-del');
+    const ann=annotations.find(x=>String(x.__k)===key);
+    b.addEventListener('click',ev=>{ ev.stopPropagation(); removeAnn(ann); });
+  });
+  el.querySelectorAll('[data-cp]').forEach(b=>{
+    const key=b.getAttribute('data-cp');
+    const ann=annotations.find(x=>String(x.__k)===key);
+    b.addEventListener('click',ev=>{ ev.stopPropagation(); copyText(ann.id); });
+  });
+}
+let __kseq=0;
+function mkKey(){ return String(__kseq++); }
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function copyText(s){ const ta=document.createElement('textarea'); ta.value=s; document.body.appendChild(ta); ta.select(); try{ document.execCommand('copy'); toast('已复制 '+s); }catch(e){ toast('复制失败，请手动复制: '+s); } finally { document.body.removeChild(ta); } }
+
+// 渲染前为每条标注分配一个稳定键
+function withKeys(){ annotations.forEach(a=>{ if(a.__k===undefined) a.__k=mkKey(); }); }
 
 // ---- 网络 ----
 async function api(url,opts){ const r=await fetch(url,opts); return r.json(); }
-async function init(){
-  const res=await api('/api/tpl_init');
-  if(res.error){ toast('载图失败: '+res.error,3000); return; }
-  W=res.w||W0; H=res.h||H0; CV.width=W; CV.height=H;
-  const im=new Image(); im.onload=()=>{ img=im; draw(); };
-  im.src='data:image/jpeg;base64,'+res.jpeg;
-  renderList(res.templates||[]);
-  connectOk=true;
-}
-function renderList(list){
-  const el=document.getElementById('tplList'); el.innerHTML='';
-  if(!list.length){ el.innerHTML='<div class="hint">暂无模板</div>'; return; }
-  for(const t of list){
-    const d=document.createElement('div'); d.className='tpl';
-    d.innerHTML=`<span class="nm">${t.name}</span><span>${t.size}</span><span class="badge ${t.mask?'':'no'}">${t.mask?'蒙版':'无'}</span>`;
-    el.appendChild(d);
+function showShot(res){
+  // 新截图回到完整画面：把之前裁剪平移的坐标加回偏移，避免坐标错乱
+  if(offsetX||offsetY){
+    for(const a of annotations){
+      if(a.rect){ a.rect.x0+=offsetX; a.rect.x1+=offsetX; a.rect.y0+=offsetY; a.rect.y1+=offsetY; }
+      a.points=a.points.map(p=>[p[0]+offsetX,p[1]+offsetY]);
+      if(a.contour) a.contour=a.contour.map(p=>[p[0]+offsetX,p[1]+offsetY]);
+    }
+    if(working.rect){ working.rect.x0+=offsetX; working.rect.x1+=offsetX; working.rect.y0+=offsetY; working.rect.y1+=offsetY; }
+    working.points=working.points.map(p=>[p[0]+offsetX,p[1]+offsetY]);
+    if(working.contour) working.contour=working.contour.map(p=>[p[0]+offsetX,p[1]+offsetY]);
+    offsetX=0; offsetY=0;
   }
+  W=res.w||W0; H=res.h||H0;
+  fullW=res.w||W0; fullH=res.h||H0;
+  const im=new Image();
+  im.onload=()=>{ img=im; zoomReset(); };
+  im.src='data:image/jpeg;base64,'+res.jpeg;
+}
+async function doShot(){
+  const b=document.getElementById('btnShot'); b.disabled=true;
+  try{
+    const res=await api('/api/tplt_init');
+    if(res.error){ toast('截图失败: '+res.error,4000); return; }
+    showShot(res); toast('已刷新实时画面');
+  } finally { b.disabled=false; }
 }
 
 // ---- 事件绑定 ----
 document.getElementById('btnHome').onclick=()=>location.href='/';
-document.getElementById('btnConnect').onclick=async()=>{
-  const res=await api('/api/connect'); toast(res.ok?'已连接':'连接失败'); if(res.ok) init();
-};
-document.getElementById('btnLoad').onclick=init;
-function setMode(m){ mode=m; ['box','brush','erase'].forEach(k=>document.getElementById('mode'+k[0].toUpperCase()+k.slice(1)).classList.toggle('active',k===m)); }
+document.getElementById('btnShot').onclick=doShot;
+document.getElementById('btnRefresh').onclick=doShot;
+function setMode(m){
+  mode=m;
+  const map={box:'modeBox',brush:'modeBrush',contour:'modeContour'};
+  ['box','brush','contour'].forEach(k=>document.getElementById(map[k]).classList.toggle('active',k===m));
+  const cropBtn=document.getElementById('btnCrop');
+  if(cropBtn) cropBtn.classList.toggle('active',m==='crop');
+  if(m!=='crop') cropRect=null;
+  toast(m==='crop'?'裁剪模式：拖出矩形后自动确认':'模式：'+({box:'区域框选',brush:'画笔重点',contour:'描边轮廓'}[m]||m));
+}
 document.getElementById('modeBox').onclick=()=>setMode('box');
 document.getElementById('modeBrush').onclick=()=>setMode('brush');
-document.getElementById('modeErase').onclick=()=>setMode('erase');
-document.getElementById('brushR').oninput=e=>{ brushR=parseInt(e.target.value); if(mode!=='box') toast('笔刷 '+brushR); };
-document.getElementById('btnClearBrush').onclick=()=>{ pts=[]; draw(); };
-document.getElementById('btnProbe').onclick=async()=>{ const b=document.getElementById('btnProbe'); b.disabled=true; await probe(); };
-document.getElementById('btnReset').onclick=async()=>{ const r=await api('/api/tpl_init'); if(!r.error) renderList(r.templates||[]); };
-document.getElementById('btnSave').onclick=async()=>{
-  if(!img) return toast('请先载图');
-  if(!box || box.x1-box.x0<2) return toast('请先框选按钮');
-  const name=document.getElementById('name').value.trim();
-  const b={x0:Math.round(box.x0),y0:Math.round(box.y0),x1:Math.round(box.x1),y1:Math.round(box.y1)};
-  const res=await api('/api/tpl_save',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({name,x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1,maskPts:pts,maskBrush:Math.max(1,brushR)})});
-  if(res.ok){ toast('已保存 '+res.name+' '+res.size+(res.mask?'(含蒙版)':'')); const r=await api('/api/tpl_init'); if(!r.error) renderList(r.templates||[]); }
-  else toast('保存失败: '+(res.error||'未知'));
+document.getElementById('modeContour').onclick=()=>setMode('contour');
+document.getElementById('btnCrop').onclick=()=>setMode('crop');
+document.getElementById('btnAutoCon').onclick=autoContour;
+document.getElementById('brushR').oninput=e=>{ brushR=parseInt(e.target.value); toast('笔刷 '+brushR); };
+document.getElementById('btnZoomIn').onclick=()=>{ scale=clamp(scale*1.6,0.1,64); applyZoom(); };
+document.getElementById('btnZoomOut').onclick=()=>{ scale=clamp(scale/1.6,0.1,64); applyZoom(); };
+document.getElementById('btnZoomReset').onclick=zoomReset;
+document.getElementById('btnUndo').onclick=undo;
+document.getElementById('btnClear').onclick=clearAll;
+document.getElementById('btnSave').onclick=saveMark;
+document.getElementById('btnSubmit').onclick=async()=>{
+  if(!img) return toast('请先「连接并截图」');
+  withKeys();
+  if(!annotations.length) return toast('列表为空，请先在画面标注并「保存标记」后再提交');
+  const anns=annotations.map(a=>({
+    id:a.id, intent:a.intent,
+    rect:a.rect?{x0:a.rect.x0+offsetX,y0:a.rect.y0+offsetY,x1:a.rect.x1+offsetX,y1:a.rect.y1+offsetY}:null,
+    points:a.points.map(p=>[p[0]+offsetX,p[1]+offsetY]),
+    contour:a.contour?a.contour.map(p=>[p[0]+offsetX,p[1]+offsetY]):null,
+    // 相对坐标 0~1：rel = abs(含偏移) / 原图完整尺寸（fullW/fullH，裁剪后仍相对原始截图）
+    points_rel:a.points.map(p=>[+((p[0]+offsetX)/fullW).toFixed(5),+((p[1]+offsetY)/fullH).toFixed(5)]),
+    contour_rel:(a.contour?a.contour:[]).map(p=>[+((p[0]+offsetX)/fullW).toFixed(5),+((p[1]+offsetY)/fullH).toFixed(5)]),
+  }));
+  const rects=anns.filter(a=>a.rect).map(a=>({x0:a.rect.x0,y0:a.rect.y0,x1:a.rect.x1,y1:a.rect.y1,intent:a.intent}));
+  const points=anns.flatMap(a=>a.points);
+  const strokes=anns.filter(a=>a.points.length).map(a=>({pts:a.points,intent:a.intent}));
+  const contours=anns.filter(a=>a.contour&&a.contour.length).map(a=>({pts:a.contour,intent:a.intent}));
+  const payload={
+    annotation_id: annotations.map(a=>a.id).join('+') || String(Date.now()),
+    w:W, h:H,
+    rects, points, strokes, contours,
+    annotations: anns,
+    coord_note:"坐标约定: 绝对坐标为左上角原点、单位像素(abs, 已同时给 image_size[ w,h ]); 相对坐标 *_rel 为 abs 除以 image_size 得到 0~1; 散点 points/重点无序; 描边 contour 为按描画顺序的有序闭合点列(首尾相连), 供模型沿轮廓生成 mask 模板。",
+    meta:{brush:brushR, scale:scale, epoch:Date.now()},
+  };
+  // 方案A: 附带原始截图, 后端保存到 data/annot_shots/, 保证坐标与画面绑定
+  if(img){
+    const ob=document.createElement('canvas');
+    ob.width=fullW; ob.height=fullH;
+    const oc=ob.getContext('2d');
+    oc.drawImage(img,0,0,fullW,fullH);
+    payload.shot=ob.toDataURL('image/jpeg',0.92);
+  }
+  const res=await api('/api/tplt_submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(res.ok){ toast('已提交给助手 #'+res.annotation_id,3000); }
+  else toast('提交失败: '+(res.error||'未知'));
 };
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'){ pts=[]; draw(); } });
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){ drag=null; working={rect:null,points:[],contour:[]}; draw(); }
+});
 
-init();
+// 打开时取消未保存内容并自动尝试截图
+window.addEventListener('load',()=>{ applyZoom(); doShot(); });
 </script>
 </body>
 </html>

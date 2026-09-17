@@ -570,7 +570,7 @@ class OCREngine:
     def click_account_tail(self, tail: str, region_rel=None, min_score=0.4) -> bool:
         """在账号选择界面点击「账号文本尾部数字」匹配的账号条目并返回坐标缓存。
 
-        账号条目文本形如 `abc****de`(如 138****00)。登录界面固定尺寸, 用 OCR 识别各账号块,
+        账号条目文本形如 `abc****de`(中部脱敏的账号文本)。登录界面固定尺寸, 用 OCR 识别各账号块,
         locale 匹配文本尾部数字==tail 的块(可能合并块需取尾部), 点击其中心。
         region_rel=[x1,y1,x2,y2] 限定时只在账号列表区域匹配, 避免误点其它数字文本。
         """
@@ -602,7 +602,11 @@ class OCREngine:
         pt = Point(cx, cy, self.screen_w, self.screen_h)
         print(f"[账号尾部] {best['text']} 尾部={tail} -> {cx},{cy}")
         self.click_abs(cx, cy)
-        self._log_click(f"账号:{best['text']}", [], pt, "account_tail")
+        # 知识库键名不含真实账号文本: 按账号列表中的行序编号(每行坐标不同, 仍需分别缓存)
+        rows = sorted([b for b in blocks if "****" in b.get("text", "")],
+                      key=lambda b: b["center"][1])
+        idx = next((i for i, b in enumerate(rows) if b is best), 0) + 1
+        self._log_click(f"账号条目#{idx}", [], pt, "account_tail")
         for kw in (best["text"], f"账号尾{tail}"):
             self.last_rel[kw] = pt.rel
         return True

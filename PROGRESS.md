@@ -4,6 +4,25 @@
 
 ***
 
+> ## 🔖 接手声明（2026-09-18，接手方：TraeCode）
+>
+> - **产出与修改都在新工作区**：`E:\my_project\trae project\FAA_2026-9-18\FlowerAutoAssistant\`（由 `FlowerAutoAssistant_handoff.zip` 解压 69 文件 + 从原目录只读复制 `resource/template/` 16 个模板）。原目录 `E:\my_project\trae project\6a87d545e1df38ada361ca1c\FlowerAutoAssistant` 仅作**基线只读**，本轮不改写。
+> - **运行环境仍用原项目**：解释器 `...\6a87d545e1df38ada361ca1c\FlowerAutoAssistant\.venv\Scripts\python.exe`（Python 3.13.15 / cv2 5.0.0 / maafw）；实机 `127.0.0.1:16384`、`adb=D:\Program Files\Netease\MuMu\nx_main\adb.exe`。已实测从新工作区可直连截图（`py_compile` 0 错、`--list` 9 流程、`debug/_ws_env_check.png` 有效）。
+> - **数据分叉约定**：新工作区的 `data/`（`click_log.json` / `config.json` / `close_buttons.json` / `tplt_annotations.jsonl` / `water_count*`）是 **2026-09-17 基线副本**，之后只在**新工作区**增长。**交接期内请勿再从原目录跑自动化或 WebUI**，否则两边知识库各涨一份；端口 8765 同时只允许一个实例（当前无监听）。
+> - **回写方式**：原目录对当前 Agent 不可写 → 确认后的改动由用户拷贝回原目录（或授权后由 Agent 合并）。每次交付附「待回写文件清单 + SHA256」。
+> - **本轮负责范围**：①文档与代码对齐；②好友采粉并入 `flow_social.json` + WebUI 子面板；③交接期发现的问题修复。**不主动改动** `legacy/`、MaaCore 引擎本体；**不擅自** `git commit/push`。
+> - **并行协作提醒**：前序开发方可能继续参与同一目标 —— 双方按本文档顶部声明各自范围，不改对方正在写的文件（见 `HANDOFF.md` §8）。
+
+***
+
+> ## ✅ 开发流程约束（重要，自"从好友采粉"功能开发开始生效）
+>
+> **所有未经用户确认的新开发内容，一律暂存于临时工作区（如项目下新建 `workbench/` 或 `dev_work/` 目录），不直接更改主体项目（`flows/`、`webui/`、`webui.py`、`ocr_engine.py`、`daily.json` 等）。** 这样可避免新内容开发造成功能顺序混乱；只有用户确认了该新功能/逻辑后，才将其合并进主体项目（含对应 flow、开关、WebUI 子面板）。
+>
+> **开发工具沉淀规则**：开发过程中创建的新临时脚本，**尝试提取其可通用部分做成通用脚本**，存放在项目中专门的**开发工具部分**（`dev_tools/`，按类别分目录）。之后有需求时**先检索开发工具内是否已有相似功能脚本**再复用，而不是重复新建一次性临时脚本，以减少重复开销。
+
+***
+
 ## 1. 项目目标
 
 为页游《小花仙》实现一键挂机（收获/种植/浇水等）。长期对标 MAA 质量，但**技术路线已切换**（见下）。
@@ -28,7 +47,7 @@
 
 ***
 
-## 2. 当前进度（AS OF 2026-08-22）
+## 2. 当前进度（AS OF 2026-09-18，历史里程碑自 2026-08-22 起累加）
 
 ### ✅ 已完成
 
@@ -488,6 +507,25 @@
 - 备注1：在线礼包/花灵派对「点击任意处关闭」(0.5,0.9375) 为文字提示保留 OCR，不采。
 - 备注2：**模板匹配仅适用于纯图形按钮**（A组关闭钮、B组折角图标）；凡含文字标签的按钮一律保留 OCR 定位，采集结论与"有文字保留文字"原则一致。
 
+36. **✅ tpltool 2.0 人机协同标注重构 + 三项 UI 修复 + 好友采粉模板标注（AS OF 2026-09-17）**：
+   - **定位转变**：工具只产出**坐标标注 JSON**（`data/tplt_annotations.jsonl`），不直接保存模板；框选=缩小范围、画笔=重点提示层（不改像素）、描边=有序闭合点列供生成 mask。
+   - **重构内容**：独立页 `/tpltool`（[`tpltool.html`](tpltool.html)）+ 后端 [`webui.py`](webui.py) 新增 `/api/tplt_init`(复用主界面全局单例 `get_engine()` 截图, 未连接返回503) / `/api/tplt_load` / `/api/tplt_submit`(追加 jsonl)；旧 `tpl_init/tpl_probe/tpl_save` 已删除。
+   - **标记交互**：框选+画笔+描边可同标记内叠加后点「保存标记」进本地列表；列表可改 id/备注（备注 bug 已修：`card.onclick` 加 `if(ev.target.closest('input,button')) return` 守卫，输入不再被重建列表打断）、删除、复制 id、选中高亮。
+   - **观察能力**：缩放 0.1~64（滚轮/±/重置），最高放大到可见单像素；**笔刷像素级**可调 `min=1 max=16`（默认2）；**裁剪功能**：`裁剪` 模式拖矩形确认 → 画面缩到裁剪区、已存标注整体平移、`offsetX/offsetY` 累计偏移，提交时绝对坐标加回偏移、相对坐标按原图完整尺寸 `fullW/fullH` 计算；新截图(`showShot`)自动把裁剪平移坐标加回并复位完整画面。
+   - **好友采粉模板标注（进行中）**：用户已提交标注 `ann_1_63180`（1 rect + 25点 contour，可采粉图标）。`workbench/contour_to_tpl.py` 生成模板 `workbench/template/ann_1_63180.png` + mask + 复核图 `debug/contour_ann_1_63180.png`。**复核结论：黄线轮廓仍未完整包住图标顶部花簇（贴合约40~45%，顶部偏左内缩/花簇顶点遗漏）** → 待用户用改进后的工具（裁剪+单像素缩放+描边轮廓）重描 contour 后再次生成。
+   - **开发规则**：本次起所有未经确认的新开发内容暂存 `workbench/`，确认后再并入主体（见顶部「开发流程约束」）。
+
+37. **✅ 好友采粉可采粉图标轮廓重描 + tpltool 生成连续轮廓闭环（AS OF 2026-09-17）**：
+   - **连续轮廓重描**：用户改用裁剪+单像素缩放+「描边轮廓」模式提交闭合轮廓 `ann_1_30541`（48点，约25×23px，原图 rel(0.76,0.66~0.695)）。`workbench/contour_to_tpl.py` 生成模板 `workbench/template/ann_1_30541.png` + mask + 复核图 `debug/contour_ann_1_30541.png`。**复核：贴合约70~75%（较上次40%明显更好），仍三处可完善——顶部花簇右侧削顶、右下角向内折返路径、顶部直线段偏锯齿**。
+   - **新增「生成轮廓」闭环**（工具功能，非主体流程）：
+     - 后端 [`webui.py`](webui.py) 新增 `/api/tplt_contour`（POST）：复用 `get_engine()` 截图，在指定矩形(绝对像素)内均值漂移+OTSU+形态闭合找最大外轮廓，`approxPolyDP` 简化后返回有序闭合点列。
+     - 前端 [`tpltool.html`](tpltool.html)：header 加「生成轮廓」按钮 → 基于当前 `working.rect`(+offset 转绝对) 请求后端 → 回填 `working.contour`(画面坐标) 显示黄线底稿 → 用户仍可「描边轮廓」重画覆盖微调 → 保存/提交。
+     - 界面交互闭环：框选 → 生成连续轮廓 → 微调 → 保存 → 提交。
+   - **🔴 复核图空白根因（重要）**：`contour_to_tpl.py` 用固定旧源图 `debug/friend_friend_list.png`(0:08) 裁剪，其 y≈474~502 是"念菱世殇(无图标)"行；而用户标注时该行是"悠清水(绿色图标)" → **同一坐标不同画面，裁剪必然空白/错位**。tpltool 提交只存坐标、未存当时截图，源图与标注画面无法对齐。
+   - **✅ 方案A：提交自动存截图（已实现）**：tpltool「提交」时前端把**原始完整截图**（jpeg dataURL）随 payload 附带，后端 [`webui.py`](webui.py) `_tplt_submit` 解码保存到 `data/annot_shots/{annotation_id}.png` 并把相对路径写入 jsonl 的 `shot` 字段 → 坐标与画面严格绑定，后续模板/复核均用该截图，不再错位。
+   - **核心设计理念（重要，后续贯彻）**：**tpltool 的核心产物始终是坐标标注**；**捕捉/采集脚本在真实截图上完成模板截取**。捕捉脚本**本身要有原生识别能力**（OCR/颜色/模板三通道），同时能**借助 tpltool 提供的人工确认坐标做强化**——即把"人工框选的正确位置"当作监督样本反馈给捕捉脚本/知识库，类似大模型的监督微调(SFT)：识别正确→强化当前特征分；识别错误→依据人工标注纠正阈值/锚点/特征，逐步逼近精确。tpltool 定位角色是"强化学习的标注接口"，不是去取代捕捉脚本的自动识别。
+   - **开发工具沉淀（按新规则）**：新增 `dev_tools/explore/overlay_annotation.py`，把 jsonl 标注的矩形/轮廓叠加到任一源图生成整幅复核图(用法 `overlay_annotation.py [annotation_id] [src]`)。
+
 ### 🚧 进行中 / 待确认（实机作业校准）
 
 - **种植模块作业未真正执行**：每日编排里对"一键种植/种植箱"MISS（8s 超时）→ 未进花田 → 浇水/施肥/授粉/收花循环全部空转。编排框架 OK，实机作业动作需校准。
@@ -518,6 +556,8 @@
 
 1. **扫描是否含敏感信息**（提交前必做）：
 
+   - 🔴 **2026-09-18 复核：脱敏曾失守，已重写历史清除**（详见本章末尾「2026-09-18 敏感数据清除记录」）：`data/config.json` 与 `data/click_log.json` **都是受版本控制的文件**，且 `HEAD=0e61c34`（= `origin/main`）中曾含**真实账号尾号 / `enable_switch` 为开 / 浇水计数**，以及 2 条**以真实账号文本为键**的知识库条目 → 该内容**曾推送到公开仓库**；`webui.html` 还硬编码了账号下拉框。
+   - **处置结论（用户明确授权）**：采用 **方案②——重写全部历史 + force push 彻底清除**；同时**取消跟踪 `data/config.json`**（改为 `.gitignore` + 提供 `data/config.example.json` 模板），并修掉泄露源头（`webui.html` 硬编码账号下拉框 → 文本框、`ocr_engine.py` 写库键名不再含真实账号文本）。记录与验证证据见本章末尾。
    - 检查 `data/config.json` 是否内置了真实账号数据（如 `target_tail` 应为空 `""` 或由用户自行填写，不内置真实账号尾号）。
 
    - 检查 `data/click_log.json` 是否有账号类条目（键名或内容含 `195`/`186`/手机号模式/账号 `****` 尾号）。如发现，先脱敏（置空/删除该条目）再提交。
@@ -639,7 +679,7 @@
 
   - **③ 减少误触「删除账号」按钮**：`click_account_tail` 目前 `region_rel=[0.45,0.35,0.58,0.56]` 圈定账号列表，但①账号条目可能被 OCR 成"账号文本 + 删除按钮"的合并块，`best["center"]` 点整块中心会落在删除钮上；②region 若偏大致带进右侧删除列。建议：账号块匹配时排除含"删除/删"字样块、点击点取账号文本左侧/中部而非整块中心、并把 region 进一步收窄避让删除列与右上角。**（误触删除有账号风险，需谨慎处理）**
 
-- [x] **闪耀委托挑战·完整整轮实机回归**（`flow_shine.json`，里程碑33）：✅ 2026-08-30 实测 `config.enable_shine=true` + `--flow 闪耀委托挑战 --loop 1` 退出码0——navigate 进家族活动→闪耀委托挑战→loop\_text「参与挑战」连刷 **8 轮全通**（参与→推荐搭配→我换好了→确认→循环），达 max\_loop=8 上限后自然退出→右上角关闭。测试后已恢复 enable\_shine=false。⚠️ 注意 8 轮为 max\_loop 守卫上限而非按钮消失，若需耗尽当日次数可调大 max\_loop。
+- [x] **闪耀委托挑战·完整整轮实机回归**（原 `flow_shine.json` → **已并入 `flow_social.json`**，见里程碑33）：📌 **2026-09-18 更新**：独立 `flow_shine.json` 与 `daily.json` 的 `shine` 模块已**移除**，整段并入 [`flow_social.json`](flows/flow_social.json) 的 `if_config enable_shine` 块，命令改为 `--flow 社交任务`（此前为 `--flow 闪耀委托挑战`，该流程名已不存在）。✅ 2026-08-30 实测 `config.enable_shine=true` + `--flow 闪耀委托挑战 --loop 1` 退出码0——navigate 进家族活动→闪耀委托挑战→loop\_text「参与挑战」连刷 **8 轮全通**（参与→推荐搭配→我换好了→确认→循环），达 max\_loop=8 上限后自然退出→右上角关闭。测试后已恢复 enable\_shine=false。⚠️ 注意 8 轮为 max\_loop 守卫上限而非按钮消失，若需耗尽当日次数可调大 max\_loop。
 
 - [ ] **实机验证 retry\_loop 其余 2 处**（里程碑 26/里程碑28 记录；功能1、功能2 已验证）：逐一跑 `--flow` 复核 `${mark}` 目标命中 / 脱困重试 / 后段逻辑。
   - [x] **领取奖励·功能1 claim\_online**（`flow_claim.json` 功能1，本轮新增 retry\_loop）：`--flow 领取奖励` 实机跑通——retry\_loop 第1轮命中「在线礼包」(1058,155)→抽奖耗尽 N:3→2→1→时间礼包领取 50分钟档(cur (0.166,0.692))→关面板 corner\_pink\_small(1105,97)。✅ 2026-08-23
@@ -680,9 +720,14 @@
 | `ocr_engine.py`           | 核心引擎：连接/截图/OCR定位/颜色定位/点击/相对坐标/知识库回退/界面采集/关闭按钮遍历/区域文本判断/流程执行（CLI: `--flow`, `--collect`, `--list`, `--close-test`, `--add-close`, `--ocr-screen`） |
 | `data/click_log.json`     | **按钮知识库**（version2 两层嵌套 `scenes: {场景: {按钮: {记录, category}}}`）：按钮名→相对/绝对坐标、识别方式(ocr/color/fallback)、类别与场景分组（自动积累，兼容旧扁平格式加载）                       |
 | `data/close_buttons.json` | **关闭按钮-特殊逻辑注册表**：`corner`/`anchor_color`/`corner_white`/`corner_pink_small` 关闭按钮定位逻辑（带 scene/category），可扩展                                       |
-| `flows/*.json`            | 数据驱动流程定义（`type: wait_text/click_text/click_rel/sleep/close_dialog/if_text/if_fraction/loop_fraction/loop_times`）                                 |
-| `flows/daily.json`        | **编排**：按序调度 8 大模块（startup→signin→plant→energy→daily\_task→social→idle→claim），含 `required`/`on_fail` 容错                                           |
-| `flows/flow_*.json`       | 各模块流程：startup/signin/plant/**energy**/daily\_task/social/idle/claim/party                                                                        |
+| `flows/*.json`            | 数据驱动流程定义。**步骤类型全集**（[`ocr_engine.py`](ocr_engine.py) `run_step`）：`wait_text` / `click_text` / `click_template` / `click_account_tail` / `click_rel` / `sleep` / `close_dialog` / `if_text` / `if_fraction` / `if_greater` / `if_config` / `count_text` / `store_fraction` / `loop_text` / `loop_fraction` / `loop_times` / `retry_loop` / `navigate`（共 18 种；`wait_text_gone()` 仅为引擎方法，暂无同名步骤类型）                  |
+| `flows/daily.json`        | **编排**：按序调度 **8 大模块**（startup→signin→plant→social→energy→daily→claim→idle）。📌 2026-09-18 现状：**8 个模块全部 `required:false` + `on_fail:skip`**（单模块失败只跳过、不终止整轮）；原独立 `shine` 模块已并入 `social`。                                       |
+| `flows/flow_*.json`       | 各模块流程：startup(开始启动, 含可选切换账号) / signin / plant / social(**含闪耀委托挑战**) / energy / daily\_task / claim / idle。⚠️ `flow_party.json`、`flow_shine.json` 均已删除（分别并入 `flow_claim` 功能2、`flow_social`） |
+| `flows/common/entries.json` | **公共导航注册表**：`navigate` 步骤引用，已登记 3 个 target —— 家族活动 / 闪耀变身 / 花灵派对（各含 scene / mark\_text / mark\_fallback\_rel / max\_rounds / nav 链）。`common/` 子目录不被 `load_flows()` 扫入主流程 |
+| `webui.py` + `webui.html` + `tpltool.html` | 本地 WebUI（`http.server`，无第三方依赖）：使用/测试双界面、实时画面+OCR 标注、知识库场景树、模块 ⚙ 设置、停止当前流程(不关服务)、关闭服务；`/tpltool` 人机协同标注页（只产坐标标注） |
+| `data/tplt_annotations.jsonl` + `data/annot_shots/` | tpltool 标注产物：jsonl 追加写坐标标注；方案A —— 提交时前端附带原始截图，后端存 `annot_shots/{annotation_id}.png` 并把路径写入 `shot` 字段，保证坐标与画面严格绑定 |
+| `resource/template/*.png` | **模板匹配**模板（`click_template` 用，`TEMPLATE_DIR`）：close\_corner\_pink / close\_online\_small / close\_family / b1\_switch\_down 等。⚠️ 已被 `.gitignore` 排除，不入版本控制 |
+| `workbench/`              | **未确认功能的暂存区**（当前：好友采粉捕捉脚本 + 模板 + tpltool 设计稿）。用户确认后才并入主体 |
 | `legacy/`                 | 已弃用的旧 MAA 模板路线 & Unity 解包脚本**备份**（不参与运行）                                                                                                         |
 | `.gitignore`（项目根）         | 已忽略 `.venv/`、`debug/`、`legacy/`、`__pycache__/` 等                                                                                                 |
 | ✅ `flows/` 已清理            | 仅剩 `daily.json`+`flow_*.json`，无旧流程残留（enter\_garden\~test\_close 等已删，diag.py/validate\_daily.py/debug/ 已不存在，根目录临时调试截图已清）                          |
@@ -720,4 +765,47 @@
 - **PowerShell 重定向会破坏二进制 PNG**：`exec-out screencap` 输出必须用 Python `subprocess` 捕获原始字节，勿用 `>` 或管道。
 
 - ~~MAA 模板匹配路线已废弃~~：原 4 个模板（quick\_ops/plant\_box/one\_click/map）与 `daily.json` 属旧方案，不再使用（备份在 legacy）。
+
+---
+## 2026-09-17 · 好友采粉-捕捉脚本三通道（workbench 暂存）
+- **(恢复)好友采粉捕捉脚本** `workbench/capture_friend_pollin.py`：三通道①颜色(HSV 绿圈, 实测 HSV≈(47,82,170), x≈985)②模板(MAA 多尺度 `TM_CCOEFF_NORMED`+mask)③OCR(一键采粉/快捷操作)。含 SFT 监督比对接口(`load_gt_rect` 读 jsonl 人工 rect→命中率)。
+- **实测结论**：纯颜色通道在粉紫 UI 上不可靠(图标白芯使绿成"环"、圆度<0.45 枚举卡掉；背景海滩绿噪)，已降为回退通道；**主打模板通道**。
+- **MAA 匹配实测退化 inf**：当前模板 `friend_pollin.png` 是旧源误裁(尺寸 37×37 掩膜有效区过小→CCOEFF 除零 inf)，**必须用方案A新提交的绑定截图重裁模板**才能验证算法。
+- **WebUI 8765 曾堆 4 个旧实例**导致方案A(shot 落盘)不生效；已清掉全部 PID 统一以当前 `webui.py` 单实例重启(PID 41792)。方案A现在会 `data/annot_shots/{annotation_id}.png` 落盘。
+- **tpltool 画笔 UX 修**：画笔由"散点"改为**连续半透明红色粗描边**(线宽=brushR 图元px、随缩放放大、圆头圆角、远距自动断笔)；`addPtTo` 采样间距阈值放宽(1.0/brushR*0.4)；描边轮廓拖动实时细绿线。F5 生效。
+- **MAA 模板通道验证通过**：修复 `maa_match()` NMS 的 `all()`空真 bug → 改用 `any()` 并过滤非有限(inf/nan)分数；用方案A绑定截图 `data/annot_shots/ann_1_44654.png` 生成的**干净模板/mask(30×28)** 复跑，检出 **3 个绿色可采粉图标**(score 0.92~1.0，abs(987,196)/abs(987,293)/abs(987,488))，叠加图 `debug/pollin_detect.png` 确认无漏检无误检(无敌莉莉丝/ノ姒淡洳夢/伊一) → **验证通过可并入 `flow_social.json`**。
+- **tpltool 画笔"大像素"根因+修复（第3轮）**：根因是在高分屏(Windows显示缩放>100%, devicePixelRatio>1)下画布背板未乘 DPR，浏览器把整幅位图(含半透明矢量笔触)+`image-rendering:pixelated` 就近放大成"几个大方块像素"。修复：`applyZoom` 背板尺寸乘 `DPR`、绘制 `setTransform(scale*DPR,...)`、`brushPoly` 每顶点补画等径圆点保证圆头笔触、笔径仍按截图分辨率归一化 `brushIm()=round(brushR*fullH/720)`；删除死代码 `dot()`。node --check 通过。用户 Ctrl+F5 硬刷后试画验证。
+- **待办(进行中)**：用户 Ctrl+F5 后按方案A 用新画笔重描校验(可采粉/进家园/一键采粉键) → 若可采粉图标定位达标识可并 `flow_social.json` → 再并 WebUI 子面板。勿忘挂账项:种植"一键种植/种植箱"MISS、在线礼包 A2 关闭钮补采。
+
+---
+## 2026-09-18 · 交接接手（TraeCode）— 基线核对 + 文档-代码对齐 + 环境验证
+
+### A. 交接物与工作区
+- 交接物：`FlowerAutoAssistant_handoff.zip`(69 文件) + [`HANDOFF.md`](HANDOFF.md)；权威原目录 `E:\my_project\trae project\6a87d545e1df38ada361ca1c\FlowerAutoAssistant`（另含 .venv / data / resource / debug / legacy）。
+- **核对结果**：新工作区 28 个关键文件（引擎/前端/流程/数据/workbench）与**原目录工作树逐文件 SHA256 完全一致** → 交接包已包含当前**全部未提交改动**，基线无漂移。
+- 新工作区（本轮产出地）：`E:\my_project\trae project\FAA_2026-9-18\FlowerAutoAssistant\` = 解压 69 文件 + 只读复制 `resource/template/`(16) + `debug/friend_friend_list.png`。原目录保持**只读**。注：`6a87d545...\_stage_faa\` 是原目录的重复副本（5 个核心文件哈希相同），可忽略/删除。
+
+### B. 环境验证（用原项目 venv，从新工作区执行）
+- `python -m py_compile ocr_engine.py ocr_ui.py webui.py main.py` → exit 0。
+- `main.py --list` → 正确列出 **9 个流程**，且路径解析到新工作区（脚本 `BASE = parents[1]` 自动跟随，**无需改代码**）。
+- 实机链路：`dev_tools/explore/snap.py` 连接 `127.0.0.1:16384` 成功，截图 720×1280 落盘 `debug/_ws_env_check.png`(351KB，有效)。MaaCore 会打印一条 `settings get secure android_id` 的 `[ERR]`，属既有无害噪声。
+
+### C. 离线复核「好友采粉模板通道」结论 —— ✅ 复现一致
+用方案A绑定截图 `data/annot_shots/ann_1_44654.png` + `workbench/template/friend_pollin.png`(28×30)+mask 跑 `maa_match()`：命中 **3 个绿色可采粉图标**，score **1.000 / 0.965 / 0.919**，abs(987,196)/(987,488)/(987,293)——与 HANDOFF §3 记录一致，无漏检无误检。对照组：同画面纯颜色通道 `detect_pollen_green()` 只出 1 个 (986,491) → 再次印证"颜色不可靠、模板为主"。（纯内存复算，未改脚本、未覆盖 `debug/pollin_detect.png`）
+
+### D. ⚠️ 交接期发现「文档落后于代码」5 处（已在本文件就地对齐）
+1. **`flow_shine.json` 已删除**，整段并入 [`flow_social.json`](flows/flow_social.json) 的 `if_config enable_shine` 块，`daily.json` 的 `shine` 模块同步移除 → 命令由 `--flow 闪耀委托挑战` 改为 `--flow 社交任务`（里程碑33 与 §4 待办已加注）。
+2. [`flows/daily.json`](flows/daily.json) 现为 **8 模块且全部 `required:false` + `on_fail:skip`**（原文档记"核心模块 stop_round"）→ 单模块失败只跳过、不终止整轮。
+3. §5 文件清单补全：`flows/*.json` **步骤类型全集 18 种**、`flows/common/entries.json`、`webui.*`/`tpltool.html`、`data/tplt_annotations.jsonl`+`annot_shots/`、`resource/template/`、`workbench/`。
+4. 🔴 **脱敏曾失守 → 已按用户授权重写历史清除**：`data/config.json` 与 `data/click_log.json` **都受版本控制**，`0e61c34`(= `origin/main`) 中曾含真实账号尾号 / `enable_switch` 为开 / 浇水计数，以及 2 条以真实账号文本为键的知识库条目 → **曾推送到公开仓库**。2026-09-18 已用 `git filter-repo` 重写全部历史 + `push --force-with-lease`，并取消跟踪 `data/config.json`、修正泄露源头。详见 §2 末尾「2026-09-18 敏感数据清除记录」。
+5. 本轮纳入基线的未提交改动：`PROGRESS.md`、`flows/daily.json`、`flows/flow_social.json`、**删除** `flows/flow_shine.json`、`tpltool.html`(+560 行)、`webui.html`(+120 行)、`webui.py`(+233 行)。
+
+### E. 交接期约定
+见本文件顶部「🔖 接手声明」：数据分叉（交接期勿从原目录跑自动化/WebUI，8765 单实例）、回写方式（用户拷贝或授权后合并，交付附 SHA256 清单）、不改对方正在写的文件。
+
+### F. 本轮待办
+- [x] **同步文档 + 固化未提交改动**（本节 + 顶部声明 + README 刷新）
+- [ ] **好友采粉并入** `flow_social.json` + WebUI 子面板 —— 前置：用户 Ctrl+F5 后用新画笔重描「可采粉图标」→ 校准达标（模板/mask + 离线在绑定截图上验证命中）后并入
+- [ ] 🔴-1 「一键种植/种植箱」MISS 根因排查（`find_text()` 过宽块逻辑）；🔴-2 签到面板 A2 白色圆关闭钮补采
+- [ ] 交接期遗留（沿用旧待办）：流程名匹配"精确优先"、`click_log` 过期回退坐标更新
 

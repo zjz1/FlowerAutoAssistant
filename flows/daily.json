@@ -1,15 +1,14 @@
 {
     "name": "每日挂机编排",
-    "description": "顺序调度 8 大模块: 开始启动(登录进游戏, 含可选切换账号)->签到->种植->社交->体力->每日任务->挂机->领取奖励. 核心模块失败终止本轮, 可选模块失败自动跳过.",
+    "description": "顺序调度 8 大模块: 开始启动(登录进游戏, 含可选切换账号)->签到->种植->社交(含闪耀委托挑战)->体力->每日任务->领取奖励->挂机. 所有模块均为可选, 单个模块失败自动跳过, 不终止整轮.",
     "modules": [
-        { "id": "startup", "flow": "flow_startup.json",     "required": true,  "on_fail": "stop_round" },
+        { "id": "startup", "flow": "flow_startup.json",     "required": false, "on_fail": "skip" },
         { "id": "signin",  "flow": "flow_signin.json",      "required": false, "on_fail": "skip" },
-        { "id": "plant",   "flow": "flow_plant.json",       "required": true,  "on_fail": "stop_round" },
+        { "id": "plant",   "flow": "flow_plant.json",       "required": false, "on_fail": "skip" },
         { "id": "social",  "flow": "flow_social.json",      "required": false, "on_fail": "skip" },
         { "id": "energy",  "flow": "flow_energy.json",      "required": false, "on_fail": "skip" },
-        { "id": "shine",   "flow": "flow_shine.json",       "required": false, "on_fail": "skip" },
         { "id": "daily",   "flow": "flow_daily_task.json",  "required": false, "on_fail": "skip" },
-        { "id": "idle",    "flow": "flow_idle.json",        "required": false, "on_fail": "skip" },
-        { "id": "claim",   "flow": "flow_claim.json",       "required": false, "on_fail": "skip" }
+        { "id": "claim",   "flow": "flow_claim.json",       "required": false, "on_fail": "skip" },
+        { "id": "idle",    "flow": "flow_idle.json",        "required": false, "on_fail": "skip" }
     ]
 }

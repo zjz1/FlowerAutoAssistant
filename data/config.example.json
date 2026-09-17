@@ -1,0 +1,9 @@
+{
+    "enable_switch": false,
+    "target_tail": "",
+    "claim_online": true,
+    "claim_party": true,
+    "enable_shine": false,
+    "_comment": "enable_switch: 是否启用【切换账号】可选功能(默认 false 关闭)。true 时每日编排会在登录前执行切换账号模块; false 时跳过。target_tail: 目标账号文本尾部数字(由用户自行填写, 默认留空, 不在配置中内置真实账号)。claim_online: 领取奖励·功能1【在线礼包】开关(默认 true 开启)。claim_party: 领取奖励·功能2【花灵派对】开关(默认 true 开启)。enable_shine: 社交任务·家族活动【闪耀委托挑战】开关(默认 false 关闭)。流程 flow_shine.json 内用 if_config 读取, false 时整段跳过。以上均可在 Web UI 或命令行修改。",
+    "_usage": "这是模板文件: 复制为 data/config.json 后再填写。data/config.json 已被 .gitignore 排除, 不会进版本库(含账号尾号/浇水计数等本机状态)。"
+}

@@ -25,6 +25,12 @@ _probe*.png
 _probe_*.png
 _tmp_*.py
 
+# 本地私有配置（含账号尾号等本机运行状态, 勿提交; 模板见 data/config.example.json）
+data/config.json
+
+# 标注绑定的原始截图（游戏画面, 勿提交 —— 规避 IP 风险）
+data/annot_shots/
+
 # fastdeploy 临时缓存等
 *.crdownload
 

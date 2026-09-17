@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,9 +30,9 @@ ENGINE: OCREngine | None = None
 ENGINE_LOCK = threading.Lock()
 _SERVER = None  # 当前 http server 实例, 用于 /api/shutdown
 
-_TPL_DIR = BASE / "resource" / "template"          # 模板目录
-_TPL_IMG = None                                    # 模板标注工具最近一次截图缓存(BGR)
-_TPL_IMG_LOCK = threading.Lock()
+# 模板标注工具(人机协同标注): 只记录坐标标注, 不直接保存模板文件
+_ANNOT_FILE = BASE / "data" / "tplt_annotations.jsonl"   # 提交给助手的标注记录(追加)
+_ANNOT_LOCK = threading.Lock()
 
 # ---- 运行日志环形缓冲 (支持增量拉取) ----
 _LOG_LOCK = threading.Lock()
@@ -77,35 +76,6 @@ def get_engine() -> OCREngine:
         if ENGINE is None:
             ENGINE = OCREngine(adb_path=ADB_PATH, address=ADB_ADDRESS)
         return ENGINE
-
-
-def _tpl_probe_boxes(img, x0, y0, x1, y1, n=3):
-    """区域内按前景颜色连通域探测图形按钮候选框(返回绝对像素 bbox 列表, 按面积降序)。"""
-    import cv2
-    import numpy as np
-    reg = img[y0:y1, x0:x1]
-    h, w = reg.shape[:2]
-    if h < 4 or w < 4 or reg.size == 0:
-        return []
-    # 背景色: 取区域四围边框像素的中值
-    edge = np.concatenate([reg[0:2].reshape(-1, 3), reg[-2:].reshape(-1, 3),
-                           reg[:, 0:2].reshape(-1, 3), reg[:, -2:].reshape(-1, 3)])
-    bg = np.median(edge, axis=0)
-    diff = np.sqrt(((reg.astype(np.int16) - bg.astype(np.int16)) ** 2).sum(-1))
-    fg = (diff > 28).astype(np.uint8)
-    # 去噪后找连通域
-    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-    cnt, labels, stats, _ = cv2.connectedComponentsWithStats(fg, 8)
-    cand = []
-    max_area = 0.85 * w * h
-    for i in range(1, cnt):
-        _x, _y, _w, _h, a = stats[i]
-        if a < 24 or a > max_area:
-            continue
-        cand.append({"x0": x0 + int(_x), "y0": y0 + int(_y),
-                     "x1": x0 + int(_x + _w), "y1": y0 + int(_y + _h), "area": int(a)})
-    cand.sort(key=lambda b: -b["area"])
-    return cand[:n]
 
 
 def _img_to_jpeg_b64(img) -> str:
@@ -219,6 +189,7 @@ class Handler(BaseHTTPRequestHandler):
                 "target_tail": eng.config.get("target_tail", ""),
                 "claim_online": bool(eng.config.get("claim_online", True)),
                 "claim_party": bool(eng.config.get("claim_party", True)),
+                "enable_shine": bool(eng.config.get("enable_shine", False)),
             })
         if api == "daily" and self.command == "GET":
             return self._daily()
@@ -236,15 +207,19 @@ class Handler(BaseHTTPRequestHandler):
                 eng.update_config(claim_online=bool(data["claim_online"]))
             if "claim_party" in data:
                 eng.update_config(claim_party=bool(data["claim_party"]))
+            if "enable_shine" in data:
+                eng.update_config(enable_shine=bool(data["enable_shine"]))
             now = bool(eng.config.get("enable_switch", False))
             log_append(f"[config] 切换账号功能 {'启用' if now else '关闭'}"
                        + (f", 目标尾部={eng.config.get('target_tail')}" if now else ""))
             log_append(f"[config] 领取奖励功能1在线礼包={'开' if eng.config.get('claim_online') else '关'}"
-                       f", 功能2花灵派对={'开' if eng.config.get('claim_party') else '关'}")
+                       f", 功能2花灵派对={'开' if eng.config.get('claim_party') else '关'}"
+                       f", 闪耀委托挑战={'开' if eng.config.get('enable_shine') else '关'}")
             return self._send_json({
                 "ok": True, "changed": pre != now, "enable_switch": now,
                 "claim_online": bool(eng.config.get("claim_online", True)),
                 "claim_party": bool(eng.config.get("claim_party", True)),
+                "enable_shine": bool(eng.config.get("enable_shine", False)),
             })
 
         if api == "connect" and self.command == "POST":
@@ -268,13 +243,15 @@ class Handler(BaseHTTPRequestHandler):
         if api == "shutdown" and self.command == "POST":
             return self._shutdown()
 
-        # ---- 模板标注工具 API ----
-        if api == "tpl_init" and self.command == "GET":
-            return self._tpl_init()
-        if api == "tpl_probe" and self.command == "POST":
-            return self._tpl_probe()
-        if api == "tpl_save" and self.command == "POST":
-            return self._tpl_save()
+        # ---- 模板标注工具 API (人机协同标注, 只回传坐标, 不直接存模板) ----
+        if api == "tplt_init" and self.command == "GET":
+            return self._tplt_init()
+        if api == "tplt_load" and self.command == "POST":
+            return self._tplt_load()
+        if api == "tplt_submit" and self.command == "POST":
+            return self._tplt_submit()
+        if api == "tplt_contour" and self.command == "POST":
+            return self._tplt_contour()
 
         self._send_json({"error": "no such api"}, 404)
 
@@ -304,83 +281,127 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    @staticmethod
-    def _tpl_files() -> list[dict]:
-        """返回模板目录文件(名称+是否含蒙版)。"""
-        _TPL_DIR.mkdir(parents=True, exist_ok=True)
-        out = []
-        for f in sorted(_TPL_DIR.glob("*.png")):
-            name = f.name[:-4]
-            if name.endswith(".mask"):
-                continue
-            out.append({"name": name, "size": f"{f.stat().st_size} B",
-                        "mask": (_TPL_DIR / f"{name}.mask.png").exists()})
-        return out
-
-    def _tpl_init(self):
-        """连接并截图, 返回图像(jpeg)+尺寸+现有模板列表+可选区内探测候选。"""
+    def _tplt_init(self):
+        """复用主界面已连引擎截图, 返回 jpeg + 尺寸。未连接则提示先到主界面连接。"""
         eng = get_engine()
         if not _is_connected(eng):
-            return self._send_json({"error": "未连接", "status": _status()}, 503)
+            return self._send_json({"error": "未连接: 请先到主界面完成「连接设备」后再使用", "status": _status()}, 503)
         img = eng.screenshot()
         if img is None:
             return self._send_json({"error": "截图失败"}, 500)
-        with _TPL_IMG_LOCK:
-            global _TPL_IMG
-            _TPL_IMG = img.copy()
+        jpg = _img_to_jpeg_b64(img)
+        return self._send_json({"jpeg": jpg, "w": int(img.shape[1]), "h": int(img.shape[0])})
+
+    def _tplt_load(self):
+        """可选: 按已知图片载入(仅允许 debug/ 下文件路径), 返回其 base64 jpeg 供标注。不做探测回填。"""
+        data = self._read_json()
+        path = str(data.get("path") or "")
+        target = (BASE / path).resolve()
+        allow = (BASE / "debug").resolve()
+        if not str(target).startswith(str(allow)) or not target.is_file():
+            return self._send_json({"error": "仅允许载入 debug/ 目录下的图片"}, 400)
+        import cv2
+        img = cv2.imread(str(target))
+        if img is None:
+            return self._send_json({"error": "读取图片失败"}, 400)
         jpg = _img_to_jpeg_b64(img)
         return self._send_json({"jpeg": jpg, "w": int(img.shape[1]), "h": int(img.shape[0]),
-                                "templates": self._tpl_files()})
+                                "loaded": target.name})
 
-    def _tpl_probe(self):
-        """在指定区域内按颜色前景连通域探测图形按钮候选框(回填识别框)。"""
-        with _TPL_IMG_LOCK:
-            img = _TPL_IMG
-        if img is None:
-            return self._send_json({"error": "请先载图"}, 400)
+    def _tplt_contour(self):
+        """在截图指定矩形(abs 像素)内自动提取主轮廓, 返回有序闭合点列(绝对像素)。
+        用于 tpltool 闭环: 用户框选后请求一次, 回填为可调整的连续水线轮廓底稿。
+        """
         data = self._read_json()
-        x0, y0, x1, y1 = (int(data[k]) for k in ("x0", "y0", "x1", "y1"))
-        x0, x1 = sorted((x0, x1)); y0, y1 = sorted((y0, y1))
-        boxes = _tpl_probe_boxes(img, x0, y0, x1, y1)
-        return self._send_json({"boxes": boxes})
-
-    def _tpl_save(self):
-        """按选框裁模板, 可选用画笔蒙版生成匹配掩码 <name>.mask.png。"""
-        with _TPL_IMG_LOCK:
-            img = _TPL_IMG
+        eng = get_engine()
+        if not _is_connected(eng):
+            return self._send_json({"error": "未连接: 请先到主界面完成「连接设备」后再使用"}, 503)
+        img = eng.screenshot()
         if img is None:
-            return self._send_json({"error": "请先载图"}, 400)
-        data = self._read_json()
-        name = re.sub(r"[^0-9A-Za-z_.\-]", "_", str(data.get("name", "")).strip() or "tpl")
-        base = name[:-4] if name.lower().endswith(".png") else name
-        if not base:
-            return self._send_json({"error": "模板名不能为空"}, 400)
-        x0, y0, x1, y1 = (int(data[k]) for k in ("x0", "y0", "x1", "y1"))
-        x0, x1 = sorted((x0, x1)); y0, y1 = sorted((y0, y1))
-        if x1 - x0 < 2 or y1 - y0 < 2:
-            return self._send_json({"error": "选框过小"}, 400)
+            return self._send_json({"error": "截图失败"}, 500)
         h, w = img.shape[:2]
+        try:
+            x0, y0, x1, y1 = [int(data[k]) for k in ("x0", "y0", "x1", "y1")]
+        except Exception:
+            return self._send_json({"error": "缺少矩形 x0/y0/x1/y1"}, 400)
+        # 收窄到画面并保证最小尺寸
         x0, y0 = max(0, x0), max(0, y0)
         x1, y1 = min(w, x1), min(h, y1)
-        _TPL_DIR.mkdir(parents=True, exist_ok=True)
-        crop = img[y0:y1, x0:x1].copy()
-        tw, th = x1 - x0, y1 - y0
-        mask_pts = [p for p in data.get("maskPts") or []
-                    if isinstance(p, (list, tuple)) and len(p) >= 2]
-        if mask_pts:
-            import cv2
-            import numpy as np
-            brush = int(data.get("maskBrush", 4)) or 4
-            mask = np.zeros((th, tw), np.uint8)
-            for (px, py) in mask_pts:
-                ix = int(min(max(px, x0), x1 - 1)) - x0
-                iy = int(min(max(py, y0), y1 - 1)) - y0
-                cv2.circle(mask, (ix, iy), max(1, brush), 255, -1)
-            cv2.imwrite(str(_TPL_DIR / f"{base}.mask.png"), mask)
-        cv2.imwrite(str(_TPL_DIR / f"{base}.png"), crop)
-        log_append(f"[tpltool] 已采集模板 {base} {tw}x{th} 蒙版{'有' if mask_pts else '无'}")
-        return self._send_json({"ok": True, "name": base, "size": f"{tw}x{th}",
-                                "mask": bool(mask_pts)})
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return self._send_json({"error": "矩形过小"}, 400)
+        import cv2
+        import numpy as np
+        roi = img[y0:y1, x0:x1]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        # 均值漂移+OTSU 突出前景主体, 形态闭合联通碎块
+        blur = cv2.pyrMeanShiftFiltering(roi, 7, 21)
+        g2 = cv2.cvtColor(blur, cv2.COLOR_BGR2GRAY)
+        _, th = cv2.threshold(g2, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kern, iterations=2)
+        cnts, _ = cv2.findContours(th[:, :], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            return self._send_json({"error": "未在区域内检测到前景轮廓"}, 404)
+        c = max(cnts, key=cv2.contourArea)
+        # 缺省时外周: 用轮廓 + 外接矩形合成封闭环, 降低阈值退化风险
+        if cv2.contourArea(c) < 8:
+            return self._send_json({"error": "前景占比过小, 请扩大框选"}, 404)
+        c = c[:, 0, :]  # Nx2
+        # 平滑: 用 approxPolyDP 适度简化, 返回绝对坐标
+        eps = 0.5
+        ap = cv2.approxPolyDP(c, eps, True).reshape(-1, 2)
+        pts = [[int(x0 + p[0]), int(y0 + p[1])] for p in ap]
+        return self._send_json({"ok": True, "points": pts, "n": len(pts)})
+
+    def _tplt_submit(self):
+        """提交标注(画面尺寸 + 关注矩形 + 重点坐标集 + 每标注意图 + 本次标注id), 后端只记录坐标, 不直接存模板。"""
+        data = self._read_json()
+        try:
+            w, h = int(data.get("w") or 0), int(data.get("h") or 0)
+        except Exception:
+            w = h = 0
+        if w <= 0 or h <= 0:
+            return self._send_json({"error": "缺少画面尺寸"}, 400)
+        # 方案A: 附带原始截图, 保存到 data/annot_shots/{annotation_id}.png, 坐标与画面绑定
+        shot_saved = ""
+        shot = str(data.get("shot") or "")
+        if shot and "," in shot and shot.startswith("data:image/"):
+            try:
+                import base64 as _b64
+                b64 = shot.split(",", 1)[1]
+                raw = _b64.b64decode(b64)
+                shot_dir = BASE / "data" / "annot_shots"
+                shot_dir.mkdir(parents=True, exist_ok=True)
+                shot_name = str(data.get("annotation_id") or "ann") + ".png"
+                (shot_dir / shot_name).write_bytes(raw)
+                shot_saved = str(Path("data") / "annot_shots" / shot_name)
+            except Exception as e:
+                log_append(f"[tpltool] 保存标注截图失败: {e}")
+        record = {
+            "annotation_id": str(data.get("annotation_id") or ""),
+            "ts": int(time.time()),
+            "image_size": [w, h],
+            "shot": shot_saved,
+            "rects": data.get("rects") or [],
+            "points": data.get("points") or [],
+            "strokes": data.get("strokes") or [],
+            # 每标注可含一条有序闭合轮廓 points 序列(绝对像素, 保留顺序), 供模型沿轮廓生成 mask 模板
+            "contours": data.get("contours") or [],
+            # 综合标注: 每项含 id/intent/rect+points(+points_rel)+contour(+contour_rel), 见 coord_note
+            "annotations": data.get("annotations") or [],
+            "coord_note": data.get("coord_note") or "",
+            "meta": data.get("meta") or {},
+        }
+        try:
+            with _ANNOT_LOCK:
+                _ANNOT_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with _ANNOT_FILE.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as e:
+            return self._send_json({"error": f"记录标注失败: {e}"}, 500)
+        log_append(f"[tpltool] 接收标注 #{record['annotation_id']} "
+                   f"矩形{len(record['rects'])}, 重点笔画{len(record['strokes'])}, 描边轮廓{len(record['contours'])}")
+        return self._send_json({"ok": True, "annotation_id": record["annotation_id"]})
 
     # ---- API: KB ----
     def _kb(self):
@@ -624,7 +645,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         resource = self.path.split("?", 1)[0]
-        if resource != "/api/connect" and resource != "/api/set_mode" and resource != "/api/click" and resource != "/api/back" and resource != "/api/run" and resource != "/api/set_config" and resource != "/api/run_daily" and resource != "/api/shutdown" and resource != "/api/tpl_probe" and resource != "/api/tpl_save":
+        if resource != "/api/connect" and resource != "/api/set_mode" and resource != "/api/click" and resource != "/api/back" and resource != "/api/run" and resource != "/api/set_config" and resource != "/api/run_daily" and resource != "/api/shutdown" and resource != "/api/tplt_load" and resource != "/api/tplt_submit" and resource != "/api/tplt_contour":
             self._send_json({"error": "method not allowed"}, 405)
             return
         try:
