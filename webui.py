@@ -34,6 +34,15 @@ _SERVER = None  # 当前 http server 实例, 用于 /api/shutdown
 _ANNOT_FILE = BASE / "data" / "tplt_annotations.jsonl"   # 提交给助手的标注记录(追加)
 _ANNOT_LOCK = threading.Lock()
 
+# ---- 允许 POST 的 API 白名单 ----
+# 只有列在这里的路径才会被 do_POST 交给路由处理, 其余一律 405。
+# ⚠ 新增/改动任何 POST 接口时**必须同步这里**, 否则前端会收到 "method not allowed"。
+_POST_ROUTES = {
+    "/api/connect", "/api/set_mode", "/api/click", "/api/run",
+    "/api/stop", "/api/set_config", "/api/run_daily", "/api/shutdown",
+    "/api/tplt_load", "/api/tplt_submit", "/api/tplt_contour",
+}
+
 # ---- 运行日志环形缓冲 (支持增量拉取) ----
 _LOG_LOCK = threading.Lock()
 _LOGS: list[str] = []
@@ -190,6 +199,9 @@ class Handler(BaseHTTPRequestHandler):
                 "claim_online": bool(eng.config.get("claim_online", True)),
                 "claim_party": bool(eng.config.get("claim_party", True)),
                 "enable_shine": bool(eng.config.get("enable_shine", False)),
+                "claim_hb": bool(eng.config.get("claim_hb", False)),
+                "enable_pollin": bool(eng.config.get("enable_pollin", True)),
+                "enable_like": bool(eng.config.get("enable_like", False)),
             })
         if api == "daily" and self.command == "GET":
             return self._daily()
@@ -207,19 +219,31 @@ class Handler(BaseHTTPRequestHandler):
                 eng.update_config(claim_online=bool(data["claim_online"]))
             if "claim_party" in data:
                 eng.update_config(claim_party=bool(data["claim_party"]))
+            if "claim_hb" in data:
+                eng.update_config(claim_hb=bool(data["claim_hb"]))
             if "enable_shine" in data:
                 eng.update_config(enable_shine=bool(data["enable_shine"]))
+            if "enable_pollin" in data:
+                eng.update_config(enable_pollin=bool(data["enable_pollin"]))
+            if "enable_like" in data:
+                eng.update_config(enable_like=bool(data["enable_like"]))
             now = bool(eng.config.get("enable_switch", False))
             log_append(f"[config] 切换账号功能 {'启用' if now else '关闭'}"
                        + (f", 目标尾部={eng.config.get('target_tail')}" if now else ""))
             log_append(f"[config] 领取奖励功能1在线礼包={'开' if eng.config.get('claim_online') else '关'}"
                        f", 功能2花灵派对={'开' if eng.config.get('claim_party') else '关'}"
-                       f", 闪耀委托挑战={'开' if eng.config.get('enable_shine') else '关'}")
+                       f", 功能3奇妙花宝={'开' if eng.config.get('claim_hb') else '关'}"
+                       f", 闪耀委托挑战={'开' if eng.config.get('enable_shine') else '关'}"
+                       f", 好友采粉={'开' if eng.config.get('enable_pollin', True) else '关'}"
+                       f", 社区点赞={'开' if eng.config.get('enable_like', False) else '关'}")
             return self._send_json({
                 "ok": True, "changed": pre != now, "enable_switch": now,
                 "claim_online": bool(eng.config.get("claim_online", True)),
                 "claim_party": bool(eng.config.get("claim_party", True)),
+                "claim_hb": bool(eng.config.get("claim_hb", False)),
                 "enable_shine": bool(eng.config.get("enable_shine", False)),
+                "enable_pollin": bool(eng.config.get("enable_pollin", True)),
+                "enable_like": bool(eng.config.get("enable_like", False)),
             })
 
         if api == "connect" and self.command == "POST":
@@ -232,14 +256,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._screen()
         if api == "click" and self.command == "POST":
             return self._click()
-        if api == "back" and self.command == "POST":
-            return self._back()
         if api == "run" and self.command == "POST":
             return self._run()
         if api == "stop" and self.command == "POST":
             return self._stop()
         if api == "log" and self.command == "GET":
             return self._log()
+        if api == "log_download" and self.command == "GET":
+            return self._log_download()
         if api == "shutdown" and self.command == "POST":
             return self._shutdown()
 
@@ -456,12 +480,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": "需要 {rel:[rx,ry]} 或 {x,y}"}, 400)
         return self._send_ok()
 
-    # ---- API: 返回键 ----
-    def _back(self):
-        eng = get_engine()
-        ok = eng.back() if _is_connected(eng) else False
-        return self._send_json({"ok": ok}, 200 if ok else 503)
-
     # ---- API: 每日编排 (使用界面读取任务列表) ----
     def _daily(self):
         eng = get_engine()
@@ -493,6 +511,8 @@ class Handler(BaseHTTPRequestHandler):
                      "desc": "抽奖耗尽次数 + 时间档位领取", "value": bool(eng.config.get("claim_online", True))},
                     {"key": "claim_party", "type": "switch", "label": "功能2 · 花灵派对",
                      "desc": "进入派对并领取 6 个在线时长礼包", "value": bool(eng.config.get("claim_party", True))},
+                    {"key": "claim_hb", "type": "switch", "label": "功能3 · 奇妙花宝",
+                     "desc": "家园→奇妙花宝→奇妙特权，领奇妙礼包每日/每周/每月三档", "value": bool(eng.config.get("claim_hb", False))},
                 ]
             if mid == "startup":
                 return [
@@ -608,6 +628,33 @@ class Handler(BaseHTTPRequestHandler):
             lines = _LOGS[after:]
         return self._send_json({"next": after + len(lines), "lines": lines})
 
+    # ---- API: 导出日志为 txt 文件 ----
+    def _log_download(self):
+        """把服务端日志缓冲**全量**导出为 .txt 下载。
+
+        注意: 导出的是服务端缓冲的全部内容(含页面打开之前的历史), 不只是前端 DOM
+        里已收到的那部分; 因此刷新页面后依然能拿到完整日志。
+        """
+        with _LOG_LOCK:
+            lines = list(_LOGS)
+        text = "".join(lines)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        head = (f"# FlowerAutoAssistant 运行日志\n"
+                f"# 导出时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                # _LOGS 存的是 _TeeOut.write() 的写入分片(print 的正文与换行是两次 write),
+                # len(_LOGS) 是分片数 ≠ 行数(实测 2113 分片只对应 1202 行), 必须按实际换行数统计。
+                f"# 总行数: {text.count(chr(10))}\n"
+                + "-" * 40 + "\n")
+        # 前缀 \ufeff(BOM) 让 Windows 记事本按 UTF-8 打开, 避免中文乱码
+        body = ("\ufeff" + head + text).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Disposition",
+                         f'attachment; filename="faa_log_{ts}.txt"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     # ---- API: 停止流程 (UI「停止」按钮, 不关闭服务) ----
     def _stop(self):
         request_stop()
@@ -644,8 +691,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
-        resource = self.path.split("?", 1)[0]
-        if resource != "/api/connect" and resource != "/api/set_mode" and resource != "/api/click" and resource != "/api/back" and resource != "/api/run" and resource != "/api/set_config" and resource != "/api/run_daily" and resource != "/api/shutdown" and resource != "/api/tplt_load" and resource != "/api/tplt_submit" and resource != "/api/tplt_contour":
+        if self.path.split("?", 1)[0] not in _POST_ROUTES:
             self._send_json({"error": "method not allowed"}, 405)
             return
         try:

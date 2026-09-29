@@ -1,6 +1,6 @@
 {
     "name": "开始启动",
-    "description": "登录进游戏。可选功能: 若启用切换账号(enable_switch=true, 来自 data/config.json), 先点「切换账号」折角图标展开账号列表, 再按目标账号尾部数字(target_tail)点击切换; 然后点「登录」->点「点击进入游戏」。",
+    "description": "登录进游戏。可选功能: 若启用切换账号(enable_switch=true, 来自 data/config.json), 先点「切换账号」折角图标展开账号列表, 再按目标账号尾部数字(target_tail)点击切换; 然后点「登录」->点「点击进入游戏」。收尾守卫: 先 wait_text 等主界面加载(底部可见『社交』/『家园』/『仙境花园』), 未确认则脱困(close_dialog 关掉可能挡屏的公告/弹窗)后再点一次进入游戏, 最多两轮, 仍不行如实放弃——避免后续所有模块在登录界面上瞎跑。",
     "steps": [
         { "type": "if_config",
           "key": "enable_switch",
@@ -23,6 +23,38 @@
           "min_score": 0.35,
           "then": [{ "type": "click_text", "text": ["点击进入游戏", "进入游戏"], "delay": 2.0 }]
         },
+        { "_note": "收尾守卫: 先等主界面加载完再判断, 否则加载中会被误判成『没进去』而盲点关闭按钮" },
+        { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 25, "interval": 1.5 },
+        { "type": "if_text",
+          "text": ["社交", "家园", "仙境花园"],
+          "min_score": 0.4,
+          "region_rel": [0.0, 0.80, 1.0, 1.0],
+          "then": [],
+          "else": [
+              { "_note": "第1轮脱困-尝试: 关掉挡屏弹窗(公告/更新提示等)后再点一次进入游戏" },
+              { "type": "close_dialog", "delay": 1.5 },
+              { "type": "click_text", "text": ["点击进入游戏", "进入游戏"], "delay": 2.5 },
+              { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 20, "interval": 1.5 },
+              { "type": "if_text",
+                "text": ["社交", "家园", "仙境花园"],
+                "min_score": 0.4,
+                "region_rel": [0.0, 0.80, 1.0, 1.0],
+                "then": [],
+                "else": [
+                    { "_note": "第2轮脱困-尝试: 再关一次弹窗并补点一次" },
+                    { "type": "close_dialog", "delay": 1.5 },
+                    { "type": "click_text", "text": ["点击进入游戏", "进入游戏"], "delay": 2.5 },
+                    { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 20, "interval": 1.5 },
+                    { "type": "if_text",
+                      "text": ["社交", "家园", "仙境花园"],
+                      "min_score": 0.4,
+                      "region_rel": [0.0, 0.80, 1.0, 1.0],
+                      "then": [],
+                      "else": [
+                          { "_note": "两轮仍未确认进入主界面: 如实放弃(后续模块自带归位链, 不会在这里假装成功)" }
+                      ] }
+                ] }
+          ] },
         { "type": "sleep", "seconds": 1.0 }
     ]
 }

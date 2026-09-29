@@ -1,6 +1,6 @@
 {
     "name": "领取奖励",
-    "description": "领取奖励(含两个可用 if_config 开关): 功能1 claim_online【在线礼包】: 进面板->抽奖耗尽剩余次数->时间礼包从长到短领取->关闭; 功能2 claim_party【花灵派对】: navigate(公共注册表)进花灵派对->派对时长礼包->loop_text 有'领取'就点(领完按钮消失即停)->关闭。任一开关设 false 则该功能整段跳过。",
+    "description": "领取奖励(含三个可用 if_config 开关): 功能1 claim_online【在线礼包】: 进面板->抽奖耗尽剩余次数(抽奖仅每日8时后开放, 用 if_time window=[8,23] 守卫, 0~7时整段跳过)->时间礼包从长到短领取->关闭; 功能2 claim_party【花灵派对】: navigate(公共注册表)进花灵派对->派对时长礼包->loop_text 有'领取'就点(领完按钮消失即停)->关闭; 功能3 claim_hb【奇妙花宝】: retry_loop(点-等-重试)进家园->点顶部工具栏'奇妙花宝'->点左侧'奇妙特权'页签->右侧'奇妙礼包'每日/每周/每月三档各自按区域限定绿勾判定是否已领, 未领则点该档圆形'领'按钮->关闭面板。任一开关设 false 则该功能整段跳过。",
     "steps": [
         { "type": "if_config",
           "key": "claim_online",
@@ -17,17 +17,25 @@
                           { "type": "sleep", "seconds": 1.5 }
                       ] }
                 ] },
-              { "type": "loop_times",
-                "times": 3,
-                "do": [
-                    { "type": "if_greater",
-                      "region_rel": [0.6047, 0.4931],
-                      "condition": "N>0",
-                      "then": [
-                          { "type": "click_rel", "rel": [0.6102, 0.5681], "delay": 1.0, "name": "抽奖" },
-                          { "type": "wait_text", "text": ["点击任意处关闭"], "timeout": 8, "interval": 1.0 },
-                          { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.5, "name": "关闭恭喜获得" }
-                      ] }
+              { "_note": "抽奖只在每日 8 时后开放; 0~8 时整段跳过" },
+              { "type": "if_time",
+                "window": [8, 23],
+                "then": [
+                    { "type": "loop_times",
+                      "times": 3,
+                      "do": [
+                          { "type": "if_greater",
+                            "region_rel": [0.6047, 0.4931],
+                            "condition": "N>0",
+                            "then": [
+                                { "type": "click_rel", "rel": [0.6102, 0.5681], "delay": 1.0, "name": "抽奖" },
+                                { "type": "wait_text", "text": ["点击任意处关闭"], "timeout": 8, "interval": 1.0 },
+                                { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.5, "name": "关闭恭喜获得" }
+                            ] }
+                    ] }
+                ],
+                "else": [
+                    { "type": "sleep", "seconds": 0.3 }
                 ] },
               { "type": "count_text",
                 "text": ["已领取"],
@@ -67,8 +75,9 @@
                         ] }
                     ] }
                 ] },
-              { "type": "click_template", "template": "close_online_small.png", "threshold": 0.65, "region_rel": [0.84, 0.11, 0.89, 0.16], "fallback_rel": [0.8633, 0.1347], "delay": 1.0, "name": "关闭在线礼包面板(模板优先)" },
-              { "type": "close_dialog", "only_types": ["corner_pink_small"], "delay": 1.0 }
+              { "type": "close_dialog", "only_types": ["anchor_color"], "delay": 1.0, "name": "关闭在线礼包面板(锚点:在线礼包)",
+                "_note": "改走锚点: 注册表新增「在线礼包」anchor_color 条目(标题@(202,90) 右侧 dx 700~1100 找粉花✕@(1105,97))。不再用通用的 close_online_small.png(仅17×21、各面板同形✕、到处 0.94+ 会误命中)" },
+              { "type": "close_dialog", "only_types": ["anchor_color"], "delay": 1.0, "name": "复核再关一次" }
           ],
           "else": [] },
         { "type": "if_config",
@@ -80,7 +89,9 @@
                 "text": ["时长礼包"],
                 "min_score": 0.4,
                 "then": [
-                    { "type": "click_text", "text": ["时长礼包"], "delay": 1.2, "fallback_rel": [0.0531, 0.4250] }
+                    { "type": "click_text", "text": ["时长礼包"], "delay": 1.2,
+                      "region_rel": [0.0, 0.36, 0.16, 0.60], "fallback_rel": [0.0531, 0.4250],
+                      "_note": "区域限定在左侧导航带: 防止 OCR 命中子面板标题「派对时长礼包」(在 (639,58), 含『时长礼包』子串) 而不是左侧导航项" }
                 ],
                 "else": [
                     { "type": "click_rel", "rel": [0.0531, 0.4250], "delay": 1.2, "name": "派对时长礼包入口(兜底)" }
@@ -89,14 +100,143 @@
               { "type": "loop_text",
                 "text": ["领取"],
                 "min_score": 0.4,
+                "region_rel": [0.20, 0.38, 0.80, 0.72],
+                "exclude": ["已领取"],
+                "_note": "区域限定: 「领取」在花灵派对面板里出现多次(不同高度), 单一均值必然对不上, 限定在领取按钮带内即可跳过均值复核(避免正确命中被缓存误杀)。exclude 排除「已领取」: 关键字是子串匹配, 『领取』会命中『已领取』, 点已领的按钮当然什么都不会发生(2026-09-28 日志: 8 次空点同一坐标, 无一次出现『恭喜获得』)",
                 "max_loop": 8,
                 "do": [
-                    { "type": "click_text", "text": ["领取"], "delay": 1.2, "fallback_rel": [0.5, 0.8333] },
+                    { "type": "click_text", "text": ["领取"], "min_score": 0.4,
+                      "region_rel": [0.20, 0.38, 0.80, 0.72],
+                      "exclude": ["已领取"],
+                      "delay": 1.2 },
                     { "type": "sleep", "seconds": 1.2 },
                     { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
                       "then": [ { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.0, "name": "关闭恭喜获得" } ] }
                 ] },
-              { "type": "close_dialog", "anchor": "提示", "only_types": ["corner_pink_small", "corner", "corner_white"], "delay": 1.0 }
+              { "type": "close_dialog", "anchor": "提示", "only_types": ["corner_pink_small", "corner"], "delay": 1.0,
+                "_note": "阶段一: 关掉「时长礼包」子面板" },
+              { "type": "sleep", "seconds": 1.0 },
+              { "type": "if_text", "text": ["时长礼包", "每日任务"], "min_score": 0.4,
+                "_note": "BUG2 收尾守卫: 左侧导航仍在 → 说明画面还停在花灵派对主面板, 必须再关一次, 否则 7.3 会在错误界面上瞎跑",
+                "then": [
+                    { "type": "close_dialog", "delay": 1.0,
+                      "_note": "阶段二: 关花灵派对主面板(全注册表探测关闭按钮)" },
+                    { "type": "sleep", "seconds": 1.0 },
+                    { "type": "if_text", "text": ["菜单", "离开"], "min_score": 0.4,
+                      "_note": "回没回到家园的判据: 家园页面有「菜单」「离开」。不能用「奇妙花宝」判定——花灵派对与奇妙花宝是两个分立功能",
+                      "else": [
+                          { "type": "click_rel", "rel": [0.9711, 0.0389], "delay": 1.5,
+                            "name": "花灵派对主面板右上角关闭(兜底, 已按 09-28 实测 (1243,28) 校准)" },
+                          { "type": "sleep", "seconds": 1.0 },
+                          { "type": "if_text", "text": ["菜单", "离开"], "min_score": 0.4,
+                            "_note": "兜底点完再确认一次; 仍未回到家园就如实报出来, 不再假装成功",
+                            "else": [
+                                { "type": "close_dialog", "delay": 1.0,
+                                  "_note": "最后手段: 交给关闭注册表探测一次" }
+                            ] }
+                      ] }
+                ] }
+          ],
+          "else": [] },
+        { "type": "if_config",
+          "key": "claim_hb",
+          "value": true,
+          "then": [
+              { "type": "retry_loop",
+                "max_rounds": 6,
+                "_note": "fail_do 原来是裸 sleep, 卡在未知界面时毫无脱困手段(2026-09-27 日志: 入口链 6 轮全空转)。现改为条件脱困: 已在目标界面/已在家园就只等待, 只有两者都不是时才 close_dialog 脱困一次 —— 绝不能在已打开面板时 close_dialog, 否则把刚打开的面板关掉, 形成开/关死循环",
+                "fail_do": [
+                    { "type": "if_text", "text": ["奇妙特权"], "min_score": 0.4,
+                      "_note": "已在奇妙花宝界面: 只等一等, 下一轮点页签即可(点击可能被吞)",
+                      "then": [ { "type": "sleep", "seconds": 2.0 } ],
+                      "else": [
+                          { "type": "if_text", "text": ["奇妙花宝"], "min_score": 0.4,
+                            "region_rel": [0.06, 0.05, 0.22, 0.12],
+                            "_note": "已在家园(顶部工具栏区域限定): 同样只等待, 下一轮重试点「奇妙花宝」",
+                            "then": [ { "type": "sleep", "seconds": 2.0 } ],
+                            "else": [
+                                { "type": "close_dialog", "delay": 1.5,
+                                  "_note": "既不在奇妙花宝界面也不在家园 → 卡在未知界面(弹窗/别的面板): 脱困一次, 下一轮再试" },
+                                { "type": "sleep", "seconds": 0.5 }
+                            ] }
+                      ] }
+                ],
+                "do": [
+                    { "type": "if_text", "text": ["奇妙特权"], "min_score": 0.4,
+                      "scene": "奇妙花宝界面",
+                      "then": [
+                          { "type": "click_text", "text": ["奇妙特权"], "mark": true, "min_score": 0.4,
+                            "delay": 4.0, "fallback_rel": [0.0945, 0.5306] }
+                      ],
+                      "else": [
+                        { "type": "if_text", "text": ["奇妙花宝"], "min_score": 0.4,
+                          "region_rel": [0.06, 0.05, 0.22, 0.12],
+                          "scene": "家园主界面",
+                          "then": [
+                              { "type": "click_text", "text": ["奇妙花宝"], "min_score": 0.4,
+                                "delay": 4.0, "fallback_rel": [0.1125, 0.0819] }
+                          ],
+                          "else": [
+                              { "type": "click_text", "text": ["家园"], "min_score": 0.4,
+                                "delay": 4.0, "fallback_rel": [0.8711, 0.95] }
+                          ] },
+                        { "type": "sleep", "seconds": 1.5 }
+                      ] }
+                ] },
+              { "type": "if_text", "text": ["奇妙特权"], "min_score": 0.4,
+                "_note": "P0-1 守卫: 进入链耗尽仍未确认已在面板时整段跳过; 不得在未知界面采样色块/盲点三档「领」",
+                "then": [
+                    { "type": "if_color_count",
+                      "name": "每日礼包未领 -> 点该档「领」",
+                      "hsv_lower": [35, 40, 40],
+                      "hsv_upper": [85, 255, 255],
+                      "area_min": 100,
+                      "area_max": 999999,
+                      "region_rel": [0.86, 0.16, 0.95, 0.28],
+                      "op": "<",
+                      "threshold": 1,
+                      "then": [
+                          { "type": "click_rel", "rel": [0.9055, 0.2861], "delay": 2.0, "name": "领每日礼包" },
+                          { "type": "sleep", "seconds": 1.5 },
+                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
+                            "then": [ { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.5, "name": "关闭恭喜获得" } ] }
+                      ] },
+                    { "type": "if_color_count",
+                      "name": "每周礼包未领 -> 点该档「领」",
+                      "hsv_lower": [35, 40, 40],
+                      "hsv_upper": [85, 255, 255],
+                      "area_min": 100,
+                      "area_max": 999999,
+                      "region_rel": [0.86, 0.33, 0.95, 0.45],
+                      "op": "<",
+                      "threshold": 1,
+                      "then": [
+                          { "type": "click_rel", "rel": [0.9039, 0.4903], "delay": 2.0, "name": "领每周礼包" },
+                          { "type": "sleep", "seconds": 1.5 },
+                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
+                            "then": [ { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.5, "name": "关闭恭喜获得" } ] }
+                      ] },
+                    { "type": "if_color_count",
+                      "name": "每月礼包未领 -> 点该档「领」",
+                      "hsv_lower": [35, 40, 40],
+                      "hsv_upper": [85, 255, 255],
+                      "area_min": 100,
+                      "area_max": 999999,
+                      "region_rel": [0.86, 0.56, 0.95, 0.70],
+                      "op": "<",
+                      "threshold": 1,
+                      "then": [
+                          { "type": "click_rel", "rel": [0.9000, 0.7208], "delay": 2.0, "name": "领每月礼包" },
+                          { "type": "sleep", "seconds": 1.5 },
+                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
+                            "then": [ { "type": "click_rel", "rel": [0.5, 0.9375], "delay": 1.5, "name": "关闭恭喜获得" } ] }
+                      ] },
+                    { "type": "if_text", "text": ["奇妙特权"], "min_score": 0.4,
+                      "then": [
+                          { "type": "click_rel", "rel": [0.9731, 0.0356], "delay": 2.0,
+                            "name": "关闭奇妙花宝面板(右上粉色X)" }
+                      ] }
+                ] }
           ],
           "else": [] }
     ]

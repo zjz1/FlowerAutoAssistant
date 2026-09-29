@@ -74,6 +74,9 @@ def stop_requested() -> bool:
 # 方案②「立体化分级+均值+偏差复核」: OCR 命中点与历史均值偏差超过该像素数即视为可疑,
 # 触发二次更精细处理(局部放大重识别, 无更优子块则沿用原命中, 仅记录日志)。
 BIAS_MAX_PX = 60
+# 硬阈值: 偏差超过该像素数(约屏宽 14%)且局部重识别仍无更优子块时, 判为 OCR 误命中并**弃用**
+# (不点击、不写知识库), 转入回退链。否则类似「采粉」被聊天文字误命中(偏差数百px)会误点邻区并污染均值。
+BIAS_HARD_PX = 180
 
 
 # ---------- 坐标 ----------
@@ -112,7 +115,8 @@ class OCREngine:
         self.close_buttons: list[dict] = self._load_close_buttons()  # 关闭按钮特殊逻辑注册表
         self.config: dict = self._load_config()  # 用户配置 (data/config.json), 支持 CLI 覆盖
         self._navigation: dict = self._load_navigation()  # 公共「进入目标界面」注册表 (navigate 步骤用)
-        self._rr_hit = False  # retry_loop 本轮命中标记
+        self._rr_hit = False  # retry_loop 本轮命中标记 (仅「真实识别命中」置真, 缓存回退不计)
+        self._last_locate_source: str | None = None  # 上一次定位来源: ocr/anchor/color/template/fallback
         self._scene: str = "未分类"  # 当前界面场景 (流程步骤可声明, 默认未分类)
         self._step_category: str | None = None  # 步骤临时声明的按钮类别(click_text/click_rel 用)
 
@@ -251,12 +255,14 @@ class OCREngine:
         kws = keywords if isinstance(keywords, list) else [keywords]
         sc = scene or self._scene or "未分类"
         old = (self.click_log_scenes.get(sc) or {}).get(name) or {}
+        # 缓存回退(fallback)不产生新位置证据: 已有实证条目(ocr/color/anchor)时不得降级覆盖其 rel/method
+        if method == "fallback" and old.get("method") in ("ocr", "color", "anchor"):
+            print(f"[记录] 按钮[{name}] 本次为缓存回退, 保留已有 {old['method']} 条目(不降级覆盖)")
+            return
         entry = {
             "name": name,
             "text": kws,
             "rel": [round(pt.rel[0], 4), round(pt.rel[1], 4)],
-            "abs": [pt.x, pt.y],
-            "screen": [self.screen_w, self.screen_h],
             "method": method,  # ocr / color / anchor / fallback
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -440,10 +446,12 @@ class OCREngine:
             return False
 
     # ---- OCR 定位 ----
-    def find_text(self, keywords, img=None, top_k=3, exact=False, region_rel=None):
+    def find_text(self, keywords, img=None, top_k=3, exact=False, region_rel=None, exclude=None):
         """在截图(或给定图)中按关键字找文字块。返回 OCR 块列表 (含坐标)。
         exact=True 要求块文本与关键字完全相等, 避免『家园』误命中『勇气国花园』等。
         region_rel=[x1,y1,x2,y2] (0~1) 时只保留中心落在该区域内的块 (用于区域限定文本判断)。
+        exclude=['已领取'] 时剔除「文字里含这些排除词」的块: 关键字默认是**子串匹配**,
+        所以「领取」会命中「已领取」——按钮已领取时点它当然什么都不会发生, 必须排除。
         对过宽的合并块(宽>90, 如「种植箱一键种植」)尝试放大 2x 重识别拆出子按钮以提升
         定位精度, 但始终保留原合并块(且置于拆分块之前优先匹配), 避免重识别丢失命中。
         """
@@ -481,13 +489,88 @@ class OCREngine:
             rx2, ry2 = int(region_rel[2] * w), int(region_rel[3] * h)
             refined = [b for b in refined
                        if rx1 <= b["center"][0] <= rx2 and ry1 <= b["center"][1] <= ry2]
-        return ocr_find(refined, keywords, exact=exact)
+        hits = ocr_find(refined, keywords, exact=exact)
+        if not exact:
+            kws = keywords if isinstance(keywords, list) else [keywords]
+            hits = [self._narrow_merged(b, kws) for b in hits]
+        if exclude:
+            ex = exclude if isinstance(exclude, list) else [exclude]
+            keep = [b for b in hits if not any(e in b["text"] for e in ex)]
+            if hits and not keep:
+                # 命中块全被排除词剔除: 典型情况是「领取」其实读到的是「已领取」(按钮已领),
+                # 必须如实报出来 —— 否则日志会显示"识别到领取却没领到", 让人以为是点击不准。
+                print(f"[排除] {keywords} 命中{len(hits)}块但均含排除词{ex}, 不点击: "
+                      + " | ".join(f"{b['text'][:10]}@({b['center'][0]},{b['center'][1]})" for b in hits[:5]))
+            hits = keep
+        if not hits:
+            self._log_ocr_miss(keywords, exact, region_rel, blocks)
+        return hits
 
-    def locate(self, keywords, img=None, min_score=0.5, exact=False, region_rel=None):
-        """返回第一个命中块的中心绝对坐标 Point; 未命中返回 None。
-        命中后更新 last_rel 缓存。
+    def _log_ocr_miss(self, keywords, exact, region_rel, blocks, max_blocks=10):
+        """诊断输出: 文本未命中时打印本次 OCR 实际读到的文字块摘要。
+
+        用于区分三种失败: ① 该文字根本没被检出(画面未就绪/低对比/艺术字);
+        ② 检出了但文字不符或被合并(如把「家族」「家族活动」并成一块);
+        ③ 检出了但落在限定区域之外 —— 即区域坐标写错(此前只打全屏前 10 块, 无法区分 ③)。
+        区域限定时分别打印「区域内实读」与「区域外含同字块(疑似区域坐标不对)」。
+        只打印前 max_blocks 块, 控制日志体积。
         """
-        blocks = self.find_text(keywords, img=img, exact=exact, region_rel=region_rel)
+        kws = keywords if isinstance(keywords, list) else [keywords]
+
+        def brief(bs):
+            return " | ".join(
+                f"{b['text'][:10]}@{b['score']:.2f}({b['center'][0]},{b['center'][1]})"
+                for b in bs[:max_blocks])
+
+        if not region_rel:
+            more = f" 共{len(blocks)}块" + (f"(只列前{max_blocks}块)" if len(blocks) > max_blocks else "")
+            print(f"[OCR未命中] {kws} exact={exact} 区域=None{more}"
+                  + (f" 实读到: {brief(blocks)}" if blocks else " 未读到任何文字块"))
+            return
+        w, h = self.screen_w, self.screen_h
+        rx1, ry1 = int(region_rel[0] * w), int(region_rel[1] * h)
+        rx2, ry2 = int(region_rel[2] * w), int(region_rel[3] * h)
+        inside = [b for b in blocks
+                  if rx1 <= b["center"][0] <= rx2 and ry1 <= b["center"][1] <= ry2]
+        inside_ids = {id(b) for b in inside}
+        chars = {c for kw in kws for c in kw if not c.isspace()}
+        outside_same = [b for b in blocks
+                        if id(b) not in inside_ids and any(c in b["text"] for c in chars)]
+        lines = [f"[OCR未命中] {kws} exact={exact} 区域={region_rel}"
+                 f" 全屏{len(blocks)}块 / 区域内{len(inside)}块"
+                 f" (区域绝对像素 x{rx1}-{rx2} y{ry1}-{ry2})",
+                 "  区域内实读: " + (brief(inside) if inside else "无")]
+        if outside_same:
+            lines.append("  ⚠ 区域外含同字块(疑似区域坐标不对): " + brief(outside_same))
+        print("\n".join(lines))
+
+    @staticmethod
+    def _narrow_merged(b: dict, kws: list[str]) -> dict:
+        """合并块纠偏: OCR 常把相邻按钮并成一块(实测「快捷操作种植箱」[1275..1480]),
+        此时子串命中返回的是**合并块中心**, 落点正好在两按钮之间的空隙上, 点击无效
+        (实测偏差 50px: 真实中心 1327 vs 返回 1377)。
+        按字符占比把关键字在块内的位置还原出来, 重算中心与框。
+        仅当块文本比关键字更长(确为合并块)时生效; 文本与关键字等长(精确命中)原样返回。
+        """
+        text = b["text"].strip()
+        for k in kws:
+            if k in text and len(text) > len(k):
+                idx = text.find(k)
+                x1, y1, x2, y2 = b["box"]
+                n, w = len(text), x2 - x1
+                sx, ex = x1 + w * idx / n, x1 + w * (idx + len(k)) / n
+                nb = dict(b)
+                nb["box"] = [int(sx), y1, int(ex), y2]
+                nb["center"] = [int((sx + ex) / 2), int((y1 + y2) / 2)]
+                return nb
+        return b
+
+    def locate(self, keywords, img=None, min_score=0.5, exact=False, region_rel=None, exclude=None):
+        """返回第一个命中块的中心绝对坐标 Point; 未命中返回 None。
+        命中后更新 last_rel 缓存, 并把**实际命中的原始文字**记到 self._last_match_text,
+        便于日志区分「命中就是关键字本身」与「命中的是含关键字的更长文字(如已领取)」。
+        """
+        blocks = self.find_text(keywords, img=img, exact=exact, region_rel=region_rel, exclude=exclude)
         for b in blocks:
             if b.get("score", 1.0) < min_score:
                 continue
@@ -495,7 +578,9 @@ class OCREngine:
             pt = Point(cx, cy, self.screen_w, self.screen_h)
             for kw in (keywords if isinstance(keywords, list) else [keywords]):
                 self.last_rel[kw] = pt.rel
+            self._last_match_text = b["text"].strip()
             return pt
+        self._last_match_text = None
         return None
 
     def locate_color(self, color_cfg: dict, img=None) -> "Point | None":
@@ -534,6 +619,40 @@ class OCREngine:
         candidates.sort(key=lambda c: c[2], reverse=True)
         cx, cy = int(candidates[0][0]), int(candidates[0][1])
         return Point(cx, cy, self.screen_w, self.screen_h)
+
+    def count_color(self, color_cfg: dict, img=None) -> int:
+        """统计指定 HSV 颜色连通域的个数。
+
+        用于「画面里某种色块出现多少次」的计数(如已领取的绿色勾号)。
+        color_cfg: {"hsv_lower": [h,s,v], "hsv_upper": [h,s,v],
+                    "area_min": int, "area_max": int, "region": [x1,y1,x2,y2]}
+        与 locate_color 同一套 HSV 过滤 + 连通域分析, 但返回**命中个数**而非最大块中心;
+        仅保留面积在 (area_min, area_max) 区间内的连通域, 默认排除过小/过大的噪点。
+        """
+        import cv2
+        import numpy as np
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return 0
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        lower = np.array(color_cfg["hsv_lower"])
+        upper = np.array(color_cfg["hsv_upper"])
+        mask = cv2.inRange(hsv, lower, upper)
+        region = color_cfg.get("region")
+        if region:
+            x1, y1, x2, y2 = region
+            sub_mask = np.zeros_like(mask)
+            sub_mask[y1:y2, x1:x2] = mask[y1:y2, x1:x2]
+            mask = sub_mask
+        num_labels, _, stats, _ = cv2.connectedComponentsWithStats(mask)
+        area_min = color_cfg.get("area_min", 20)
+        area_max = color_cfg.get("area_max", 999999)
+        n = 0
+        for i in range(1, num_labels):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area_min < area < area_max:
+                n += 1
+        return n
 
     def locate_anchor_offset(self, anchor_cfg: dict, img=None, min_score=0.4) -> "Point | None":
         """锚点 + 像素偏移定位: 适用于「固定尺寸界面」(如小花仙登录界面不随设备分辨率缩放),
@@ -909,12 +1028,13 @@ class OCREngine:
 
     def close_dialog(self, img=None, anchor_kw="提示", dx_range=(150, 400),
                      dy_tol=60, min_score=0.4, only_types=None) -> bool:
-        """关闭通用弹窗: 遍历『关闭按钮-特殊逻辑』注册表, **逐个尝试满足类型的关闭按钮并点击**。
-        含义: 当前画面上能识别的多种关闭按钮(弹窗式/右上角式等)都会被各点一次, 直到试完。
+        """关闭通用弹窗: 遍历『关闭按钮-特殊逻辑』注册表, 取**首个命中候选**(注册表优先级)点击**一次**。
+        P0-2: 原先会「把命中的每个关闭按钮各点一次」, 一次脱困连点 3~4 处(误触); 现改为只点最可信的一个。
+        候选优先级 = 注册表顺序: 明确文字锚点(anchor_color) > 右上角兜底(corner/corner_white/corner_pink_small)。
         only_types: 可选, 字符串或类型列表; 仅在注册表中挑选指定类型(如 ["corner","corner_white"])定位,
                    用于退出整屏面板(右上角关闭)时避免误点「提示」锚点弹窗。None 表示全部类型。
         （anchor_kw/dx_range/dy_tol 参数仅为兼容旧调用保留, 实际以注册表为准。）
-        成功点击任一写入知识库。返回是否至少点击了一次。
+        点击写入知识库。返回是否点击了; 未命中返回 False。
         """
         img = img if img is not None else self.screenshot()
         hits = self.find_all_close_buttons(img=img)
@@ -925,44 +1045,59 @@ class OCREngine:
         if not hits:
             print("[关闭弹窗(only_types)] 未定位到匹配类型的关闭按钮")
             return False
-        clicked = False
-        for h in hits:
-            pt = h["pt"]
-            print(f"[关闭弹窗] 点击 '{h['name']}' ({h['type']}) -> {pt.x},{pt.y}")
-            self.click_abs(pt.x, pt.y)
-            self._log_click("弹窗关闭", [anchor_kw], pt, "color")
-            clicked = True
-        return clicked
+        # P0-2: 只点注册表顺序最靠前的一个候选, 不连点其余(避免一次脱困误触 3~4 处)
+        h = hits[0]
+        pt = h["pt"]
+        skipped = ", ".join(f"{x['name']}({x['type']})" for x in hits[1:])
+        print(f"[关闭弹窗] 选中 '{h['name']}' ({h['type']}) -> {pt.x},{pt.y}"
+              + (f"; 跳过 {len(hits) - 1} 个次要候选: {skipped}" if skipped else ""))
+        self.click_abs(pt.x, pt.y)
+        self._log_click("弹窗关闭", [anchor_kw], pt, "color")
+        return True
 
-    def click_text(self, keywords, img=None, fallback_rel=None, min_score=0.5, exact=False) -> bool:
+    def click_text(self, keywords, img=None, fallback_rel=None, min_score=0.5, exact=False,
+                   region_rel=None, exclude=None) -> bool:
         """OCR 定位关键字并点击。命中返回 True。
         回退链: OCR → 颜色特征(若知识库有 color 配置) → 进程缓存 → 知识库坐标 → 失败
         exact=True 时用精确匹配(要求块文本完全等于关键字)。
-        方案②复核: OCR 命中点与该按钮(按当前场景)历史均值偏差 > BIAS_MAX_PX 时判为可疑,
-        触发局部放大重识别(_refine_hit)校准; 无更优子块则沿用原命中并仅记录日志。
+        region_rel 给定时只在限定区域内找文字, 并**跳过均值复核**: 同一个按钮在界面上出现多次时
+        (如花灵派对面板里多处「领取」)单一均值必然对不上, 区域限定本身已是可信来源,
+        不能再让缓存 veto 掉一个真实的 OCR 命中(缓存回退不得作为命中判据)。
+        其余情况方案②复核: OCR 命中点与该按钮(按当前场景)历史均值偏差 > BIAS_MAX_PX 时判为可疑,
+        触发局部放大重识别(_refine_hit)校准; 无更优子块时, 偏差未超 BIAS_HARD_PX 则沿用原命中并记录日志,
+        超过 BIAS_HARD_PX 则判为误命中并**弃用**(不点击/不写知识库), 交由回退链(均值/缓存)处理。
         """
         kw0 = keywords[0] if isinstance(keywords, list) else keywords
-        pt = self.locate(keywords, img=img, min_score=min_score, exact=exact)
-        if pt is not None:
+        pt = self.locate(keywords, img=img, min_score=min_score, exact=exact,
+                         region_rel=region_rel, exclude=exclude)
+        dropped_by_review = False   # 是否被复核判为误命中而弃用(用于日志如实描述, 不能与"未OCR到"混淆)
+        if pt is not None and region_rel is not None:
+            print(f"[复核] {kw0} 区域限定{list(region_rel)}, 跳过均值复核")
+        if pt is not None and region_rel is None:
             entry = self._entry_for(kw0)
             mean = entry.get("mean_rel") if entry else None
             dev = self._bias_px(pt, mean, self.screen_w, self.screen_h)
             if dev is not None and dev > BIAS_MAX_PX:
                 print(f"[复核] {kw0} OCR命中({pt.x},{pt.y}) 与场景均值{tuple(round(v,3) for v in mean)} "
                       f"偏差{dev:.0f}px > {BIAS_MAX_PX}px, 二次精细处理…")
-                rx = pt
                 rp = self._refine_hit(kw0, pt, img if img is not None else self.screenshot())
-                if rp is not None:
-                    dev2 = self._bias_px(rp, mean, self.screen_w, self.screen_h)
-                    if dev2 is not None and (dev2 or 0) < dev:
-                        print(f"[复核] 局部重识别得更稳子块({rp.x},{rp.y}) 偏差{dev2:.0f}px, 校准确认")
-                        rx = rp
-                    else:
-                        print(f"[复核] 局部重识别无更优子块, 沿用 OCR 命中")
+                dev2 = self._bias_px(rp, mean, self.screen_w, self.screen_h) if rp is not None else None
+                if dev2 is not None and dev2 < dev:
+                    print(f"[复核] 局部重识别得更稳子块({rp.x},{rp.y}) 偏差{dev2:.0f}px, 校准确认")
+                    pt = rp
+                elif dev > BIAS_HARD_PX:
+                    print(f"[复核] 偏差{dev:.0f}px 超硬阈值 {BIAS_HARD_PX}px 且无更优子块, 判为误命中, 弃用该 OCR 命中")
+                    pt = None                     # 不可信 -> 不点击/不写库, 交回退链
+                    dropped_by_review = True
                 else:
-                    print(f"[复核] 局部重识别未命中, 沿用 OCR 命中")
-                pt = rx
-            print(f"[OCR命中] {keywords} -> {pt.x},{pt.y}")
+                    print(f"[复核] 局部重识别无更优子块, 沿用 OCR 命中")
+        if pt is not None:
+            self._last_locate_source = "ocr"
+            mt = getattr(self, "_last_match_text", None)
+            # 如实打印实际命中的原始文字: 关键字是子串匹配, 「领取」命中的可能是「已领取」,
+            # 不报出来就会被误读成"识别到了领取按钮"。
+            tag = f" 命中块文字'{mt}'" if mt and mt != kw0 else ""
+            print(f"[OCR命中] {keywords} -> {pt.x},{pt.y}{tag}")
             self.click_abs(pt.x, pt.y)
             self._log_click(kw0, keywords, pt, "ocr", category=self._step_category)
             return True
@@ -973,6 +1108,7 @@ class OCREngine:
             if entry and "anchor" in entry:
                 pt_a = self.locate_anchor_offset(entry["anchor"], img=img)
                 if pt_a is not None:
+                    self._last_locate_source = "anchor"
                     print(f"[锚点偏移命中] {kw} -> {pt_a.x},{pt_a.y}")
                     self.click_abs(pt_a.x, pt_a.y)
                     self._log_click(kw, [kw], pt_a, "anchor", category=self._step_category)
@@ -983,6 +1119,7 @@ class OCREngine:
             if entry and entry.get("method") == "color" and "color" in entry:
                 pt_c = self.locate_color(entry["color"], img=img)
                 if pt_c is not None:
+                    self._last_locate_source = "color"
                     print(f"[颜色命中] {kw} -> {pt_c.x},{pt_c.y}")
                     self.click_abs(pt_c.x, pt_c.y)
                     self._log_click(kw, [kw], pt_c, "color", category=self._step_category)
@@ -1005,11 +1142,14 @@ class OCREngine:
                     fallback_rel = tuple(self.click_log[kw]["rel"])
                     break
         if fallback_rel is not None:
-            print(f"[回退缓存] {keywords} 未OCR到, 用缓存 {fallback_rel}")
+            self._last_locate_source = "fallback"
+            reason = "复核弃用后回退" if dropped_by_review else "未OCR到"
+            print(f"[回退缓存] {keywords} {reason}, 用缓存 {fallback_rel}")
             pt_fb = Point.from_rel(fallback_rel[0], fallback_rel[1], self.screen_w, self.screen_h)
             self.click_rel(*fallback_rel)
             self._log_click(kw0, keywords, pt_fb, "fallback", category=self._step_category)
             return True
+        self._last_locate_source = "none"
         print(f"[未命中] {keywords}")
         return False
 
@@ -1090,6 +1230,78 @@ class OCREngine:
         print(f"[模板匹配] {template} score={mval:.3f} -> ({cx},{cy})")
         return Point(cx, cy, sw, sh)
 
+    def locate_template_all(self, template: str, img=None, threshold=0.8,
+                            region_rel=None, scale_range=(0.7, 1.0),
+                            nms_gap_rel=0.05) -> "list[Point]":
+        """模板匹配多命中: 一次匹配返回**所有**高于阈值的局部峰值点(跨尺度 NMS 去重)。
+
+        与 locate_template 的区别: 后者只返回最高分单点; 本方法用于「一屏多个同形图标」
+        的场景(如好友列表多个可采粉角标), 避免调用方逐带扫描重复做多尺度全图匹配(极大提速)。
+        region_rel/scale_range 语义同 locate_template。
+        nms_gap_rel: 峰值去重半径(相对截图宽高), 多尺度会重复命中同一目标, 按此合并。
+        """
+        import cv2
+        import numpy as np
+        tpl_path = self._template_path(template)
+        if tpl_path is None:
+            print(f"[模板匹配] 模板不存在: {template}")
+            return []
+        tpl = cv2.imread(tpl_path, cv2.IMREAD_COLOR)
+        if tpl is None:
+            print(f"[模板匹配] 读取模板失败: {template}")
+            return []
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return []
+        th, tw = tpl.shape[:2]
+        if th >= img.shape[0] or tw >= img.shape[1]:
+            print(f"[模板匹配] 模板({tw}x{th})不小于截图({img.shape[1]}x{img.shape[0]}), 无法定位")
+            return []
+        w, h = img.shape[1], img.shape[0]
+        rx1 = ry1 = rx2 = ry2 = None
+        if region_rel is not None:
+            rx1, ry1 = int(region_rel[0] * w), int(region_rel[1] * h)
+            rx2, ry2 = int(region_rel[2] * w), int(region_rel[3] * h)
+            rx1, ry1 = max(0, rx1), max(0, ry1)
+            rx2, ry2 = min(w, rx2), min(h, ry2)
+            if rx2 <= rx1 or ry2 <= ry1:
+                return []
+        lo, hi = scale_range
+        scales = sorted(set(round(float(s), 2) for s in np.linspace(lo, hi, 4)), reverse=True)
+        cands = []  # (score, cx, cy)
+        for sc in scales:
+            tw_r, th_r = max(1, int(tw * sc)), max(1, int(th * sc))
+            if th_r >= img.shape[0] or tw_r >= img.shape[1]:
+                continue
+            rtpl = cv2.resize(tpl, (tw_r, th_r))
+            shot = cv2.matchTemplate(img, rtpl, cv2.TM_SQDIFF_NORMED)
+            sub = shot if region_rel is None else shot[ry1:ry2, rx1:rx2]
+            smap = 1.0 - sub  # 越大越匹配
+            # 找局部峰值(膨胀后等于自身)且过阈值
+            kernel = np.ones((3, 3), np.uint8)
+            dilated = cv2.dilate(smap, kernel)
+            peak_mask = (smap >= dilated) & (smap >= threshold)
+            ys, xs = np.nonzero(peak_mask)
+            ox, oy = (rx1, ry1) if region_rel is not None else (0, 0)
+            for yy, xx in zip(ys, xs):
+                cx = ox + int(xx) + tw_r // 2
+                cy = oy + int(yy) + th_r // 2
+                cands.append((float(smap[yy, xx]), cx, cy))
+        if not cands:
+            print(f"[模板匹配] {template} 多命中: 无 (阈值 {threshold})")
+            return []
+        # 跨尺度 NMS: 高分优先, 与已接受点距离 < nms_gap 则跳过
+        gap_x, gap_y = max(1, int(nms_gap_rel * w)), max(1, int(nms_gap_rel * h))
+        cands.sort(key=lambda c: -c[0])
+        accepted = []
+        for s, cx, cy in cands:
+            if all(abs(cx - ax) >= gap_x or abs(cy - ay) >= gap_y for ax, ay, _ in accepted):
+                accepted.append((cx, cy, s))
+        accepted.sort(key=lambda c: (c[1], c[0]))  # 按 y 从上到下
+        print(f"[模板匹配] {template} 多命中 {len(accepted)} 个: "
+              + ", ".join(f"({cx},{cy}@{s:.3f})" for cx, cy, s in accepted))
+        return [Point(cx, cy, w, h) for cx, cy, _ in accepted]
+
     def click_template(self, template: str, img=None, threshold=0.8,
                        region_rel=None, scale_range=(0.7, 1.0), fallback_rel=None) -> "Point | None":
         """模板匹配点击: locate_template 命中则点击并记知识库(method=template)。
@@ -1098,10 +1310,12 @@ class OCREngine:
         pt = self.locate_template(template, img=img, threshold=threshold,
                                   region_rel=region_rel, scale_range=scale_range)
         if pt is not None:
+            self._last_locate_source = "template"
             self.click_abs(pt.x, pt.y)
             self._log_click(template, [template], pt, "template", category=self._step_category)
             return pt
         if fallback_rel is not None:
+            self._last_locate_source = "fallback"
             print(f"[回退缓存] 模板 {template} 未命中, 用回退坐标 {fallback_rel}")
             self.click_rel(*fallback_rel)
             pt = Point.from_rel(fallback_rel[0], fallback_rel[1], self.screen_w, self.screen_h)
@@ -1172,7 +1386,7 @@ class OCREngine:
     def run_step(self, step: dict, indent=1):
         """执行单个步骤。step 为流程 JSON 中的一个节点。
         支持: wait_text / click_text / click_template / click_rel / sleep / close_dialog /
-        if_text / if_fraction / loop_fraction / loop_times
+        if_text / if_fraction / loop_fraction / loop_times / friend_pollin
         """
         self._check_stop()
         pad = "  " * indent
@@ -1187,11 +1401,21 @@ class OCREngine:
         if s_type == "wait_text":
             self.wait_text(kws, timeout=step.get("timeout", 30), interval=step.get("interval", 1.0))
         elif s_type == "click_text":
+            # min_score / region_rel 需要透传: 此前只传 kws/fallback_rel/exact,
+            # 导致流程 JSON 里写的 "min_score": 0.4 与 region_rel 被静默忽略。
             ok = self.click_text(kws, fallback_rel=step.get("fallback_rel"),
-                                 exact=step.get("exact", False))
+                                 min_score=step.get("min_score", 0.5),
+                                 exact=step.get("exact", False),
+                                 region_rel=step.get("region_rel"),
+                                 exclude=step.get("exclude"))
             print(f"{pad}[click_text] {kws} -> {'ok' if ok else 'fail'}")
             if ok and step.get("mark"):
-                self._rr_hit = True  # 命中目标步骤, 记为本轮 retry_loop 成功
+                # P0-3: 缓存回退只是「照旧点一下」的兜底, 不构成「已进入目标界面」的证据,
+                # 否则进入链永远"成功", 识别层整体失效也无人察觉。
+                if self._last_locate_source == "fallback":
+                    print(f"{pad}[mark] {kws} 本次为缓存回退, 不计入命中(无法证明已在目标界面)")
+                else:
+                    self._rr_hit = True  # 命中目标步骤, 记为本轮 retry_loop 成功
             time.sleep(step.get("delay", 0.5))
         elif s_type == "click_template":
             # 模板匹配点击「纯图形/无文字按钮」(借鉴 MAA TemplateMatch)。
@@ -1207,7 +1431,10 @@ class OCREngine:
             ok = pt is not None
             print(f"{pad}[click_template] {step.get('template')} -> {'ok' if ok else 'fail'}")
             if ok and step.get("mark"):
-                self._rr_hit = True
+                if self._last_locate_source == "fallback":
+                    print(f"{pad}[mark] 模板 {step.get('template')} 本次为回退坐标, 不计入命中")
+                else:
+                    self._rr_hit = True
             time.sleep(step.get("delay", 0.5))
         elif s_type == "click_account_tail":
             # 点击「账号文本尾部数字」匹配的账号条目(账号选择界面)。
@@ -1265,10 +1492,50 @@ class OCREngine:
             print(f"{pad}[count_text] {step.get('text')} 计数={n} threshold={step.get('threshold',1)} -> {'TRUE' if ok else 'FALSE'}")
             if branch:
                 self.run_steps(branch, indent=indent + 1)
+        elif s_type == "if_color_count":
+            # 颜色计数分支: 统计指定 HSV 颜色连通域个数 n; 若 n 与 threshold 比较成立(默认 n<3)
+            # 则执行 then, 否则 else(可选)。用于「已领取绿色勾号 < 目标数才点领取」这类状态判断。
+            # region_rel=[x1,y1,x2,y2](0~1) 需转成绝对像素再传 count_color
+            # (count_color 的 region 语义是绝对坐标; 直接传 0~1 浮点会切片报错)
+            reg = step.get("region_rel")
+            if reg:
+                if not self.screen_w or not self.screen_h:
+                    self.screenshot()
+                w, h = self.screen_w, self.screen_h
+                reg = [int(reg[0] * w), int(reg[1] * h), int(reg[2] * w), int(reg[3] * h)]
+            n = self.count_color({
+                "hsv_lower": step.get("hsv_lower"),
+                "hsv_upper": step.get("hsv_upper"),
+                "area_min": step.get("area_min", 20),
+                "area_max": step.get("area_max", 999999),
+                "region": reg,
+            })
+            op = step.get("op", "<")
+            target = step.get("threshold", 3)
+            ok = {"<": lambda: n < target, "<=": lambda: n <= target,
+                  ">": lambda: n > target, ">=": lambda: n >= target,
+                  "==": lambda: n == target, "!=": lambda: n != target}[op]()
+            branch = step.get("then") if ok else step.get("else")
+            print(f"{pad}[if_color_count] {step.get('name','')} 色块数={n} {op} {target} -> {'TRUE' if ok else 'FALSE'}")
+            if branch:
+                self.run_steps(branch, indent=indent + 1)
         elif s_type == "if_config":
             # 配置开关分支: config[key] 满足 op/value 则执行 then, 否则 else(可选)
             hit = self.eval_config(step)
             branch = step.get("then") if hit else step.get("else")
+            if branch:
+                self.run_steps(branch, indent=indent + 1)
+        elif s_type == "if_time":
+            # 时间窗口分支: 当前小时(本地)在 window=[start, end] 内(含边界)则执行 then, 否则 else(可选)。
+            # 用于按每日开放时段控制功能开关(如闪耀委托挑战 10-21 点开放), 非开放时段直接跳过不空转。
+            # 支持跨天窗口: start>end 时表示跨午夜(如 [21, 10] = 21 点~次日 10 点)。
+            import datetime
+            w = step.get("window", [10, 21])
+            start, end = int(w[0]), int(w[1])
+            hour = datetime.datetime.now().hour
+            hit = (start <= hour <= end) if start <= end else (hour >= start or hour <= end)
+            branch = step.get("then") if hit else step.get("else")
+            print(f"{pad}[if_time] 当前 {hour} 时, 窗口 {start}-{end} -> {'TRUE' if hit else 'FALSE'}")
             if branch:
                 self.run_steps(branch, indent=indent + 1)
         elif s_type == "loop_text":
@@ -1278,13 +1545,32 @@ class OCREngine:
             body = step.get("do", [])
             guard = step.get("max_loop", 20)
             n = 0
-            while n < guard and \
-                    self.locate(kws, min_score=step.get("min_score", 0.4),
-                                region_rel=step.get("region_rel")) is not None:
+            last_pt = None
+            stalled = False
+            while n < guard:
+                pt = self.locate(kws, min_score=step.get("min_score", 0.4),
+                                 region_rel=step.get("region_rel"),
+                                 exclude=step.get("exclude"))
+                if pt is None:
+                    break
+                # 无进展守卫: 这一轮定位到的还是上一轮那个点, 说明点击对它根本没有作用
+                # (按钮是「已领取」或未达标的灰按钮), 再点多少次结果都一样 —— 立刻停,
+                # 不要空转满 max_loop 次骗自己"在领取"。
+                if last_pt is not None and abs(pt.x - last_pt.x) <= 4 and abs(pt.y - last_pt.y) <= 4:
+                    stalled = True
+                    break
                 n += 1
-                print(f"{pad}[loop_text] {kws} 存在, 执行第 {n} 次领取/操作")
+                last_pt = pt
+                print(f"{pad}[loop_text] {kws} 存在({pt.x},{pt.y}), 执行第 {n} 次领取/操作")
                 self.run_steps(body, indent=indent + 1)
-            print(f"{pad}[loop_text] {kws} 不存在, 领取/操作完成, 退出")
+            if stalled:
+                print(f"{pad}[loop_text] {kws} 连续两轮落在同一坐标({last_pt.x},{last_pt.y})且画面无变化, "
+                      f"判定该按钮当前不可领(已领取/未达标), 提前退出")
+            elif n >= guard:
+                # 到上限退出时按钮可能仍然存在, 不能说成"不存在/完成"(否则把放弃谎报成成功)
+                print(f"{pad}[loop_text] {kws} 已达上限 {guard} 次仍在, 放弃本轮循环(未确认真已领完)")
+            else:
+                print(f"{pad}[loop_text] {kws} 不存在, 领取/操作完成, 退出")
         elif s_type == "loop_fraction":
             # 按分数区域算出的次数重复执行 do (n=ceil((b-a)/57), m=floor(a/20), 取 min)
             self.run_loop_fraction(step, indent)
@@ -1322,6 +1608,22 @@ class OCREngine:
             # 语义与 retry_loop 一致: 目标 mark 命中即本轮成功(进入后自动切换 self._scene);
             # 未命中则 close_dialog 脱困, 最多 max_rounds 轮。避免各流程重复内嵌进入链。
             self.run_navigate(step, indent)
+        elif s_type == "friend_pollin":
+            # 好友采粉闭环: 密友+好友两类逐页扫可采粉绿花 -> 进家园 -> 快捷操作 -> 采粉,
+            # 采完就地重开好友列表去下一个; 两类均到最后一页仍无可采粉则回自己家园结束。
+            # 实现见 pollin.py; 定位/点击一律走本体(纯图形走模板匹配, 有文字走 OCR)。
+            from pollin import run_friend_pollin
+            res = run_friend_pollin(self)
+            print(f"{pad}[friend_pollin] 结果 {res}")
+            time.sleep(step.get("delay", 1.0))
+        elif s_type == "community_like":
+            # 社区点赞闭环(社交 4.3): 进「种草社区」-> 随机向右翻页 -> 随机点 2 个未点赞按钮 -> 退出回主界面。
+            # 实现见 community_like.py。点赞成功判据 = 点击后该处「亮紫胶囊」消失(实测按钮位置/颜色/大小三者同时变化);
+            # 模板匹配在本场景失效(TM_SQDIFF_NORMED 对低纹理模板误命中 30+ 处), 故用 HSV 颜色+形状检测。
+            from community_like import run_community_like
+            res = run_community_like(self)
+            print(f"{pad}[community_like] 结果 {res}")
+            time.sleep(step.get("delay", 1.0))
         else:
             print(f"[未知步骤] {s_type}")
 
@@ -1466,8 +1768,6 @@ class OCREngine:
                 "name": text,
                 "text": [text],
                 "rel": [round(pt.rel[0], 4), round(pt.rel[1], 4)],
-                "abs": [pt.x, pt.y],
-                "screen": [self.screen_w, self.screen_h],
                 "method": "ocr",
                 "time": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "category": self.auto_category(text),
@@ -1479,7 +1779,7 @@ class OCREngine:
         self._save_click_log()
         print(f"[采集] [{sc}] 当前界面: {len(new_entries)} 个按钮已写入知识库")
         for name, e in sorted(new_entries.items()):
-            print(f"  {name:<16} 相对{e['rel']} 绝对{e['abs']}")
+            print(f"  {name:<16} 相对{e['rel']}")
         return new_entries
 
 

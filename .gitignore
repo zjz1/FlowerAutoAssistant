@@ -1,4 +1,12 @@
-# Python
+# ============================================================
+# 6 区同步契约（release / debug 区分）
+#   入仓(GitHub)：代码区(仓库根) + 资源区(resource/)
+#   出仓：开发区(dev_tools/ workbench/)、测试区(debug/ 与 data/ 运行产物)、
+#         备份区(见 FAA_basis/_backup/)、其他区(PROGRESS.md 等内部文档)
+#   详细约定见 docs/DEV_PROMPT.md「项目分区与同步契约」
+# ============================================================
+
+# ---------- 环境 / IDE ----------
 __pycache__/
 *.py[cod]
 .venv/
@@ -6,34 +14,42 @@ venv/
 .idea/
 .vscode/
 
-# 运行产物（游戏截图，勿提交 —— 规避 IP 风险）
+# ---------- 测试区：运行产物（游戏截图，勿提交 —— 规避 IP 风险） ----------
 debug/
 logs/
-
-# 旧方案 / 解包脚本（勿提交）
-legacy/
-resource/
-
-# 临时/备份
-*.bak
-*.tmp
-
-# Web UI 测试点击截图 / 临时调试产物（勿提交）
 data/click_debug/
+data/annot_shots/
 data/_corner_evidence.png
 _probe*.png
 _probe_*.png
 _tmp_*.py
 
-# 本地私有配置（含账号尾号等本机运行状态, 勿提交; 模板见 data/config.example.json）
-data/config.json
+# ---------- 测试区/运行产物：MAA 本机运行选项(每次启动由 Toolkit.init_option 重写) ----------
+config/
 
-# 标注绑定的原始截图（游戏画面, 勿提交 —— 规避 IP 风险）
-data/annot_shots/
+# ---------- 测试区：data/ 只提交示例配置与手工维护的知识库，其余为本机运行状态 ----------
+data/*
+!data/config.example.json
+# close_buttons.json = 手工维护的「关闭按钮定位逻辑」知识库(仅 CLI 注册时才会改), 代码运行必需;
+# 缺了它 close_dialog 退化为空操作, 新克隆会失去全部关面板/脱困能力 → 入仓。
+# 而 click_log.json 是每次点击自动累积的坐标记忆(运行状态) → 出仓。
+!data/close_buttons.json
 
-# fastdeploy 临时缓存等
+# ---------- 开发区：未并入主项目的开发代码 / 工具 / 脚本 ----------
+dev_tools/
+workbench/
+
+# ---------- 其他区：内部文档，不入库 ----------
+PROGRESS.md
+HANDOFF.md
+docs/DEV_PROMPT.md
+
+# ---------- 备份区 / 旧方案 / 临时 ----------
+legacy/
+*.bak
+*.tmp
 *.crdownload
 
-# OS
+# ---------- OS ----------
 Thumbs.db
 .DS_Store

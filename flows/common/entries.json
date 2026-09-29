@@ -8,30 +8,19 @@
       "mark_fallback_rel": [0.0773, 0.4569],
       "max_rounds": 3,
       "nav": [
-        { "type": "if_text", "text": ["社交"], "min_score": 0.4,
+        { "type": "if_text", "text": ["家族"], "min_score": 0.4,
+          "region_rel": [0.25, 0.6, 0.45, 0.92],
           "then": [
-            { "type": "click_text", "text": ["社交"], "fallback_rel": [0.3312, 0.9486], "delay": 1.5 },
-            { "type": "sleep", "seconds": 1.0 },
-            { "type": "if_text", "text": ["家族"], "min_score": 0.4,
-              "then": [
-                { "type": "click_text", "text": ["家族"], "fallback_rel": [0.3305, 0.8264], "delay": 1.5 },
-                { "type": "sleep", "seconds": 1.0 },
-                { "type": "if_text", "text": ["家族活动"], "min_score": 0.4,
-                  "then": [
-                    { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5, "fallback_rel": [0.0773, 0.4569] }
-                  ] }
-              ] }
+            { "type": "click_text", "text": ["家族"], "exact": true, "fallback_rel": [0.3305, 0.8264], "delay": 1.5 },
+            { "type": "sleep", "seconds": 1.5 },
+            { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5, "fallback_rel": [0.0773, 0.4569] }
           ],
           "else": [
-            { "type": "if_text", "text": ["家族"], "min_score": 0.4,
-              "then": [
-                { "type": "click_text", "text": ["家族"], "fallback_rel": [0.3305, 0.8264], "delay": 1.5 },
-                { "type": "sleep", "seconds": 1.0 },
-                { "type": "if_text", "text": ["家族活动"], "min_score": 0.4,
-                  "then": [
-                    { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5, "fallback_rel": [0.0773, 0.4569] }
-                  ] }
-              ] }
+            { "type": "click_text", "text": ["社交"], "fallback_rel": [0.3312, 0.9486], "delay": 1.5 },
+            { "type": "sleep", "seconds": 1.5 },
+            { "type": "click_text", "text": ["家族"], "exact": true, "fallback_rel": [0.3305, 0.8264], "delay": 1.5 },
+            { "type": "sleep", "seconds": 1.5 },
+            { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5, "fallback_rel": [0.0773, 0.4569] }
           ] }
       ]
     },

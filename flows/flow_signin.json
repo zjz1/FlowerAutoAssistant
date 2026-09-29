@@ -1,16 +1,57 @@
 {
     "name": "签到",
-    "description": "开始启动后游戏自动弹出签到面板(仅当日未签时)。OCR 实时找「点击签到」按钮点击(不留存坐标,位置每日变化) -> 弹『恭喜获得』奖励框 -> 点『点击任意处关闭』-> 用右上角关闭按钮(corner/corner_white,颜色定位)退出签到界面。当日已签则不弹出,OCR 找不到「点击签到」自动跳过,流程天然兼容。",
+    "description": "开始启动后游戏自动弹出签到面板(仅当日未签时)。OCR 实时找「点击签到」按钮 -> retry_loop 点-等-重试(模拟器点击常被吞, mark 真实命中即退出; 整轮无命中则自动 close_dialog 脱困后重试) -> 弹『恭喜获得』奖励框 -> 点『点击任意处关闭』-> 用右上角关闭按钮(corner/corner_white, 颜色定位)退出签到界面 -> 收尾复核: 底部导航带不可见(=没回到户外主界面)则脱困一次再关, 两轮仍未归位则如实报出。当日已签则不弹出, OCR 找不到「点击签到」自动跳过, 流程天然兼容。",
     "steps": [
         { "type": "if_text",
           "text": ["点击签到"],
           "min_score": 0.4,
+          "_note": "找不到「点击签到」-> 当日已签, 整段跳过(天然兼容)",
           "then": [
-              { "type": "click_text", "text": ["点击签到"], "delay": 2.0 },
-              { "type": "click_text", "text": ["点击任意处关闭", "点击任意处"], "delay": 2.0 },
+              { "type": "retry_loop",
+                "max_rounds": 3,
+                "_note": "点击常被吞: 每轮点一次「点击签到」, mark 步骤真实命中即本轮成功退出; 整轮无命中则自动 close_dialog 脱困一次后进入下一轮",
+                "do": [
+                    { "type": "click_text", "text": ["点击签到"], "mark": true, "delay": 2.0 },
+                    { "type": "sleep", "seconds": 1.5 }
+                ] },
+              { "type": "wait_text",
+                "text": ["点击任意处关闭", "点击任意处", "恭喜获得"],
+                "timeout": 8,
+                "interval": 1.0 },
+              { "type": "if_text",
+                "text": ["点击任意处关闭", "点击任意处"],
+                "min_score": 0.4,
+                "_note": "『恭喜获得』奖励框: 点任意处关闭",
+                "then": [
+                    { "type": "click_text", "text": ["点击任意处关闭", "点击任意处"], "delay": 2.0 }
+                ] },
               { "type": "close_dialog",
                 "only_types": ["corner", "corner_white"],
-                "delay": 2.0 }
+                "delay": 2.0,
+                "_note": "用右上角关闭按钮(颜色定位)退出签到界面" },
+              { "type": "sleep", "seconds": 1.0 },
+              { "type": "if_text",
+                "text": ["社交", "家园", "仙境花园"],
+                "min_score": 0.4,
+                "region_rel": [0.0, 0.80, 1.0, 1.0],
+                "_note": "归位判据: 签到界面已关闭, 底部导航带可见(=户外主界面)",
+                "then": [],
+                "else": [
+                    { "type": "close_dialog",
+                      "delay": 1.5,
+                      "_note": "脱困一次: 签到面板还在/被弹窗挡住 -> 再关一次" },
+                    { "type": "wait_text",
+                      "text": ["社交", "家园", "仙境花园"],
+                      "timeout": 8,
+                      "interval": 1.0 },
+                    { "type": "if_text",
+                      "text": ["社交", "家园", "仙境花园"],
+                      "min_score": 0.4,
+                      "region_rel": [0.0, 0.80, 1.0, 1.0],
+                      "_note": "两轮仍未确认回到户外主界面: 如实报出(日志可见 MISS), 不在错误界面上假装成功; 后续模块各自带归位能力",
+                      "then": [],
+                      "else": [] }
+                ] }
           ] }
     ]
 }

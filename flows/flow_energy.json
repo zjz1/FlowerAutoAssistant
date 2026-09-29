@@ -1,6 +1,6 @@
 {
     "name": "体力任务",
-    "description": "navigate(公共导航注册表 entries.json)进入闪耀变身 -> loop_fraction: 读顶栏算 n=ceil((b-a)/57) 与 m=floor(a/20)，取 m=min(m,n)（均<=0不循环），once 点光偶像进星光偶像，再按 m 次重复 do(若区域有成为最闪耀明星则点速通->点确定->等结算确认->点确认)。",
+    "description": "navigate(公共导航注册表 entries.json)进入闪耀变身 -> loop_fraction: 读顶栏算 n=ceil((b-a)/57) 与 m=floor(a/20)，取 m=min(m,n)（均<=0不循环），once 点光偶像进星光偶像，再按 m 次重复 do(若区域有成为最闪耀明星则点速通->点确定->等结算确认->点确认)。收尾归位: loop 结束会停在『星光偶像/结算』子面板, 必须确认回到主界面(底部『社交』/『家园』/『仙境花园』)或家园(左上『菜单』/『离开』/『奇妙花宝』), 否则脱困一次-尝试-不行再脱困, 最多两轮; 仍不行如实报出, 不假装成功。",
     "steps": [
         { "type": "navigate", "target": "闪耀变身", "max_rounds": 3 },
         { "type": "loop_fraction",
@@ -25,6 +25,57 @@
               { "type": "wait_text", "text": ["确认", "确定"], "timeout": 25, "interval": 1.0 },
               { "type": "click_text", "text": ["确认", "确定"], "delay": 1.0, "fallback_rel": [0.638, 0.858] },
               { "type": "sleep", "seconds": 1.0 }
-          ] }
+          ] },
+        { "_note": "===== 收尾归位: 循环结束会停在星光偶像/结算子面板, 不归位会把残局丢给下一模块 =====" },
+        { "type": "if_text",
+          "text": ["社交", "家园", "仙境花园"],
+          "min_score": 0.4,
+          "region_rel": [0.0, 0.80, 1.0, 1.0],
+          "then": [ { "_note": "已在户外主界面, 无需归位" } ],
+          "else": [
+              { "type": "if_text",
+                "text": ["菜单", "离开", "奇妙花宝"],
+                "min_score": 0.4,
+                "region_rel": [0.0, 0.0, 0.25, 0.16],
+                "then": [ { "_note": "已在家园(个人家园), 同样算归位完成" } ],
+                "else": [
+                    { "_note": "第1轮脱困-尝试: 关掉子面板/弹窗后重新判定" },
+                    { "type": "close_dialog", "delay": 1.5 },
+                    { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 10, "interval": 1.0 },
+                    { "type": "if_text",
+                      "text": ["社交", "家园", "仙境花园"],
+                      "min_score": 0.4,
+                      "region_rel": [0.0, 0.80, 1.0, 1.0],
+                      "then": [],
+                      "else": [
+                          { "type": "if_text",
+                            "text": ["菜单", "离开", "奇妙花宝"],
+                            "min_score": 0.4,
+                            "region_rel": [0.0, 0.0, 0.25, 0.16],
+                            "then": [],
+                            "else": [
+                                { "_note": "第2轮脱困-尝试" },
+                                { "type": "close_dialog", "delay": 1.5 },
+                                { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 10, "interval": 1.0 },
+                                { "type": "if_text",
+                                  "text": ["社交", "家园", "仙境花园"],
+                                  "min_score": 0.4,
+                                  "region_rel": [0.0, 0.80, 1.0, 1.0],
+                                  "then": [],
+                                  "else": [
+                                      { "type": "if_text",
+                                        "text": ["菜单", "离开", "奇妙花宝"],
+                                        "min_score": 0.4,
+                                        "region_rel": [0.0, 0.0, 0.25, 0.16],
+                                        "then": [],
+                                        "else": [
+                                            { "_note": "两轮仍未归位: 如实报出(下一模块 7.x 自带归位链, 不在这里假装成功)" }
+                                        ] }
+                                  ] }
+                            ] }
+                      ] }
+                ] }
+          ] },
+        { "type": "sleep", "seconds": 1.0 }
     ]
 }

@@ -1,44 +1,128 @@
 {
     "name": "社交任务",
-    "description": "社交任务(家族活动)模块, 含两部分: ① navigate(进入家族活动) -> 摇钱树浇水(读今日 X/3, 未满浇一次并 store_fraction 记录 water_count) -> 右上角关闭; ② 闪耀委托挑战(原 flow_shine, 并入本模块, 由 config.enable_shine 控制, 默认 false): 点「闪耀委托挑战」-> loop_text(参与挑战)刷服装委托 -> 右上角关闭。",
+    "description": "社交任务模块，分三大块：4.1 家族活动 / 4.2 好友采粉 / 4.3 社区点赞。家族活动为 2x2 网格入口（摇钱树 / 矿洞探险礼包 / 闪耀委托挑战 / 守望兔子），其中 4.1.1 摇钱树浇水（navigate 进家族活动 -> retry_loop 找摇钱树, 找不到就 close_dialog 脱困后重试 -> if_fraction 读今日 X/3 未满则点浇水并 store_fraction 记 water_count -> 只关摇钱树子面板, 留在家族活动预界面）与 4.1.2 闪耀委托挑战（config.enable_shine 控制，默认 false；每日 10-21 点开放，用 if_time 判断，非开放时段自动跳过；**复用 4.1.1 留在的家族活动预界面, 不再重新 navigate**，retry_loop 找闪耀委托挑战 -> loop_text(参与挑战)刷委托 -> 关闭）+ 4.1 收尾(若仍停在家族活动面板则关掉回主界面)已实现；4.1.3 矿洞探险礼包、4.1.4 守望兔子为占位（待开发）。4.2 好友采粉（config.enable_pollin 控制默认 true）：friend_pollin 跑完整闭环。4.3 社区点赞（config.enable_like 控制，默认 false；每日任务模块就绪前用开关兜住误耗额度的风险）：community_like 步骤跑完整闭环 —— 回主界面点「种草社区」入口(OCR 命中, 未进入则脱困→菜单→家园归位后重试) -> 读「本期/本周点赞数 N/20」做额度守卫(已满则一次都不点) -> 随机向右翻 1~min(总页数,25) 次 -> 随机点 2 个未点赞按钮(点后「亮紫胶囊消失」即确认点中) -> 不足则随机翻页补足 -> 点右上角关闭 X 回主界面。点赞按钮/翻页箭头用 HSV 颜色+形状检测(模板匹配在本页误命中 30+ 处, 实测不可用)。",
     "steps": [
+        { "_note": "===== 4.1 家族活动（摇钱树 / 闪耀委托挑战 共用「家族活动」预界面）=====" },
+        { "_note": "进预界面: navigate 每轮先探测 mark_text, 未命中就 close_dialog 脱困后重试(=脱困一次-尝试-不行再脱困)" },
         { "type": "navigate", "target": "家族活动", "max_rounds": 3 },
 
-        { "type": "click_rel", "rel": [0.2727, 0.4917], "delay": 2.0 },
-        { "type": "if_fraction",
-          "region_rel": [0.888, 0.7847],
-          "condition": "a<b",
-          "then": [
-              { "type": "click_rel", "rel": [0.8484, 0.6875], "delay": 2.5 },
-              { "type": "click_rel", "rel": [0.5, 0.9389], "delay": 2.0 },
-              { "type": "store_fraction",
+        { "_note": "----- 4.1.1 摇钱树浇水（retry_loop: 找不到摇钱树就先脱困再试）-----" },
+        { "type": "retry_loop",
+          "max_rounds": 3,
+          "do": [
+              { "type": "click_text", "text": ["摇钱树"], "mark": true, "delay": 2.0, "fallback_rel": [0.2727, 0.4917] },
+              { "type": "if_fraction",
                 "region_rel": [0.888, 0.7847],
-                "key": "water_count" }
+                "condition": "a<b",
+                "then": [
+                    { "type": "click_text", "text": ["浇水"], "delay": 2.5, "fallback_rel": [0.8484, 0.6875] },
+                    { "type": "click_rel", "rel": [0.5, 0.9389], "delay": 2.0 },
+                    { "type": "store_fraction",
+                      "region_rel": [0.888, 0.7847],
+                      "key": "water_count" }
+                ] }
           ] },
-        { "type": "click_rel",
-          "rel": [0.9375, 0.125],
-          "delay": 2.0 },
+        { "_note": "只关摇钱树子面板, **留在家族活动预界面**给 4.1.2 接着点; 不再 close_family 退出(否则 4.1.2 又得重新 navigate 一遍)" },
+        { "_note": "加**区域守卫**(2026-09-30): close_online_small.png 仅 17x21, 是游戏里所有面板共用的关闭字形, 不设守卫时在家族活动预界面/任意画面都会误命中空点。该子面板标题栏无文字(实测 OCR 在 y<130 无任何块), 无法用 anchor_color, 故改用它独有的「今日浇水次数：X/3」@abs(1067,565) 做守卫" },
+        { "type": "if_text",
+          "text": ["今日浇水次数"],
+          "min_score": 0.4,
+          "region_rel": [0.78, 0.74, 1.00, 0.84],
+          "then": [
+              { "type": "click_template",
+                "template": "close_online_small.png",
+                "threshold": 0.65,
+                "region_rel": [0.84, 0.0, 1.0, 0.30],
+                "fallback_rel": [0.938, 0.089],
+                "delay": 2.0,
+                "name": "关闭摇钱树子面板(守卫:今日浇水次数)" }
+          ] },
 
+        { "_note": "----- 4.1.2 闪耀委托挑战（enable_shine，10-21点，if_time；复用上面留在的家族活动预界面）-----" },
         { "type": "if_config",
           "key": "enable_shine",
           "value": true,
           "then": [
-              { "type": "navigate", "target": "家族活动", "max_rounds": 3 },
-              { "type": "click_text", "text": ["闪耀委托挑战"], "delay": 1.5, "fallback_rel": [0.2727, 0.8986] },
-              { "type": "loop_text",
-                "text": ["参与挑战"],
-                "min_score": 0.4,
-                "max_loop": 8,
-                "do": [
-                    { "type": "click_text", "text": ["参与挑战"], "delay": 1.8, "fallback_rel": [0.6828, 0.8181] },
-                    { "type": "wait_text", "text": ["我换好了"], "timeout": 6, "interval": 1.0 },
-                    { "type": "click_text", "text": ["推荐", "推荐搭配"], "delay": 1.5, "fallback_rel": [0.0523, 0.8778] },
-                    { "type": "click_text", "text": ["我换好了"], "delay": 1.5, "fallback_rel": [0.2664, 0.9181] },
-                    { "type": "wait_text", "text": ["确认", "确定"], "timeout": 10, "interval": 1.0 },
-                    { "type": "click_text", "text": ["确认", "确定"], "delay": 1.2, "fallback_rel": [0.6383, 0.8583] },
-                    { "type": "sleep", "seconds": 1.0 }
-                ] },
-              { "type": "click_rel", "rel": [0.9375, 0.125], "delay": 1.5 }
+              { "type": "if_time",
+                "window": [10, 21],
+                "then": [
+                    { "type": "retry_loop",
+                      "max_rounds": 3,
+                      "do": [
+                          { "type": "click_text", "text": ["闪耀委托挑战"], "mark": true, "delay": 1.5, "fallback_rel": [0.2727, 0.8986] },
+                          { "type": "loop_text",
+                      "text": ["参与挑战"],
+                      "min_score": 0.4,
+                      "max_loop": 8,
+                      "do": [
+                          { "type": "click_text", "text": ["参与挑战"], "delay": 1.8, "fallback_rel": [0.6828, 0.8181] },
+                          { "type": "wait_text", "text": ["我换好了"], "timeout": 6, "interval": 1.0 },
+                          { "type": "click_text", "text": ["推荐", "推荐搭配"], "delay": 1.5, "fallback_rel": [0.0523, 0.8778] },
+                          { "type": "click_text", "text": ["我换好了"], "delay": 1.5, "fallback_rel": [0.2664, 0.9181] },
+                          { "type": "wait_text", "text": ["确认", "确定"], "timeout": 10, "interval": 1.0 },
+                          { "type": "click_text", "text": ["确认", "确定"], "delay": 1.2, "fallback_rel": [0.6383, 0.8583] },
+                          { "type": "sleep", "seconds": 1.0 }
+                          ] }
+                      ] },
+                    { "type": "click_template",
+                      "template": "close_family.png",
+                      "threshold": 0.75,
+                      "region_rel": [0.90, 0.0, 1.0, 0.15],
+                      "fallback_rel": [0.9727, 0.0375],
+                      "delay": 1.5 }
+                ],
+                "else": [
+                    { "type": "sleep", "seconds": 0.5 }
+                ] }
+          ],
+          "else": [] },
+
+        { "_note": "4.1 收尾: 若仍停在家族活动面板(4.1.2 被开关/时段跳过时会残留)则关掉回主界面" },
+        { "type": "if_text",
+          "text": ["家族首页", "家族排行"],
+          "min_score": 0.4,
+          "then": [
+              { "type": "click_template",
+                "template": "close_family.png",
+                "threshold": 0.75,
+                "region_rel": [0.90, 0.0, 1.0, 0.15],
+                "fallback_rel": [0.9727, 0.0375],
+                "delay": 2.0 }
+          ] },
+
+        { "_note": "----- 4.1.3 矿洞探险礼包（待开发，占位）-----" },
+        { "type": "if_config",
+          "key": "enable_mine",
+          "value": false,
+          "then": [
+              { "type": "sleep", "seconds": 0.3 }
+          ],
+          "else": [] },
+
+        { "_note": "----- 4.1.4 守望兔子（待开发，占位）-----" },
+        { "type": "if_config",
+          "key": "enable_rabbit",
+          "value": false,
+          "then": [
+              { "type": "sleep", "seconds": 0.3 }
+          ],
+          "else": [] },
+
+        { "_note": "===== 4.2 好友采粉（enable_pollin）=====" },
+        { "type": "if_config",
+          "key": "enable_pollin",
+          "value": true,
+          "then": [
+              { "type": "friend_pollin", "delay": 1.0 }
+          ],
+          "else": [] },
+
+        { "_note": "===== 4.3 社区点赞（enable_like，默认 false）=====" },
+        { "type": "if_config",
+          "key": "enable_like",
+          "value": true,
+          "then": [
+              { "type": "community_like", "delay": 1.0 }
           ],
           "else": [] }
     ]

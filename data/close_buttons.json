@@ -1,5 +1,22 @@
 [
   {
+    "name": "弹窗标题右侧关闭（跳转页签等模态框）",
+    "type": "anchor_color",
+    "scene": "通用弹窗",
+    "category": "关闭按钮",
+    "anchor": "跳转页签",
+    "dx_range": [150, 400],
+    "dy_tol": 60,
+    "min_score": 0.4,
+    "color": {
+      "hsv_lower": [150, 80, 90],
+      "hsv_upper": [175, 255, 255],
+      "area_min": 300,
+      "area_max": 3000
+    },
+    "_note": "2026-09-29 里程碑 56 实测：好友列表翻页用的「跳转页签」是**模态对话框**，会吞掉一切点击（点右上角/底部导航全无效）。锚点「跳转页签」@abs(639,225)，关闭钮为粉色四瓣花+白✕ @abs(889,232)，dx=250 dy=7 面积约 504。"
+  },
+  {
     "name": "提示锚点右侧关闭",
     "type": "anchor_color",
     "scene": "通用弹窗",
@@ -16,13 +33,30 @@
     }
   },
   {
+    "name": "在线礼包面板标题右侧关闭（在线礼包界面）",
+    "type": "anchor_color",
+    "scene": "在线礼包界面",
+    "category": "关闭按钮",
+    "anchor": "在线礼包",
+    "dx_range": [700, 1100],
+    "dy_tol": 60,
+    "min_score": 0.4,
+    "color": {
+      "hsv_lower": [150, 80, 90],
+      "hsv_upper": [175, 255, 255],
+      "area_min": 300,
+      "area_max": 3000
+    },
+    "_note": "2026-09-30 实测：面板标题「在线礼包」@abs(202,90)，关闭钮(粉花+白✕)@abs(1105,97)，dx=903。⚠ dx_range 必须显式给 [700,1100]：默认 [150,400] 会命中的是标题栏里的装饰粉块 @abs(553,96)。实测在 家园 / 户外主界面(导航位「在线礼包」@964,156) / cur_state / L_first / 好友列表残局 全部 miss，故用它替代通用小模板 close_online_small.png（仅 17×21、各面板同形 ✕、到处 0.94+）。"
+  },
+  {
     "name": "整体画面右上角关闭",
     "type": "corner",
     "scene": "通用",
     "category": "关闭按钮",
     "region_rel": [0.93, 0.0, 1.0, 0.1],
     "template": "close_corner_pink.png",
-    "template_threshold": 0.75,
+    "template_threshold": 0.85,
     "color": {
       "hsv_lower": [150, 80, 90],
       "hsv_upper": [175, 255, 255],
@@ -37,7 +71,8 @@
     "category": "关闭按钮",
     "region_rel": [0.93, 0.0, 1.0, 0.1],
     "template": "close_family.png",
-    "template_threshold": 0.75,
+    "template_threshold": 0.92,
+    "_note": "2026-09-30 阈值 0.88 → 0.92: 社区页曾以 0.896@(1245,27) 误命中(真命中 0.946)。⚠ 真命中仅 1 个样本, 余量 0.026, 若家族面板漏关先怀疑此值。",
     "color": {
       "hsv_lower": [150, 80, 90],
       "hsv_upper": [175, 255, 255],
@@ -65,7 +100,7 @@
     "category": "关闭按钮",
     "region_rel": [0.84, 0.11, 0.89, 0.16],
     "template": "close_online_small.png",
-    "template_threshold": 0.65,
+    "template_threshold": 0.85,
     "color": {
       "hsv_lower": [0, 0, 200],
       "hsv_upper": [180, 30, 255],

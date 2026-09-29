@@ -1,8 +1,46 @@
 {
     "name": "种植任务",
-    "description": "点「家园」进入家园。花田作业(浇水/施肥/授粉/收花)后续待开发。",
+    "description": "归位进家园: ①先判是否已在家园(左上角可见『菜单』/『离开』/『奇妙花宝』, 与 entries.json 闪耀变身链、flow_claim 7.3 的既有判据一致), 是则直接通过; ②不在家园时 retry_loop 点底部『家园』入口, mark 只在真实 OCR 命中时置位(缓存回退不算命中), 未命中即本轮失败 -> close_dialog 脱困后重试(最多3轮); ③进入后 wait_text 等加载, 再用同一判据复核, 仍未到家园则再脱困一次并补点一次。花田作业(浇水/施肥/授粉/收花)后续待开发。",
     "steps": [
-        { "type": "click_text", "text": ["家园"], "delay": 2.5, "fallback_rel": [0.8719, 0.9514] },
+        { "_note": "① 已在家园则整段跳过进入链(避免在家园里空点『家园』)" },
+        { "type": "if_text",
+          "text": ["菜单", "离开", "奇妙花宝"],
+          "min_score": 0.4,
+          "region_rel": [0.0, 0.0, 0.25, 0.16],
+          "then": [],
+          "else": [
+              { "_note": "② 不在家园: 点『家园』入口; 未真实命中就 close_dialog 脱困, 下一轮再试(=脱困一次-尝试-不行再脱困)" },
+              { "type": "retry_loop",
+                "max_rounds": 3,
+                "do": [
+                    { "type": "click_text", "text": ["家园"], "mark": true, "delay": 2.5,
+                      "fallback_rel": [0.8719, 0.9514] },
+                    { "type": "sleep", "seconds": 1.5 }
+                ] },
+              { "_note": "③ 等家园界面加载, 再用同一判据复核(不把『点了按钮』当成『已到位』)" },
+              { "type": "wait_text", "text": ["菜单", "离开", "奇妙花宝"], "timeout": 12, "interval": 1.0 },
+              { "type": "if_text",
+                "text": ["菜单", "离开", "奇妙花宝"],
+                "min_score": 0.4,
+                "region_rel": [0.0, 0.0, 0.25, 0.16],
+                "then": [],
+                "else": [
+                    { "_note": "仍未到家园: 再脱困一次并补点一次『家园』" },
+                    { "type": "close_dialog", "delay": 1.5 },
+                    { "type": "click_text", "text": ["家园"], "delay": 2.5,
+                      "fallback_rel": [0.8719, 0.9514] },
+                    { "type": "wait_text", "text": ["菜单", "离开", "奇妙花宝"], "timeout": 12, "interval": 1.0 },
+                    { "type": "if_text",
+                      "text": ["菜单", "离开", "奇妙花宝"],
+                      "min_score": 0.4,
+                      "region_rel": [0.0, 0.0, 0.25, 0.16],
+                      "then": [],
+                      "else": [
+                          { "_note": "两轮仍未确认到家园: 如实报出, 不再假装成功(后续模块各自归位)" }
+                      ] }
+                ] }
+          ] },
+        { "_note": "花田作业(浇水/施肥/授粉/收花)后续待开发" },
         { "type": "sleep", "seconds": 1.0 }
     ]
 }

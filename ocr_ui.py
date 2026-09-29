@@ -8,7 +8,7 @@
   引擎只初始化一次，适合被主程序以子进程方式反复调用。
 
 OCRResult 结构: {"text": str, "center": [cx, cy], "box": [x1,y1,x2,y2], "score": float}
-坐标基准: 输入图片像素坐标（默认 1280x720 横屏）。
+坐标基准: 输入图片像素坐标（尺寸以实际输入图为准, 不假定固定分辨率）。
 """
 from __future__ import annotations
 

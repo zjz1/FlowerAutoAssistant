@@ -58,7 +58,7 @@
   <button id="modeBox" class="btn active">区域框选</button>
   <button id="modeBrush" class="btn">画笔重点</button>
   <button id="modeContour" class="btn">描边轮廓</button>
-  <label class="zoomctr">笔刷 <input id="brushR" type="range" min="1" max="16" value="2" style="width:90px;vertical-align:middle"></label>
+  <label class="zoomctr" title="笔刷粗细：单位=屏幕像素，缩放画面时粗细不变">笔刷 <input id="brushR" type="range" min="1" max="16" value="2" style="width:90px;vertical-align:middle"></label>
   <span class="sep" style="margin-left:4px"></span>
   <button id="btnCrop" class="btn" title="裁剪：在画面上拖出矩形后确认，后续标注/缩放/提交都在裁剪区域内进行">裁剪</button>
   <button id="btnAutoCon" class="btn" title="自动生成连续轮廓：基于当前框选矩形在后端截图内提取主体轮廓，回填为黄线底稿供你再微调">生成轮廓</button>
@@ -76,7 +76,7 @@
 <main>
   <div id="stage">
     <div id="canvasWrap"><canvas id="cv"></canvas><div id="zoomTag" class="zoomTag">100%</div></div>
-    <div id="info">「区域框选」拖拽出关注矩形；「画笔重点」自由涂画提醒重点（散点/灰色提示层）；「描边轮廓」沿图标轮廓连续画一条闭合线（有序点列，供生成 mask）。可在右侧条目里改名/备注、删除、复制 id；支持缩/放/重置缩放观察。</div>
+    <div id="info">「区域框选」拖拽出关注矩形；「画笔重点」自由涂画提醒重点（粗细=笔刷值的屏幕像素，缩放时不变）；「描边轮廓」沿图标轮廓连续画一条闭合线（有序点列，供生成 mask）。拖拽可以拉出画布外，松手才生效（便于整幅框选/裁剪）。可在右侧条目里改名/备注、删除、复制 id；支持缩/放/重置缩放观察。</div>
   </div>
   <div id="side">
     <h3>标注列表<span class="hint" id="countHint"></span></h3>
@@ -90,7 +90,8 @@ const CV = document.getElementById('cv');
 const ctx = CV.getContext('2d');
 const canvasWrap = document.getElementById('canvasWrap');
 const zoomTag = document.getElementById('zoomTag');
-const W0 = 1280, H0 = 720;
+// 不再假设固定分辨率, 画面尺寸完全以实际截图为准: W0/H0 仅为无截图时的占位(1 避免除零/NaN)
+const W0 = 1, H0 = 1;
 
 // ---- 状态 ----
 let img = null;            // Image（原始截图，不写像素）
@@ -101,7 +102,8 @@ let annotations = [];      // 已保存标记 [{id,intent,rect|null,points:[],co
 let selectedId = null;     // 列表被选中的 id（高亮）
 let working = { rect:null, points:[], contour:[] };  // 当前在画但未保存的综合体
 let drag = null;           // 拖拽状态
-let brushR = 2;
+let pointerDown = false;   // 鼠标是否按下(拖拽期间即便指针移出画布也要继续跟随)
+let brushR = 2;            // 笔刷粗细, 单位=屏幕 CSS px(与缩放无关)
 let mode = 'box';          // box | brush | contour | crop
 let cropMode = false;      // 裁剪模式(拖矩形确认后裁剪画面)
 let cropRect = null;       // 裁剪拖拽中的矩形(画面坐标)
@@ -190,18 +192,18 @@ function _brushSegments(group, gapPx){
   }
   return segs;
 }
-// 连续半透明红色圆笔, 直径=brushIm(随截图分辨率归一化的图元px), 圆头圆角连线 + 每个顶点补画等径圆点,
-// 保证即使断笔/单点也呈平滑圆点, 不会出现"几个大方块像素"
+// 连续半透明红色圆笔, 直径=屏幕上 brushR 个 CSS px(见 brushIm), 圆头圆角连线 + 每个顶点补画等径圆点,
+// 保证即使断笔/单点也呈平滑圆点, 且放大观察时笔触粗细不变
 function brushPoly(group){
   const d=brushIm();
-  const segs=_brushSegments(group, Math.max(2, d*2));
+  const segs=_brushSegments(group, Math.max(0.6, 6/scale));  // 断笔阈值也按屏幕 px 折算(约 6 CSS px 的跳变才算抬笔)
   ctx.save();
   ctx.lineWidth=d; ctx.lineCap='round'; ctx.lineJoin='round';
   ctx.strokeStyle='rgba(232,82,107,0.4)';
   for(const seg of segs){
     if(seg.length>=2){ ctx.beginPath(); ctx.moveTo(seg[0][0],seg[0][1]); for(let i=1;i<seg.length;i++) ctx.lineTo(seg[i][0],seg[i][1]); ctx.stroke(); }
   }
-  const r=Math.max(1, d/2);                       // 顶点圆点: 补全描边未覆盖的孤立点, 呈圆头笔触
+  const r=Math.max(0.175, brushR/2)/scale;        // 顶点圆点: 补全描边未覆盖的孤立点, 呈圆头笔触(下限按屏幕px折算, 不能用图元px下限)
   ctx.fillStyle='rgba(232,82,107,0.4)';
   for(const seg of segs){ for(const p of seg){ ctx.beginPath(); ctx.arc(p[0],p[1],r,0,7); ctx.fill(); } }
   ctx.restore();
@@ -229,28 +231,35 @@ function drawRect(r, hi){
 
 // ---- 鼠标 ----
 CV.addEventListener('mousedown', e=>{
-  const [x,y]=cssXY(e); e.preventDefault();
   if(!img) return toast('请先「连接并截图」');
-  if(mode==='crop'){ cropRect={x0:clamp(x,0,W-1),y0:clamp(y,0,H-1),x1:clamp(x,0,W-1)+1,y1:clamp(y,0,H-1)+1}; draw(); return; }
-  if(mode==='box'){ const r={x0:clamp(x,0,W-1),y0:clamp(y,0,H-1),x1:clamp(x,0,W-1)+1,y1:clamp(y,0,H-1)+1,intent:''}; drag={t:'new',r}; draw(); }
+  e.preventDefault(); pointerDown=true;
+  const [x,y]=cssXY(e);
+  // 矩形端点钳到 [0,W]/[0,H](不是 W-1): 这样才能把整幅图完整框进来
+  const rx=clamp(x,0,W), ry=clamp(y,0,H);
+  if(mode==='crop'){ cropRect={x0:rx,y0:ry,x1:rx,y1:ry}; draw(); return; }
+  if(mode==='box'){ drag={t:'new',r:{x0:rx,y0:ry,x1:rx,y1:ry,intent:''}}; draw(); }
   else if(mode==='brush'){ drag={t:'brush',pts:[]}; addPtTo(drag, x, y); draw(); }
   else if(mode==='contour'){ drag={t:'contour',pts:[]}; addPtTo(drag, x, y); draw(); }
 });
-CV.addEventListener('mousemove', e=>{
-  if(!img) return;
+// move/up 绑在 window 上: 指针拖到画布(甚至浏览器窗口)外时仍继续跟随、松手也能收到;
+// 否则拉满整幅图或拖出边界时会停在原地, 表现为「裁剪框不全 / 框选没反应」
+window.addEventListener('mousemove', e=>{
+  if(!pointerDown || !img) return;
   const [x,y]=cssXY(e);
-  if(mode==='crop' && cropRect){ cropRect.x1=clamp(x,0,W-1); cropRect.y1=clamp(y,0,W-1); draw(); return; }
+  const rx=clamp(x,0,W), ry=clamp(y,0,H);   // y 必须按 H 钳制(旧代码这里误用 W-1, 竖直裁剪会超出图像高度)
+  if(mode==='crop' && cropRect){ cropRect.x1=rx; cropRect.y1=ry; draw(); return; }
   if(!drag) return;
-  const [x2,y2]=cssXY(e);
-  if(drag.t==='new'){ drag.r.x1=clamp(x2,0,W-1); drag.r.y1=clamp(y2,0,W-1); }
+  if(drag.t==='new'){ drag.r.x1=rx; drag.r.y1=ry; }
   else if(drag.t==='brush'){ addPtTo(drag, x, y); }
   else if(drag.t==='contour'){ addPtTo(drag, x, y); }
   draw();
 });
-CV.addEventListener('mouseup', ()=>{
+window.addEventListener('mouseup', ()=>{
+  if(!pointerDown) return;
+  pointerDown=false;
   if(mode==='crop' && cropRect){
-    const x0=Math.min(cropRect.x0,cropRect.x1), y0=Math.min(cropRect.y0,cropRect.y1);
-    const x1=Math.max(cropRect.x0,cropRect.x1), y1=Math.max(cropRect.y0,cropRect.y1);
+    const x0=Math.round(Math.min(cropRect.x0,cropRect.x1)), y0=Math.round(Math.min(cropRect.y0,cropRect.y1));
+    const x1=Math.round(Math.max(cropRect.x0,cropRect.x1)), y1=Math.round(Math.max(cropRect.y0,cropRect.y1));
     cropRect=null; setMode('box');
     if(x1-x0>=4 && y1-y0>=4) applyCrop(x0,y0,x1,y1);
     else toast('裁剪区域过小');
@@ -262,7 +271,7 @@ CV.addEventListener('mouseup', ()=>{
     const x0=Math.min(drag.r.x0,drag.r.x1), x1=Math.max(drag.r.x0,drag.r.x1);
     const y0=Math.min(drag.r.y0,drag.r.y1), y1=Math.max(drag.r.y0,drag.r.y1);
     if(x1-x0>=2 && y1-y0>=2){
-      working.rect={x0:Math.round(x0),y0:Math.round(y0),x1:Math.round(x1),y1:Math.round(y1)};
+      working.rect={x0:+x0.toFixed(1),y0:+y0.toFixed(1),x1:+x1.toFixed(1),y1:+y1.toFixed(1)};
       toast('已框选，可继续画笔/描边或直接保存标记');
     }
   } else if(t==='brush'){
@@ -272,16 +281,20 @@ CV.addEventListener('mouseup', ()=>{
   }
   drag=null; draw(); renderSide();
 });
-function brushIm(){ return Math.max(1, Math.round(brushR * fullH / 720)); } // 笔径(直径, 图元px), 按截图高度归一化(720为基准)
+// 笔径(直径, 图元px): 换算成屏幕上恒为 brushR 个 CSS px —— 与缩放/DPR 无关,
+// 缩放放大时笔触不会跟着放大(此前按图元px给线宽, 裁剪小图后自动适配放大 8 倍, 笔触被放大成一大团)
+function brushIm(){ return Math.max(0.35, brushR)/scale; }
 function addPtTo(st, x, y){
   const p=st.pts, n=p.length;
-  const cx=clamp(Math.round(x),0,W-1), cy=clamp(Math.round(y),0,H-1);
+  // 保留浮点精度: 高倍缩放下若取整, 采样点会落在整数网格上, 笔迹被量化成一串方块
+  const cx=clamp(x,0,W-1), cy=clamp(y,0,H-1);
+  const step=0.5/scale;                // 插值间距/去重阈值都折算到屏幕约 0.5 CSS px, 缩放越大采样越密
   if(n){
     const lx=p[n-1][0], ly=p[n-1][1];
     const d=Math.hypot(cx-lx, cy-ly);
-    if(d<0.6) return;                 // 过近跳过
-    const step=0.8, k=Math.ceil(d/step);  // 插值补密: 相邻点间距≤0.8px, 保证高缩放/快速落笔也连续
-    for(let i=1;i<=k;i++) p.push([Math.round(lx+(cx-lx)*i/k), Math.round(ly+(cy-ly)*i/k)]);
+    if(d<step) return;                 // 过近跳过
+    const k=Math.ceil(d/step);
+    for(let i=1;i<=k;i++) p.push([lx+(cx-lx)*i/k, ly+(cy-ly)*i/k]);
   } else {
     p.push([cx,cy]);
   }
@@ -289,6 +302,7 @@ function addPtTo(st, x, y){
 
 // ---- 裁剪：把画面缩小到 crop 区域，后续标注/缩放/提交都在该区域内（坐标自动加回偏移） ----
 function applyCrop(x0,y0,x1,y1){
+  x0=clamp(x0,0,W-1); y0=clamp(y0,0,H-1); x1=clamp(x1,x0+1,W); y1=clamp(y1,y0+1,H);  // 防御: 裁剪区不得超出当前画面
   const cw=x1-x0, ch=y1-y0;
   if(cw<4||ch<4) return toast('裁剪区域过小');
   // 已保存标注的坐标整体平移(相对新区域)
@@ -413,8 +427,8 @@ function showShot(res){
     if(working.contour) working.contour=working.contour.map(p=>[p[0]+offsetX,p[1]+offsetY]);
     offsetX=0; offsetY=0;
   }
-  W=res.w||W0; H=res.h||H0;
-  fullW=res.w||W0; fullH=res.h||H0;
+  W=res.w||W||1; H=res.h||H||1;
+  fullW=res.w||fullW||1; fullH=res.h||fullH||1;
   const im=new Image();
   im.onload=()=>{ img=im; zoomReset(); };
   im.src='data:image/jpeg;base64,'+res.jpeg;
@@ -446,7 +460,7 @@ document.getElementById('modeBrush').onclick=()=>setMode('brush');
 document.getElementById('modeContour').onclick=()=>setMode('contour');
 document.getElementById('btnCrop').onclick=()=>setMode('crop');
 document.getElementById('btnAutoCon').onclick=autoContour;
-document.getElementById('brushR').oninput=e=>{ brushR=parseInt(e.target.value); toast('笔刷 '+brushR); };
+document.getElementById('brushR').oninput=e=>{ brushR=parseInt(e.target.value); toast('笔刷粗细 '+brushR+'px（屏幕像素，不随缩放变化）'); };
 document.getElementById('btnZoomIn').onclick=()=>{ scale=clamp(scale*1.6,0.1,64); applyZoom(); };
 document.getElementById('btnZoomOut').onclick=()=>{ scale=clamp(scale/1.6,0.1,64); applyZoom(); };
 document.getElementById('btnZoomReset').onclick=zoomReset;
@@ -472,7 +486,9 @@ document.getElementById('btnSubmit').onclick=async()=>{
   const contours=anns.filter(a=>a.contour&&a.contour.length).map(a=>({pts:a.contour,intent:a.intent}));
   const payload={
     annotation_id: annotations.map(a=>a.id).join('+') || String(Date.now()),
-    w:W, h:H,
+    // image_size 必须是「原始整幅截图」尺寸: rects/points 已加回裁剪偏移、是绝对像素,
+    // 附带的截图也是 fullW×fullH 整幅。此前误传裁剪后的 W/H, 会让下游按错误尺度换算坐标。
+    w:fullW, h:fullH,
     rects, points, strokes, contours,
     annotations: anns,
     coord_note:"坐标约定: 绝对坐标为左上角原点、单位像素(abs, 已同时给 image_size[ w,h ]); 相对坐标 *_rel 为 abs 除以 image_size 得到 0~1; 散点 points/重点无序; 描边 contour 为按描画顺序的有序闭合点列(首尾相连), 供模型沿轮廓生成 mask 模板。",
@@ -491,7 +507,7 @@ document.getElementById('btnSubmit').onclick=async()=>{
   else toast('提交失败: '+(res.error||'未知'));
 };
 document.addEventListener('keydown',e=>{
-  if(e.key==='Escape'){ drag=null; working={rect:null,points:[],contour:[]}; draw(); }
+  if(e.key==='Escape'){ drag=null; pointerDown=false; cropRect=null; working={rect:null,points:[],contour:[]}; draw(); }
 });
 
 // 打开时取消未保存内容并自动尝试截图
