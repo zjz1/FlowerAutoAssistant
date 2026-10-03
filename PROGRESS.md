@@ -2087,3 +2087,61 @@
 - 同步 `docs/FLOWS.md` §4.1.1/§4.1.2/§4.1 收尾/§4.2/§10/§10.1；本地更新 `docs/PROJECT_GUIDE.md` §3.1/§3.5/§5 与 `docs/DEV_PROMPT.md` 硬性约束/常用命令。
 - 未处理（非本轮范围）：P2-02/P2-03/P2-04 中的日志工具覆盖与 `data/click_log.json` 失效条目清理；B7 搭配界面语义待人工确认。
 
+---
+
+## 2026-10-03 · 合并协作区 zcode-20261003-3（浇水 exact 终修 + BUG-10 + 末轮措辞 + 切换账号链实机重修）（里程碑 74）
+
+**来源**：用户 ——「对协作agent-zcode提交的新补丁进行全面审阅…合并到主分支…执行必要的集成测试」
+（`_collab/inbox/zcode-20261003-3/`，基线 `68c20e1` 里程碑 73）。
+
+### 合并内容（2 补丁 + 2 整文件，共 6 处）
+
+| 编号 | 目标 | 内容 |
+|---|---|---|
+| C | `webui.py` | **BUG-10**：`GET /api/log` 的 `after` 加 `max(0, int(...))` 防负（负数触发 Python 负切片 → 返回错行日志且 `next` 变负 → 前端增量轮询错乱） |
+| D1 | `ocr_engine` | `retry_loop`/`navigate` **末轮措辞如实**：末轮改打「未命中(已达最大轮数)」，不再谎称「脱困重试」；脱困动作保留（**行为零变更**） |
+| D2 | `ocr_engine` | `locate_template`/`click_template` 新增可选 `metric`（默认 `sqdiff` 与旧版一致；`ccoeff` 保留给「模板与背景明暗相反」场景）；`run_step` 透传 `step.metric` |
+| D3 | `ocr_engine` | 新增步骤 **`if_account_tail`**（条件原子：画面含 `****` 账号块尾部数字==tail → then/else；解析与 `click_account_tail` 同一套） |
+| A5′ | `flows/flow_social.json` | 浇水 `click_text(['浇水'])`：`exclude:['浇水次数']` → **`exact:true`**（次轮又误点「浇水奖励」→ 子串匹配的通用终修） |
+| D4 | `flows/flow_startup.json` | 切号链重写：`if_account_tail` **同号跳过** + `click_template b1_switch_down.png`（入口=账号行右端 ˅，实测 rel(0.7745,0.3995)）+ `click_account_tail` region 改**中央纵列** `[0.30,0.30,0.80,0.90]`；`abort_on_fail` 保留 |
+
+### 审阅结论与主 agent 修正（★ 两处）
+
+- **步骤类型 24→25**：`if_account_tail` 与 FIX-D **必须一并合并**（闸门实时从 `run_step` 提取类型，合并后软提示消除）。
+- **★ 修正 1 —— `ccoeff` 分支 min/max 绑定错误**：提交版 `mval, _, _, mlo = cv2.minMaxLoc(sub)` 取的是 **minVal** 却配 **maxLoc**
+  （注释写「max=最佳」与代码不符，违反「注释须反映实际逻辑」）。主 agent 改为 `_, mval, _, mlo`。
+  **重要连带发现**：修复后实测 `ccoeff` 对 `b1_switch_down.png` 在同一位置**正相关命中 0.977**，证明提交 REPORT 中
+  「ccoeff 对该模板负相关(-0.3)、不可用」的结论**本身源自同一 min/max 误用**（读到的是 minVal）；默认 `sqdiff` 路径
+  行为完全不变（仍 score 0.999 @(1487,431)）。→ 提交方桩测 `faa_switch_test.py` 的 `assert pt_cc is None` **编码的是 bug 行为**，
+  不作为合并判据。
+- **★ 修正 2 —— `flow_startup.json` 的 `description` 与步骤不符**：正文写「模板 `metric=ccoeff` 防低对比假阳性」，但步骤未设 `metric`
+  （默认 `sqdiff`），与 REPORT §2「本流程不启用」矛盾 → 改为「默认 `sqdiff` 实测 score 0.99+ 精确命中」。
+- **未回退既有门控**：里程碑 69/70 的 `no_fallback`/`abort_on_fail`/`FlowFailed`/`log_click_pos`/`use_cache_pos`/`method=="fallback"`
+  不落库逻辑逐项断言仍在（`ocr_engine.py` 命中 62 处）。
+- **设计变更（已记录）**：切号入口由「`click_text(['切换账号','切换'])` + `no_fallback=true`」改为「`click_template` + `abort_on_fail`」——
+  回退从「完全禁止」降级为「仅 `abort_on_fail`」（同日实测坐标作 `fallback_rel`，非历史自我强化坐标）。fail-safe 主体（认不到即中止本轮）不变。
+
+### 验证（闸门 + 主 agent 独立复验）
+
+- **合并闸门**：JSON **14/14**、步骤类型 **25 种 / 222 处 / 0 未知**、语法 **7/7**、退出码 **0**。
+- **主 agent 独立复验 8/8**（`%TEMP%\faa_merge\verify_z3.py`，**只 import 主仓库**，不 import 提交方 temp 副本；测试图取 inbox `evidence/`）：
+  ① 浇水 `exact` 语义（子串 4 块 bug 复现 / exact 只中真按钮）；② `retry_loop` 末轮措辞；③ `navigate` 末轮措辞；
+  ④ `/api/log` after 防负；⑤ 模板 `sqdiff` 命中真钮 (1487,431) / **`ccoeff`(修复后)同位置命中 0.977**；
+  ⑥ `if_account_tail` 同号跳过（61 HIT / 89 MISS）；⑦ `click_account_tail` 新区域命中 (978,540)；⑧ 旧右缘区域复现当晚失败。
+- 补丁 `git -c core.autocrlf=false apply` 逐一 `--check` rc=0（无 offset/fuzz）；应用后 `git ls-files --eol` 四文件均 **w/lf**（本次未再出 CRLF）。
+
+### 待实机回归（合并后）
+
+1. `--flow 开始启动`（`enable_switch=true`, `target_tail=61`）当前账号即 61 → 应见 `[if_account_tail] … -> HIT` 并**直接登录**；
+   改 `target_tail=89` 再跑 → 模板命中展开**中央**列表并点中 `195****89`；
+2. 浇水：日志应见「命中块文字'浇水'」且 `water_count=1/3`；
+3. BUG-10：WebUI 日志轮询在 `after` 被置负/异常时不再错行。
+
+### 归档与文档
+
+- inbox `zcode-20261003-3` 归档至 `_collab/merged/zcode-20261003-3/`（`inbox/` 复归清空）。
+- 同步 `docs/FLOWS.md` §1（切号链重写）/§4.1.1（浇水 exact）/§10 步骤表（24→25、+`metric`/`if_account_tail`）；
+  本地更新 `docs/PROJECT_GUIDE.md` §2.2（22→25 种）/§3.6（步骤表）/§5（销项「切换账号」「retry_loop 末轮」+ BUG-10、待实机项⑤）
+  与 `docs/DEV_PROMPT.md` 硬性约束（子串→`exact` 条目）。
+- 未处理（非本轮范围）：提交方 REPORT 第 7 节建议的其余文档细节；`b1_switch_down.png` 模板若随登录页再改版需重采。
+

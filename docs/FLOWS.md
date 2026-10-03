@@ -31,21 +31,27 @@
 
 目标：登录进游戏；可选切换账号。
 
-1. `if_config(enable_switch=true)` 可选切号 —— **全链 fail-safe（2026-10-03 里程碑 69）**：
-   - `click_text(['切换账号','切换'], region_rel=[0.85,0.05,1.0,0.30], no_fallback=true, abort_on_fail=true)`：
-     旧版是无可读文字的灰色折角图标（OCR 永远认不到），2026-10-03 日志显示登录页改版后该处可 OCR 到
-     「切换」@(1227,111)=rel(0.959,0.154)，故关键词同时给新旧两种并限定右上区域。
-   - `click_account_tail` 按 `target_tail`（config.target_tail，账号尾号）在右侧账号列
-     `region_rel=[0.80,0.03,1.0,0.65]` 内匹配并点击（`abc****de` 尾号匹配），同样 `abort_on_fail=true`。
-   - **`no_fallback` / `abort_on_fail` 是本链的核心**：认不到入口、点不到目标账号，就如实中止 `startup`
-     （由 `fail_flow` / `FlowFailed` 机制回收成 `"fail"`），**绝不拿历史坐标盲点、绝不带着错误账号继续去点「登录」**
+1. `if_config(enable_switch=true)` 可选切号 —— **全链 fail-safe（里程碑 69 起，里程碑 74 实机重修）**：
+   - **同号跳过**（里程碑 74，`if_account_tail`）：登录页中央恒显示**当前选中账号**掩码（实测 `186****61`@rel(0.508,0.395)），
+     尾部 == `target_tail`（config.target_tail）时 `then` 为空 —— 什么都不做、直接落到「登录」，**不开切号 UI**。
+     尾部解析与 `click_account_tail` 同一套（尾部数字 + `****` 校验，不误认普通数字块）；未命中走 `else` 进切号链。
+   - 不同号 → `click_template('b1_switch_down.png', threshold=0.8, region_rel=[0.68,0.30,0.88,0.50], fallback_rel=[0.7745,0.3995], abort_on_fail=true)`：
+     **入口 = 账号行右端的灰色向下箭头 ˅**（= 该模板本体），实测 rel(0.7745,0.3995)；默认 `sqdiff` 全尺度 score 0.99+ 精确命中、全图无假阳性。
+     ⚠ **旧链点的是右缘功能菜单列的「切换」（公告/找回/客服同列），不是切号按钮**（2026-10-03 用户指认 + 实机定位）。
+   - `click_account_tail` 按 `target_tail` 在**中央账号纵列** `region_rel=[0.30,0.30,0.80,0.90]` 内匹配并点击
+     （`abc****de` 尾号匹配；旧区域 `[0.80,0.03,1.0,0.65]` 在右缘，列表展开后也盖不住 → 当晚失败第二根因），`abort_on_fail=true`。
+   - **`abort_on_fail` 是本链的核心**：认不到入口、点不到目标账号，就如实中止 `startup`
+     （由 `fail_flow` / `FlowFailed` 机制回收成 `"fail"`），**绝不带着错误账号继续去点「登录」**
      （用户 2026-10-03 决策：宁可当天不跑，也不能用错误账号跑完当天全部任务）。
-   > **2026-10-03 故障复盘**：「切换账号」旧坐标 rel(0.773,0.394)→绝对(989,283) 在改版后正好落在新「登录」按钮上；
+   > **2026-10-03 故障复盘（里程碑 69）**：「切换账号」旧坐标 rel(0.773,0.394)→绝对(989,283) 在改版后正好落在「登录」按钮上；
    > 而该坐标是历史 `fallback` 条目**自我强化**出来的（认不到 → 盲点 → 盲点坐标又被写回知识库 → 下次继续盲点）。
    > 三处引擎修复：① `_log_click` 对 `method=="fallback"` **一律不落库**；② 回退查找**跳过** `method=="fallback"` 的历史条目；
    > ③ 新增 `no_fallback`（禁用整条缓存回退）。同时把 `登录界面` 里已失效的「切换账号」anchor 条目改名置为
    > `method=disabled`（`data/click_log.json`），使其退出可复用键名。
-   > ⚠ `region_rel` 与关键词基于 2026-10-03 日志推断，**仍待实机/tpltool 复核**（新折角图标模板可用 `click_template` 替换）。
+   > **里程碑 74 实机重修**：上面的「点右缘『切换』」本身就用错了控件 —— 真正的切号入口是**账号行右端 ˅（`b1_switch_down.png` 模板本体）**，
+   > 账号列表是**中央纵列**（行距≈0.105）。故本链改走「`if_account_tail` 同号跳过 → 模板切号入口 → 中央列按尾号点」，
+   > `no_fallback`（禁止一切回退）降级为**仅 `abort_on_fail`**（同日实测坐标作 `fallback_rel`，非历史自我强化坐标）。
+   > 实机定位均经用户指认 + adb 只读截图 + 授权代点 1 次验证；若登录页再改版，模板与 fallback 会一同失效 → `abort_on_fail` 如实中止。
 2. `if_text(登录)`：若屏幕有「登录」文字 → 点「登录」。
 3. **关「公告」+ 等「点击进入游戏」**（2026-10-01 里程碑 63）：点完「登录」后游戏**会不定期弹出「公告」窗口**
    （实测延迟约 48s 才弹），它盖住登录页的『点击进入游戏』按钮 → 后续 `wait_text` 只能空等到超时。
@@ -69,7 +75,8 @@
 
 > 登录界面**曾**按「尺寸固定、不随分辨率变化」处理，故旧版切号用「锚点 + 颜色 + 账号尾号匹配」而不给整屏相对坐标。
 > 2026-10-03 登录页改版后这些锚点/颜色/坐标全部失效：现在只保留**区域限定（`region_rel`，仅作搜索窗口）**与
-> 实时识别（OCR/模板），且 `no_fallback=true` 禁止任何历史坐标兜底 —— 宁可失败，不可盲点。
+> 实时识别（OCR/模板）。里程碑 69 曾用 `no_fallback=true` 完全禁止回退；**里程碑 74 实机重修后**改为「模板入口 +
+> `abort_on_fail` 兜底」（同日实测坐标作 `fallback_rel`，非历史自我强化坐标）—— 认不到入口/点不到账号仍**如实中止本轮**。
 
 ---
 
@@ -129,10 +136,12 @@
 2. `retry_loop(max_rounds=3)` 内：`click_text('摇钱树', mark:true, fallback 0.2727,0.4917)` —— 点开摇钱树面板，
    本轮 `mark` 命中即退出（**不再靠单次点击判死活**，模拟器点击被吞时自动重试，失败轮 `close_dialog` 脱困）。
 3. `if_fraction`：读区域 (0.888, 0.7847) 的「今日浇水 X/3」，条件 `a<b`（未满）。
-   - 满足则：OCR 点「浇水」`exclude:['浇水次数']`(fallback 0.8484, 0.6875) → 点确认 (0.5, 0.9389) → `store_fraction` 把当前浇水次数+日期写入 config（water_count），**避免同一天重复浇水**。
-     > **`exclude` 是必需的（2026-10-03 里程碑 73 实机定位）**：关键字「浇水」是**子串匹配**，会命中同面板的「9浇水次数：」标签
-     > （2026-10-03 日志 `[OCR命中] ['浇水'] -> 1064,564 命中块文字'9浇水次数：'`；该标签 OCR 分 0.80 > 真按钮 0.54），
-     > 结果是**点了计数标签、浇水未生效**（`water_count=0`）。排除含「浇水次数」的块后，OCR 找不到真按钮时走 `fallback_rel(0.8484,0.6875)`
+   - 满足则：OCR 点「浇水」`exact:true`(fallback 0.8484, 0.6875) → 点确认 (0.5, 0.9389) → `store_fraction` 把当前浇水次数+日期写入 config（water_count），**避免同一天重复浇水**。
+     > **`exact:true` 是必需的（2026-10-03 里程碑 73→74 两轮实机教训）**：关键字「浇水」是**子串匹配**，面板上含「浇水」的标签不止一个 ——
+     > 首轮误点「9浇水次数：」（里程碑 73，加了 `exclude:['浇水次数']`），次轮又误点「浇水奖励」（里程碑 74 日志
+     > `[OCR命中] ['浇水'] -> 235,456 命中块文字'浇水奖励'`，其 OCR 分 0.79 高于真按钮 0.54），**`water_count` 仍=0**。
+     > 真按钮文本**恰为「浇水」二字**，故改 `exact:true` 只认等文本块，任何含「浇水」的标签自动出局
+     > （**同屏多个含关键字标签时用 `exact`，勿逐个 `exclude`**）；OCR 未读到按钮时走 `fallback_rel(0.8484,0.6875)`
      > —— 实机实测真浇水按钮 `浇水@rel(0.8484,0.6861)`，与兜底坐标一致。
 4. **关闭摇钱树子面板（带区域守卫）**：`if_text(['今日浇水次数'], region_rel=[0.78,0.74,1.00,0.84])`
    （= 该子面板独有的「今日浇水次数：X/3」@abs(1067,565)）→ 命中才 `click_template('close_online_small.png', 0.65, region [0.84,0,1.0,0.30], fallback (0.938,0.089))`。
@@ -407,12 +416,12 @@
   社区页 0.941@(1096,92)；pollin 区内 0.94~0.98。**故已把它从 `pollin.CORNER_CLOSE_TEMPLATES` 剔除**
   （同时剔掉资源根本不存在的 `close_signin.png`），在线礼包面板改用上面的 anchor 条目。
   → 教训：**小尺寸、纯字形、无背景的模板不得进通用兜底链**，必须靠「场景锚点」或「收紧到专属区域」。
-- 步骤类型全集（共 24 种）：
+- 步骤类型全集（共 25 种）：
   | 类别 | 步骤类型 |
   |---|---|
-  | 定位/点击 | `click_text`（可 `exact`/`region_rel`/`fallback_rel`/`mark`/`exclude`/`no_fallback`/`abort_on_fail`）、`click_template`（可 `no_fallback`/`abort_on_fail`）、`click_rel`、`click_account_tail`（可 `abort_on_fail`） |
+  | 定位/点击 | `click_text`（可 `exact`/`region_rel`/`fallback_rel`/`mark`/`exclude`/`no_fallback`/`abort_on_fail`）、`click_template`（可 `metric`/`no_fallback`/`abort_on_fail`）、`click_rel`、`click_account_tail`（可 `abort_on_fail`） |
   | 等待/停顿 | `wait_text`、`sleep` |
-  | 条件分支 | `if_text`、`if_fraction`、`if_greater`、`if_config`、`if_time`（时段限定，如 10–21 点）、`count_text`、`if_color_count`（HSV 连通域计数，如 7.3 三档绿勾判是否已领） |
+  | 条件分支 | `if_text`、`if_account_tail`（里程碑 74：读含 `****` 账号块尾部数字==tail 决定 then/else，用于切号「同号跳过」）、`if_fraction`、`if_greater`、`if_config`、`if_time`（时段限定，如 10–21 点）、`count_text`、`if_color_count`（HSV 连通域计数，如 7.3 三档绿勾判是否已领） |
   | 循环 | `loop_text`、`loop_fraction`、`loop_times`、`retry_loop` |
   | 状态/其它 | `store_fraction`、`close_dialog`、`navigate`、`friend_pollin`、`community_like`（社交 4.3，见 §4.3）、`ensure_home`（强制归位到自己家园，见 §7 与 §10.1）、`fail_flow`（主动判失败并中止本模块，见下） |
 

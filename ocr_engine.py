@@ -1361,7 +1361,8 @@ class OCREngine:
         return str(full) if full.exists() else None
 
     def locate_template(self, template: str, img=None, threshold=0.8,
-                        region_rel=None, scale_range=(0.7, 1.0)) -> "Point | None":
+                        region_rel=None, scale_range=(0.7, 1.0),
+                        metric: str = "sqdiff") -> "Point | None":
         """模板匹配定位: 在截图中查找与模板图最匹配的位置(多尺度缩放), 返回模板中心 Point。
         借鉴 MAA TemplateMatch, 用于「纯图形(无文字)按钮」如花形关闭钮/折角切换钮等
         颜色或文字难以唯一化的图形。template: 模板文件名(资源根 resource/template/<template>)。
@@ -1369,6 +1370,10 @@ class OCREngine:
         尺度自适应(2026-10-03): 模板均从 1280x720 截图裁切, 引擎按 screen_w/1280 把 scale_range
         整体缩放 —— 720p 下行为与旧版完全一致; 1080p 等更高分辨率自动等效放大搜索尺度
         (实测 close_family 在 1080p 需 scale≈1.5, 旧版 0.7~1.0 全部漏检)。
+        metric(2026-10-03): "sqdiff"(默认, 与旧版一致) | "ccoeff"。可选能力, 本项目模板
+        (同源截图裁切)实测 sqdiff 即精确命中(b1_switch_down 全尺度 0.99+, 无假阳性);
+        ccoeff 保留给「模板与当前背景明暗相反」的场景(相关系数对亮度偏移不敏感,
+        实测同模板跨底色时 sqdiff 仍准而 ccoeff 为负相关)。
         """
         import cv2
         import numpy as np
@@ -1390,15 +1395,16 @@ class OCREngine:
         lo, hi = scale_range
         ref = (self.screen_w or img.shape[1]) / 1280.0  # 模板基准分辨率宽 1280
         scales = sorted(set(round(float(s * ref), 2) for s in np.linspace(lo, hi, 4)), reverse=True)
+        higher = (metric == "ccoeff")  # ccoeff: max=最佳; sqdiff: min=最佳
+        flag = cv2.TM_CCOEFF_NORMED if higher else cv2.TM_SQDIFF_NORMED
         best = None  # (score, mx, my, tw_r, th_r)  mx/my 为原图上命中左上角, tw_r/th_r 为该尺度模板宽高
         for sc in scales:
             tw_r, th_r = max(1, int(tw * sc)), max(1, int(th * sc))
             if th_r >= img.shape[0] or tw_r >= img.shape[1]:
                 continue
             rtpl = cv2.resize(tpl, (tw_r, th_r))
-            # 模板源自截图(同源抠图), 用 SQDIFF_NORMED(值越小越匹配) 对精确匹配最稳;
-            # execute score=1-sqdiff 归一为「越大越匹配」, 语义与阈值一致。
-            shot = cv2.matchTemplate(img, rtpl, cv2.TM_SQDIFF_NORMED)
+            # sqdiff: 模板源自截图(同源抠图), 值越小越匹配, score=1-sqdiff 归一为「越大越匹配」
+            shot = cv2.matchTemplate(img, rtpl, flag)
             if region_rel is not None:
                 w, h = img.shape[1], img.shape[0]
                 rx1, ry1 = int(region_rel[0] * w), int(region_rel[1] * h)
@@ -1408,11 +1414,17 @@ class OCREngine:
                 if rx2 <= rx1 or ry2 <= ry1:
                     continue
                 sub = shot[ry1:ry2, rx1:rx2]
-                mval, _, mlo, _ = cv2.minMaxLoc(sub)   # min=最佳
-                mmloc = (mlo[0] + rx1, mlo[1] + ry1)
             else:
-                mval, _, mmloc, _ = cv2.minMaxLoc(shot)  # min=最佳
-            score = 1.0 - float(mval)
+                rx1 = ry1 = 0
+                sub = shot
+            if higher:
+                # minMaxLoc 返回 (minVal, maxVal, minLoc, maxLoc): ccoeff 取 maxVal/maxLoc
+                _, mval, _, mlo = cv2.minMaxLoc(sub)   # max=最佳
+                score = float(mval)
+            else:
+                mval, _, mlo, _ = cv2.minMaxLoc(sub)   # min=最佳
+                score = 1.0 - float(mval)
+            mmloc = (mlo[0] + rx1, mlo[1] + ry1)
             if best is None or score > best[0]:
                 best = (score, mmloc[0], mmloc[1], tw_r, th_r)
         if best is None or best[0] < threshold:
@@ -1502,14 +1514,16 @@ class OCREngine:
 
     def click_template(self, template: str, img=None, threshold=0.8,
                        region_rel=None, scale_range=(0.7, 1.0), fallback_rel=None,
-                       no_fallback=False) -> "Point | None":
+                       no_fallback=False, metric: str = "sqdiff") -> "Point | None":
         """模板匹配点击: locate_template 命中则点击并记知识库(method=template)。
         未命中且有 fallback_rel 时回退到该相对坐标点击。返回命中的 Point, 否则 None。
         no_fallback=True 时忽略 fallback_rel: 未命中就如实返回 None, 不用回退坐标盲点
         (高危按钮「切换账号」类, 见 click_text 同名参数)。
+        metric: 透传 locate_template("sqdiff"|"ccoeff"), 低对比模板用 ccoeff 防空白假阳性。
         """
         pt = self.locate_template(template, img=img, threshold=threshold,
-                                  region_rel=region_rel, scale_range=scale_range)
+                                  region_rel=region_rel, scale_range=scale_range,
+                                  metric=metric)
         if pt is not None:
             self._last_locate_source = "template"
             self.click_abs(pt.x, pt.y)
@@ -1643,6 +1657,7 @@ class OCREngine:
                 scale_range=step.get("scale_range", (0.7, 1.0)),
                 fallback_rel=step.get("fallback_rel"),
                 no_fallback=step.get("no_fallback", False),
+                metric=step.get("metric", "sqdiff"),
             )
             ok = pt is not None
             print(f"{pad}[click_template] {step.get('template')} -> {'ok' if ok else 'fail'}")
@@ -1691,6 +1706,33 @@ class OCREngine:
                               region_rel=step.get("region_rel")) is not None
             branch = step.get("then") if hit else step.get("else")
             print(f"{pad}[if_text] {kws} {'区域'+str(step.get('region_rel'))+' ' if step.get('region_rel') else ''}-> {'HIT' if hit else 'MISS'}")
+            if branch:
+                self.run_steps(branch, indent=indent + 1)
+        elif s_type == "if_account_tail":
+            # 条件分支(登录页): 画面中含 **** 的脱敏账号块的尾部数字 == tail 时执行 then, 否则 else。
+            # 用于「当前选中账号已是目标 → 跳过切号直接登录」(2026-10-03 用户决策:
+            # 登录页中央恒显示当前选中账号掩码, 当天目标本就是当前账号时免开切号 UI)。
+            # 与 click_account_tail 同一套尾号解析(尾部数字 + **** 校验, 不误认普通数字块)。
+            tail = str(self.resolve(step.get("tail", ""))).strip()
+            img = self.screenshot()
+            blocks = [b for b in (self._ocr_frame(img)[0] if img is not None else [])
+                      if b.get("score", 1) >= step.get("min_score", 0.4)]
+            if step.get("region_rel"):
+                w, h = self.screen_w, self.screen_h
+                rx1, ry1 = int(step["region_rel"][0] * w), int(step["region_rel"][1] * h)
+                rx2, ry2 = int(step["region_rel"][2] * w), int(step["region_rel"][3] * h)
+                blocks = [b for b in blocks
+                          if rx1 <= b["center"][0] <= rx2 and ry1 <= b["center"][1] <= ry2]
+            cur = None
+            for b in blocks:
+                txt = b.get("text", "").strip()
+                m = re.search(r"(\d+)\s*$", txt)
+                if m and "****" in txt:
+                    cur = m.group(1)
+                    break
+            hit = bool(tail) and cur == tail
+            print(f"{pad}[if_account_tail] 当前账号尾部={cur} 目标={tail} -> {'HIT' if hit else 'MISS'}")
+            branch = step.get("then") if hit else step.get("else")
             if branch:
                 self.run_steps(branch, indent=indent + 1)
         elif s_type == "if_fraction":
@@ -1825,7 +1867,12 @@ class OCREngine:
                     print(f"{pad}[retry_loop] 第 {i+1} 轮命中目标, 退出")
                     hit = True
                     break
-                print(f"{pad}[retry_loop] 第 {i+1} 轮未命中, 脱困重试")
+                # 末轮措辞如实(2026-10-03, 协作区 zcode-20261003-3): 最后一轮后并无下一轮重试,
+                # 旧文案「脱困重试」言过其实; 脱困动作本身保留执行(后续步骤可能依赖末轮清场)。
+                if i + 1 < rounds:
+                    print(f"{pad}[retry_loop] 第 {i+1} 轮未命中, 脱困重试")
+                else:
+                    print(f"{pad}[retry_loop] 第 {i+1} 轮未命中(已达最大轮数)")
                 if fail_do:
                     self.run_steps(fail_do, indent=indent + 1)
                 else:
@@ -1917,7 +1964,11 @@ class OCREngine:
                     self._scene = scene
                 print(f"{pad}[navigate] 《{target}》 第 {i+1} 轮命中进入, scene={self._scene}")
                 return True
-            print(f"{pad}[navigate] 《{target}》 第 {i+1} 轮未命中, 脱困重试")
+            # 末轮措辞如实(同 retry_loop, 2026-10-03): 脱困动作保留, 仅措辞区分有无下一轮。
+            if i + 1 < rounds:
+                print(f"{pad}[navigate] 《{target}》 第 {i+1} 轮未命中, 脱困重试")
+            else:
+                print(f"{pad}[navigate] 《{target}》 第 {i+1} 轮未命中(已达最大轮数)")
             self.close_dialog()
             time.sleep(step.get("delay", 1.0))
         print(f"{pad}[navigate] 《{target}》 {rounds} 轮未命中, 放弃")

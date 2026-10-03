@@ -7,7 +7,7 @@
         { "type": "navigate", "target": "家族活动", "max_rounds": 3 },
 
         { "_note": "----- 4.1.1 摇钱树浇水（retry_loop: 找不到摇钱树就先脱困再试）-----" },
-        { "_note": "浇水加 exclude(2026-10-03, 协作区 zcode-20261003-2): 关键字「浇水」是子串匹配, 会命中\"9浇水次数：\"标签(2026-10-03 日志: 点了标签(1064,564)=「今日浇水次数」位置, 浇水未生效 water_count=0); 排除含「浇水次数」的块后, OCR 找不到浇水按钮时走 fallback_rel(0.8484,0.6875)=真按钮位置" },
+        { "_note": "浇水定位(2026-10-03 两轮实机教训): 关键字「浇水」是子串匹配, 面板上有多个含「浇水」的标签 —— 首轮误点「9浇水次数：」(协作区 zcode-20261003-2, 已加 exclude), 次轮又误点「浇水奖励」(zcode-20261003-3 日志: 命中(235,456), water_count 仍=0)。真按钮文本恰为「浇水」二字(rel 0.8484,0.6861, 实机验证), 故改 exact:true 只认等文本块; OCR 未读到按钮时走 fallback_rel 同一位置" },
         { "type": "retry_loop",
           "max_rounds": 3,
           "do": [
@@ -16,7 +16,7 @@
                 "region_rel": [0.888, 0.7847],
                 "condition": "a<b",
                 "then": [
-                    { "type": "click_text", "text": ["浇水"], "exclude": ["浇水次数"], "delay": 2.5, "fallback_rel": [0.8484, 0.6875] },
+                    { "type": "click_text", "text": ["浇水"], "exact": true, "delay": 2.5, "fallback_rel": [0.8484, 0.6875] },
                     { "type": "click_rel", "rel": [0.5, 0.9389], "delay": 2.0 },
                     { "type": "store_fraction",
                       "region_rel": [0.888, 0.7847],

@@ -746,7 +746,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- API: 增量日志 ----
     def _log(self):
-        after = int(self._query("after") or 0)
+        # after 防负(BUG-10, 2026-10-03): 负数会让 _LOGS[after:] 变成"取末尾 N 条"的 Python 负切片,
+        # 返回错行的日志且 next 变负, 前端增量轮询从此错乱。与 /api/failures 的 max(0,...) 同款防御。
+        after = max(0, int(self._query("after") or 0))
         with _LOG_LOCK:
             if after >= len(_LOGS):
                 return self._send_json({"next": after, "lines": []})
