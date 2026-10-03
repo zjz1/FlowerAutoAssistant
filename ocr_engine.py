@@ -121,6 +121,11 @@ def clear_failures() -> None:
         _FAILURES.clear()
 
 
+def _ts() -> str:
+    """日志正文统一时间戳(本地时, HH:MM:SS), 供离线分诊统计各阶段耗时(见 A3/P2-03)。"""
+    return time.strftime("%H:%M:%S")
+
+
 # 方案②「立体化分级+均值+偏差复核」: OCR 命中点与历史均值偏差超过该像素数即视为可疑,
 # 触发二次更精细处理(局部放大重识别, 无更优子块则沿用原命中, 仅记录日志)。
 BIAS_MAX_PX = 60
@@ -179,6 +184,9 @@ class OCREngine:
         # 最近一帧缓存: WebUI 预览在流程运行期直接复用引擎刚截的帧, 免去预览自己截图与引擎争抢 ADB
         self.last_frame: np.ndarray | None = None
         self.last_frame_ts: float = 0.0
+        # 「同画面未命中折叠」状态(见 _log_ocr_miss): 帧指纹+exact+区域 相同的连续未命中只打首条
+        self._miss_sig: tuple | None = None
+        self._miss_count = 0
 
     # ---- 公共导航注册表 (flows/common/entries.json) ----
     def _load_navigation(self) -> dict:
@@ -626,6 +634,8 @@ class OCREngine:
                 print(f"[排除] {keywords} 命中{len(hits)}块但均含排除词{ex}, 不点击: "
                       + " | ".join(f"{b['text'][:10]}@({b['center'][0]},{b['center'][1]})" for b in hits[:5]))
             hits = keep
+        if hits:
+            self._miss_sig = None  # 命中即复位「同画面未命中折叠」(2026-10-03, 见 _log_ocr_miss)
         if not hits:
             self._log_ocr_miss(keywords, exact, region_rel, blocks)
         return hits
@@ -638,8 +648,26 @@ class OCREngine:
         ③ 检出了但落在限定区域之外 —— 即区域坐标写错(此前只打全屏前 10 块, 无法区分 ③)。
         区域限定时分别打印「区域内实读」与「区域外含同字块(疑似区域坐标不对)」。
         只打印前 max_blocks 块, 控制日志体积。
+
+        ⚠ 同画面重复未命中折叠(2026-10-03, 协作区 zcode-20261003-2): 卡死画面会让每种探测
+          每轮都完整打印「实读到前10块」(2026-10-03 日志: 93×删除好友 / 51×社交 / 36×确定,
+          日志膨胀难检索)。签名=帧指纹+exact+区域(同帧块内容本就相同, 不再按关键字区分),
+          同签名只完整打印首条, 其后每 10 次折叠为一行计数; 画面一变(指纹变)或命中即复位。
         """
         kws = keywords if isinstance(keywords, list) else [keywords]
+
+        # ---- 同画面重复未命中折叠 ----
+        # 仅在帧指纹可用时折叠(哈希失败则逐条打印, 宁多勿漏); 并发下计数最多偏差 1, 纯日志层可接受
+        if self._frame_sig is not None:
+            sig = (self._frame_sig, bool(exact),
+                   tuple(region_rel) if region_rel else None)
+            if sig == self._miss_sig:
+                self._miss_count += 1
+                if self._miss_count % 10 == 0:  # 每 10 次提一条, 避免完全静默
+                    print(f"[OCR未命中] 同画面重复 x{self._miss_count} (已折叠): {kws}")
+                return
+            self._miss_sig = sig
+            self._miss_count = 1
 
         def brief(bs):
             return " | ".join(
@@ -1338,6 +1366,9 @@ class OCREngine:
         借鉴 MAA TemplateMatch, 用于「纯图形(无文字)按钮」如花形关闭钮/折角切换钮等
         颜色或文字难以唯一化的图形。template: 模板文件名(资源根 resource/template/<template>)。
         region_rel: [x1,y1,x2,y2](0~1) 限定搜索区域提速/避干扰。最高分 < threshold 判未命中。
+        尺度自适应(2026-10-03): 模板均从 1280x720 截图裁切, 引擎按 screen_w/1280 把 scale_range
+        整体缩放 —— 720p 下行为与旧版完全一致; 1080p 等更高分辨率自动等效放大搜索尺度
+        (实测 close_family 在 1080p 需 scale≈1.5, 旧版 0.7~1.0 全部漏检)。
         """
         import cv2
         import numpy as np
@@ -1357,7 +1388,8 @@ class OCREngine:
             print(f"[模板匹配] 模板({tw}x{th})不小于截图({img.shape[1]}x{img.shape[0]}), 无法定位")
             return None
         lo, hi = scale_range
-        scales = sorted(set(round(float(s), 2) for s in np.linspace(lo, hi, 4)), reverse=True)
+        ref = (self.screen_w or img.shape[1]) / 1280.0  # 模板基准分辨率宽 1280
+        scales = sorted(set(round(float(s * ref), 2) for s in np.linspace(lo, hi, 4)), reverse=True)
         best = None  # (score, mx, my, tw_r, th_r)  mx/my 为原图上命中左上角, tw_r/th_r 为该尺度模板宽高
         for sc in scales:
             tw_r, th_r = max(1, int(tw * sc)), max(1, int(th * sc))
@@ -1402,7 +1434,7 @@ class OCREngine:
 
         与 locate_template 的区别: 后者只返回最高分单点; 本方法用于「一屏多个同形图标」
         的场景(如好友列表多个可采粉角标), 避免调用方逐带扫描重复做多尺度全图匹配(极大提速)。
-        region_rel/scale_range 语义同 locate_template。
+        region_rel/scale_range 语义同 locate_template; 尺度同样按 screen_w/1280 自适应(见彼处注)。
         nms_gap_rel: 峰值去重半径(相对截图宽高), 多尺度会重复命中同一目标, 按此合并。
         """
         import cv2
@@ -1432,7 +1464,8 @@ class OCREngine:
             if rx2 <= rx1 or ry2 <= ry1:
                 return []
         lo, hi = scale_range
-        scales = sorted(set(round(float(s), 2) for s in np.linspace(lo, hi, 4)), reverse=True)
+        ref = (self.screen_w or img.shape[1]) / 1280.0  # 模板基准分辨率宽 1280 (尺度自适应, 见 locate_template)
+        scales = sorted(set(round(float(s * ref), 2) for s in np.linspace(lo, hi, 4)), reverse=True)
         cands = []  # (score, cx, cy)
         for sc in scales:
             tw_r, th_r = max(1, int(tw * sc)), max(1, int(th * sc))
@@ -1900,18 +1933,18 @@ class OCREngine:
         self._module = name          # 失败登记时标注来源模块
         if flow.get("scene"):
             self._scene = flow["scene"]
-        print(f"\n===== 流程: {name} (scene={self._scene}) =====")
+        print(f"\n[{_ts()}] ===== 流程: {name} (scene={self._scene}) =====")
         try:
             for step in flow.get("steps", []):
                 self.run_step(step)
         except StopRequested:
-            print(f"===== 流程已由停止请求中断: {name} =====")
+            print(f"[{_ts()}] ===== 流程已由停止请求中断: {name} =====")
             return
         except FlowFailed as e:
             # 单跑该流程(非编排)时同样如实中止, 不把 fail_flow 当成未捕获异常抛到调用方
-            print(f"===== 流程中止(主动判失败): {name} -> {e} =====")
+            print(f"[{_ts()}] ===== 流程中止(主动判失败): {name} -> {e} =====")
             return
-        print(f"===== 流程完成: {name} =====")
+        print(f"[{_ts()}] ===== 流程完成: {name} =====")
 
     def run_module(self, module: dict, registry: dict) -> str:
         """执行单个模块(module), 返回结果: 'ok' | 'skip' | 'fail'。
@@ -1920,28 +1953,34 @@ class OCREngine:
         """
         mid = module.get("id", "?")
         self._module = str(mid)      # 失败登记时标注来源模块
+        _, fail_seq0 = get_failures(0)   # 进入模块前的失败序号, 用于识别流程内软失败(A1)
         fname = module.get("flow")
         flow = module.get("flow_data") or registry.get(fname)
         if flow is None:
-            print(f"[模块:{mid}] 未找到流程文件 {fname}, 标记失败")
+            print(f"[{_ts()}] [模块:{mid}] 未找到流程文件 {fname}, 标记失败")
             report_failure(mid, f"模块流程文件缺失: {fname}")
             return "fail"
         on_fail = module.get("on_fail", "stop_round")
         required = module.get("required", False)
-        desc = flow.get("description", "") if isinstance(flow, dict) else ""
-        print(f"\n>>> 模块执行: {mid} [{fname}] {'[必选]' if required else '[可选]'}  {desc}".strip())
+        print(f"\n>>> 模块执行: {mid} [{fname}] {'[必选]' if required else '[可选]'}".strip())
         try:
             if isinstance(flow, dict):
                 self.run_steps(flow.get("steps", []))
-            print(f"<<< 模块完成: {mid}")
+            soft_items, fail_seq1 = get_failures(fail_seq0)
+            if fail_seq1 > fail_seq0:
+                # 流程内部已 report_failure 登记软失败(等待超时/放弃/跑满轮数等)但未抛异常:
+                # 如实收成 'fail', 交编排 on_fail 处置, 避免汇总 fail 与 [失败] 登记自相矛盾(A1)
+                print(f"[{_ts()}] <<< 模块失败(软失败 {len(soft_items)} 项): {mid} (on_fail={on_fail})")
+                return "fail"
+            print(f"[{_ts()}] <<< 模块完成: {mid}")
             return "ok"
         except FlowFailed as e:
             # 流程用 fail_flow 步骤主动判失败: 如实收成 'fail'(不是"模块异常"), 交编排 on_fail 处置
-            print(f"<<< 模块失败: {mid} -> {e} (on_fail={on_fail})")
+            print(f"[{_ts()}] <<< 模块失败: {mid} -> {e} (on_fail={on_fail})")
             report_failure(mid, str(e))
             return "fail"
         except Exception as e:
-            print(f"<<< 模块异常: {mid} -> {e} (on_fail={on_fail})")
+            print(f"[{_ts()}] <<< 模块异常: {mid} -> {e} (on_fail={on_fail})")
             report_failure(mid, f"模块异常: {e}")
             return "fail"
 
@@ -1964,20 +2003,21 @@ class OCREngine:
                     with open(str(fp), encoding="utf-8") as f:
                         registry[fname] = json.load(f)
         result = {"ok": [], "skip": [], "fail": []}
-        print(f"\n########## 编排: {name} ##########")
+        print(f"\n[{_ts()}] ########## 编排: {name} ##########")
         try:
             for m in plan.get("modules", []):
                 self._check_stop()
                 mid = m.get("id")
+                print(f"[{_ts()}] >>> 进入模块: {mid}")
                 res = self.run_module(m, registry)
                 result[res if res in result else "fail"].append(mid)
                 if res == "fail" and m.get("on_fail", "stop_round") == "stop_round":
                     print(f"[编排] 模块 {m.get('id')} 失败且 on_fail=stop_round, 终止本轮")
                     break
         except StopRequested:
-            print(f"########## 编排已由停止请求中断 ({len(result['ok'])} ok) ##########")
+            print(f"[{_ts()}] ########## 编排已由停止请求中断 ({len(result['ok'])} ok) ##########")
             return result
-        print(f"########## 编排结束: ok={len(result['ok'])} skip={len(result['skip'])} fail={len(result['fail'])} ##########")
+        print(f"[{_ts()}] ########## 编排结束: ok={len(result['ok'])} skip={len(result['skip'])} fail={len(result['fail'])} ##########")
         return result
 
     # ---- 界面采集 ----

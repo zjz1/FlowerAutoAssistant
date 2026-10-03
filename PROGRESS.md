@@ -2028,3 +2028,62 @@
 
 - 仅前端 + WebUI 后端，**未动 flows / 引擎**；未 git commit（WebUI 相关按约定只入 PROGRESS）。
 
+---
+
+## 2026-10-03 · 合并协作区两批提交（codeart A1–A3 + zcode A4/A5/A6/B + 卡死根因坐标回填）（里程碑 73）
+
+**来源**：用户 ——「对协作agent-codeart和zcode提交的更新进行代码审阅与合并，其中 zcode 提交的内容是基于 codeart 进行的进一步开发」
+（`_collab/inbox/codeart/` 与 `_collab/inbox/zcode-20261003-2/`，基线均为 `8586814` 里程碑 68-72）。
+
+### 合并内容（两批补丁 + 一个整文件，共 8 处）
+
+| 编号 | 作者 | 目标 | 内容 |
+|---|---|---|---|
+| A2 | codeart | `ocr_engine.run_module` | 去掉 `print(desc)`，模块 `description` 不再流入运行日志（治日志首屏污染） |
+| A1 | codeart | `ocr_engine.run_module` | 收尾比对 `get_failures()` 增量：流程内 `report_failure` 软失败 → 如实返回 `fail`，交 `on_fail` 处置（治「`fail=0` 却有 8 条 `[失败]`」） |
+| A3 | codeart | `ocr_engine` | 新增 `_ts()`；`run_daily`/`run_module`/`run_flow` 关键节点打 `[HH:MM:SS]`（energy/claim 耗时不再依赖 WebUI 轮询） |
+| A4 | zcode | `ocr_engine._log_ocr_miss` | 同画面（帧指纹+exact+区域）重复 `[OCR未命中]` 折叠为「首条 + 每 10 次一行」，命中/换帧复位 |
+| B | zcode | `ocr_engine.locate_template`/`_all` | **模板尺度自适应**：`scale_range` 按 `screen_w/1280` 缩放（720p 完全兼容，1080p 自动 ×1.5） |
+| A6 | zcode | `pollin.ensure_home`/`leave_friend_list` | 三条**实测出口坐标** + `wait_screen_change` 画面变化复核 + 连续 2 次无变化快速如实失败 + `debug/escape_fail_*.png` 存证 |
+| A5 | zcode | `flows/flow_social.json` | 浇水 `click_text(['浇水'])` 加 `exclude:['浇水次数']`（防子串命中「9浇水次数：」标签） |
+| B1 | zcode | `flows/flow_social.json` | 委托子页退出 `(0.035,0.038)`→`(0.9010,0.1065)`；家族外壳 `close_family 模板`→`click_rel (0.9833,0.0509)`（各 2 处，含 `_note` 同步） |
+
+### 冲突与取舍（审阅结论）
+
+- **两批补丁无 hunk 冲突**：A2 与 A1/A3 在同一函数但改不同行（A1/A3 刻意避开 A2 的 `>>> 模块执行` 行），5 个补丁按
+  A2→A1A3→A4→B→A6 顺序叠加 `git apply` 全部 `rc=0`、无 offset/fuzz；`flow_social.json` 为整文件替换，逐行比对为**纯增量**（9 增 17 删）。
+- **保守取舍**：所有改动**均为纯增量**，未触碰里程碑 69/70 的门控区（`no_fallback`/`abort_on_fail`/`FlowFailed`/
+  `log_click_pos`/`use_cache_pos`/`_logpos_notice_done`/`_cachepos_notice_done` 及 `method=="fallback"` 不落库逻辑）——
+  离线断言逐项复核仍在。
+- **A6 只做了 codeart 列表中的 ②③**（画面无变化守卫 + 退出后复查 `in_home`）；①「抬高 `if_text` `min_score` / `exact`」**未采纳**，
+  因为 zcode 已用**实机实测出口坐标**消除根因（子页上 `['家族首页','家族排行']` 仍会假 HIT，但已先被 ①「委托排行/距离结束」退出，
+  顺序保证不误点），抬阈值反而可能误伤正常命中。
+- **A2 补丁文件缺末行换行符**（`git apply` 报 `corrupt patch at :13`）：合并时用补 Temp 副本追加 `\n` 后应用；
+  **inbox 原件未改动**（保留提交原貌），已在 `merged/` 归档与下方「遗留」中记录。
+- **`git apply` 受本机全局 `core.autocrlf=true` 影响会把 LF 补丁写成 CRLF**：应用后已把 `ocr_engine.py`/`pollin.py` 归一化回 **LF**
+  （与仓库既有工作区一致；`flows/flow_social.json` 用字节拷贝保持 LF）。
+
+### 验证（闸门 + 离线桩测，全绿）
+
+- **合并闸门** `tools/check_project.py`：JSON **14/14**、步骤类型 **24 种 / 221 处 / 0 未知**、语法 **7/7**、退出码 **0**。
+- **独立离线桩测（自写，不依赖提交方脚本）**：A2（`description` 不入日志、标题行保留）；A1（软失败 → `fail`；无软失败仍 `ok`）；
+  A3（`_ts()` 形如 `HH:MM:SS` + 收尾行带时间戳）；里程碑 69/70 门控逐项断言仍在。
+- **提交方桩测复跑（已审阅脚本，只读主仓库 + FakeEng）**：`faa_a4_test.py` 5 断言全过；`faa_a6_test.py` 3 场景全过
+  （死出口 4 次点击即停并存证）；`faa_final_test.py` 三出口常量 = 实测值、**1080p 尺度自适应 `close_family` score 0.999 命中**
+  （旧 scale 必 MISS）、`leave_friend_list` 主路径 = `rel(0.4313,0.4694)`。
+- 均为离线验证；`debug/` 为出仓测试区，桩测存证图不纳入版本控制。
+
+### 待实机回归（合并后跑一轮即可销项）
+
+1. `--flow 社交`：委托子页退出链、好友列表退出、浇水 `water_count` 应从 0 变 1/3、A4 折叠生效；
+2. 完整每日编排：`energy`/`claim` 应随卡死根因消除而恢复（B4–B6）；汇总 `fail` 数应与 `[失败]` 登记一致（A1 行为收紧：
+   登记过软失败的模块会按其 `on_fail` 处置，`stop_round` 将终止本轮 —— 这是修复目标，非回归）；
+3. `log_triage.py -m timing` 复核耗时 + CPU（对比 §11 基准）；
+4. 若模拟器保持/切回 720p：相对坐标与尺度自适应均自动兼容。
+
+### 归档与文档
+
+- 两份 inbox 归档至 `_collab/merged/codeart-20261003/` 与 `_collab/merged/zcode-20261003-2/`（`inbox/` 已清空，剔除 `__pycache__`）。
+- 同步 `docs/FLOWS.md` §4.1.1/§4.1.2/§4.1 收尾/§4.2/§10/§10.1；本地更新 `docs/PROJECT_GUIDE.md` §3.1/§3.5/§5 与 `docs/DEV_PROMPT.md` 硬性约束/常用命令。
+- 未处理（非本轮范围）：P2-02/P2-03/P2-04 中的日志工具覆盖与 `data/click_log.json` 失效条目清理；B7 搭配界面语义待人工确认。
+

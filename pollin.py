@@ -82,6 +82,79 @@ def frame_diff(a, b):
     return float(cv2.absdiff(ga, gb).mean()) / 255.0
 
 
+# 脱困点击的「画面真的变了」复核参数(2026-10-03, 协作区 zcode-20261003-2):
+# 阈值 0.05 明显高于倒计时/动画的帧间抖动(委托子页倒计时跳动实测 <<0.01), 低于整屏面板切换(>0.1),
+# 用于区分「退出成功」与「点在无效控件上画面纹丝不动」。待实机校准: 若出现漏判先怀疑这里。
+ESCAPE_CHANGE_TH = 0.05
+ESCAPE_WAIT_S = 6.0
+
+# ---- 实机验证过的退出控件坐标 (2026-10-03 晚, 1920x1080 实测后归一化; 相对坐标适配任意分辨率) ----
+# ① 委托挑战全屏子页的退出 = 内容区右上角「白色圆形粉花✕」(非外壳装饰花!):
+#    旧值 (0.035,0.038) 点在「家族」标题文字上, 点击画面无变化 (2026-10-03 日志卡死 40 分钟的根因)。
+#    实测: 点击 (0.9010,0.1065) → frame_diff 0.25, 回到家族活动 2x2 网格 ✓
+#    ⚠ 外壳右上角的裸粉花 (rel≈0.983,0.051) 在子页上被内容层压住点不动, 必须先点本钮。
+DELEGATE_EXIT_REL = (0.9010, 0.1065)
+# ② 家族界面外壳的关闭 = 右上角「裸粉花✕」(close_family 模板的历史真身, 720p 时代 0.946 自匹配):
+#    实测: 在网格上点击 (0.9833,0.0509) → 回主界面 ✓ (close_family 模板匹配在 1080p 因尺度 1.5 超范围
+#    而失灵, 故脱困链直接用坐标点击, 模板仅留给注册表「家族活动右上角关闭」在尺度修复后使用)。
+FAMILY_SHELL_EXIT_REL = (0.9833, 0.0509)
+# ③ 好友列表的退出 = 列表面板左缘中央的「粉色凸出小抽屉钮 + 白色向右双箭头»」(无任何文字, OCR 不可达,
+#    右上角是页签列没有✕ —— 2026-10-03 离线排查+用户指认+实机点击验证):
+#    实测: 点击 (0.4313,0.4694) → frame_diff 0.31, 列表收起回社交面板视图 ✓
+FRIENDLIST_EXIT_REL = (0.4313, 0.4694)
+
+
+def wait_screen_change(eng, base, desc="画面变化", timeout=None, threshold=None, interval=1.0):
+    """等待画面相对 base 发生**大幅**变化(整屏面板切换), 变了即返回 True。
+
+    用于脱困/归位链「点击退出控件后确认真的退出去了」—— 本次日志(2026-10-03 19:15)里
+    委托子页出口 rel(0.035,0.038) 点在「家族」文字标签上, 画面纹丝不动却被当成功,
+    ensure_home 4 轮 × 各模块反复空转数分钟, energy/claim 全程陪跑。
+    轮询截图无 OCR, 成本可忽略; 有 timeout + 变化即返回, 尊重停止请求。
+    """
+    if timeout is None:
+        timeout = ESCAPE_WAIT_S
+    if threshold is None:
+        threshold = ESCAPE_CHANGE_TH
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if stop_requested():
+            print(f"    [画面复核] {desc} 收到停止请求, 中断")
+            return False
+        if frame_diff(base, eng.screenshot()) >= threshold:
+            return True
+        time.sleep(interval)
+    return False
+
+
+def save_escape_evidence(eng, tag):
+    """脱困/归位失败时把当前画面存到 debug/, 作为出口控件的定向采集素材。
+
+    背景(2026-10-03): 委托子页/好友列表的真实出口控件位置失准且仓库内**没有**这些界面的
+    干净截图(历史素材已被清理), 导致无法离线重采。本钩子在失败现场自动落盘
+    debug/escape_fail_<tag>_<时刻>.png, 下次实机再卡死即产出校准素材 ——
+    用户可直接在 WebUI /tpltool「载入 debug 图片」框选真实出口, 据此修订
+    DELEGATE_EXIT_REL / close_family 阈值 / leave_friend_list 出口。
+    与既有 debug/_enter_garden_fail.png 同类机制; debug/ 为测试区出仓目录, 不入 git。
+    """
+    try:
+        import cv2
+        import os
+        img = eng.screenshot()
+        if img is None:
+            return
+        d = os.path.join(os.path.dirname(__file__), "debug")
+        os.makedirs(d, exist_ok=True)
+        fn = os.path.join(d, f"escape_fail_{tag}_{time.strftime('%H%M%S')}.png")
+        if not cv2.imwrite(fn, img):
+            print("  [存证] 失败画面写盘失败(路径/权限):", fn)
+            return
+        print(f"  [存证] 脱困失败画面已保存 -> {os.path.basename(fn)}"
+              " (请用 WebUI /tpltool 载入该图采集真实出口控件)")
+    except Exception as e:
+        print(f"  [存证] 保存失败画面异常: {e}")
+
+
 def adb_text(s):
     subprocess.run([ADB_PATH, "-s", ADB_ADDRESS, "shell", "input", "text", s],
                    capture_output=True, timeout=15)
@@ -210,7 +283,15 @@ def click_top_right_close(eng):
 # ---------------- 环节: 回主界面 / 开列表 / 切页签 ----------------
 
 def ensure_home(eng):
-    """确保回到自己家园主界面: 关提示框 -> 离开好友花园 -> 委托子页点左上角返回 -> 关家族面板 -> 兜底点右上角关闭。"""
+    """确保回到自己家园主界面: 关提示框 -> 离开好友花园 -> 委托子页点左上角返回 -> 关家族面板 -> 兜底点右上角关闭。
+
+    ⚠ 2026-10-03 加固(协作区 zcode-20261003-2): 每个退出动作后用 wait_screen_change 复核画面真的变了;
+      无效则升级第二策略; **连续 2 个退出动作画面均无变化即如实放弃归位**。
+      背景: 本次日志里委托子页出口 rel(0.035,0.038) 点在「家族」文字标签上, 画面不变却被当成功,
+      4 轮 × 各模块(采粉开列表 3 次 × ensure_home 4 轮 + claim 首步)反复空转数分钟。
+      出口控件真实位置仍待实机重采(B1); 本函数只保证「无效出口被快速、如实地暴露」, 不再空转陪跑。
+    """
+    stale = 0  # 连续「点击后画面无变化」的退出动作计数(任一动作确认画面变化即清零)
     for _ in range(4):
         if stop_requested():
             return False
@@ -234,25 +315,54 @@ def ensure_home(eng):
             continue
         if in_delegate_subpage(eng, img):
             # 委托挑战全屏子页右上角无关闭X, 真实出口是左上角返回箭头; 先回家族活动网格, 下一轮再关网格
-            print("  [主界面] 停在委托挑战子页(全屏, 右上角无关闭X), 点左上角返回箭头回家族网格")
-            eng.click_rel(0.035, 0.038)
-            time.sleep(2.0)
+            print(f"  [主界面] 停在委托挑战子页(全屏, 右上角无关闭X), 点左上角返回箭头回家族网格 rel{DELEGATE_EXIT_REL}")
+            eng.click_rel(*DELEGATE_EXIT_REL)
+            if wait_screen_change(eng, img, desc="委托子页返回箭头"):
+                stale = 0
+                continue
+            print("  [主界面] 返回箭头点击后画面无变化(疑似出口失效), 换右上角关闭区兜底")
+            click_top_right_close(eng)
+            if wait_screen_change(eng, img, desc="委托子页右上角兜底"):
+                stale = 0
+                continue
+            stale += 1
+            if stale >= 2:
+                print("  [主界面] 连续 2 个退出动作画面均无变化, 如实放弃归位"
+                      "(委托子页出口待实机重采, 不再空转)")
+                save_escape_evidence(eng, "delegate_subpage")
+                return False
             continue
         if in_family_panel(eng, img):
-            pt = eng.locate_template("close_family", threshold=0.92,
-                                      region_rel=[0.90, 0.0, 1.0, 0.15])
-            if pt is not None:
-                print(f"  [主界面] 关家族面板 点右上角关闭钮 ({pt.x},{pt.y})")
-                eng.click_abs(pt.x, pt.y)
-                time.sleep(1.5)
+            # 主路径: 外壳右上角裸粉花✕ (2026-10-03 实机验证坐标, 见 FAMILY_SHELL_EXIT_REL 注)。
+            # 不再用 close_family 模板作主路径: 该模板自带背景, 1080p 需尺度 1.5 超出引擎范围,
+            # 且历史上在好友列表等画面以 0.72~0.90 误命中右上角空点。
+            print(f"  [主界面] 关家族外壳 点右上角花形✕ rel{FAMILY_SHELL_EXIT_REL}")
+            eng.click_rel(*FAMILY_SHELL_EXIT_REL)
+            if wait_screen_change(eng, img, desc="关家族面板"):
+                stale = 0
                 continue
-            print("  [主界面] 家族面板关闭钮模板未命中, 点右上角关闭区")
+            print("  [主界面] 花形✕点击后画面无变化, 换右上角关闭区兜底")
             click_top_right_close(eng)
-            time.sleep(1.5)
+            if wait_screen_change(eng, img, desc="关家族面板(兜底)"):
+                stale = 0
+                continue
+            stale += 1
+            if stale >= 2:
+                print("  [主界面] 家族面板关闭后画面无变化, 如实放弃归位"
+                      "(不再空转)")
+                save_escape_evidence(eng, "family_panel")
+                return False
             continue
         print("  [主界面] 未识别场景, 点右上角关闭区")
         click_top_right_close(eng)
-        time.sleep(1.5)
+        if wait_screen_change(eng, img, desc="右上角兜底"):
+            stale = 0
+            continue
+        stale += 1
+        if stale >= 2:
+            print("  [主界面] 连续 2 个退出动作画面均无变化, 如实放弃归位")
+            save_escape_evidence(eng, "unknown_scene")
+            return False
     ok = in_home(eng)
     if ok:
         eng.set_scene("家园主界面")
@@ -292,6 +402,13 @@ def leave_friend_list(eng):
     出口优先「列表右上角 ✕」(与其它整屏面板一致), 未确认离开再试底部栏「离开」。
     ⚠ 待实机校准: 好友列表真实关闭钮尚未定向采集; 若两轮都未确认离开, 按
       `docs/PROJECT_GUIDE.md` §8.3 对「好友列表关闭钮」做一次定向采集后修正本函数。
+    ⚠ 2026-10-03 离线排查+用户指认+实机验证: 好友列表**没有任何可见关闭✕** —— 右上角被
+      「密友/好友/黑名单/附近/最近/申请」页签列占据(模板在该区最高仅 0.67), 底栏只有
+      删除好友/好友设置/添加好友(无「离开」), 旧主路径 click_top_right_close 的区域中心兜底
+      恰好点在「密友」页签(1216,57)上, 等于切页签而非关闭。
+      真实出口 = 列表面板**左缘中央**的「粉色凸出小抽屉钮 + 白色向右双箭头»」(纯图形, OCR 不可达):
+      FRIENDLIST_EXIT_REL, 实测点击 → 列表收起回社交面板视图(frame_diff 0.31)。
+      次路径保留底部栏「离开」; 两轮都失败仍如实报出并存证 escape_fail_friendlist_*.png。
     """
     for i in range(1, 3):
         if stop_requested():
@@ -299,8 +416,8 @@ def leave_friend_list(eng):
         img = eng.screenshot()
         if not in_list(eng, img):
             return True
-        print(f"  [列表] 第{i}次关闭好友列表: 点右上角关闭区")
-        click_top_right_close(eng)
+        print(f"  [列表] 第{i}次关闭好友列表: 点左缘中央向右箭头钮 rel{FRIENDLIST_EXIT_REL}")
+        eng.click_rel(*FRIENDLIST_EXIT_REL)
         if wait_until(eng, lambda: not in_list(eng), 15, desc=f"关闭好友列表(第{i}次)"):
             return True
         img = eng.screenshot()
@@ -313,6 +430,7 @@ def leave_friend_list(eng):
     ok = not in_list(eng)
     if not ok:
         print("  [列表] 如实报出: 两轮均未确认离开好友列表")
+        save_escape_evidence(eng, "friendlist")
     return ok
 
 
