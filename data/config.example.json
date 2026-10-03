@@ -7,6 +7,9 @@
     "enable_pollin": true,
     "enable_like": false,
     "claim_hb": false,
-    "_comment": "enable_switch: 是否启用【切换账号】可选功能(默认 false 关闭)。true 时每日编排会在登录前执行切换账号模块; false 时跳过。target_tail: 目标账号文本尾部数字(由用户自行填写, 默认留空, 不在配置中内置真实账号)。claim_online: 领取奖励·功能1【在线礼包】开关(默认 true 开启)。claim_party: 领取奖励·功能2【花灵派对】开关(默认 true 开启)。claim_hb: 领取奖励·功能3【奇妙花宝】开关(默认 false 关闭; 入口坐标待实机校准, 见 PROGRESS 里程碑46)。enable_shine: 社交任务·家族活动【闪耀委托挑战】开关(默认 false 关闭)。流程 flow_social.json §4.1.2 内用 if_config 读取, false 时整段跳过(原 flow_shine.json 已于里程碑44 并入 flow_social.json 并删除)。enable_pollin: 社交任务·好友采粉开关(默认 true 开启)。flow_social.json 内用 if_config 读取, false 时跳过采粉段。enable_like: 社交任务·社区点赞开关(默认 false 关闭; 每日任务模块就绪前建议保持关闭, 以免误耗每期 20 次点赞额度)。以上均可在 Web UI 或命令行修改。",
+    "log_click_pos": false,
+    "use_cache_pos": false,
+    "ocr_threads": 2,
+    "_comment": "enable_switch: 是否启用【切换账号】可选功能(默认 false 关闭)。true 时每日编排会在登录前执行切换账号模块; false 时跳过。target_tail: 目标账号文本尾部数字(由用户自行填写, 默认留空, 不在配置中内置真实账号)。claim_online: 领取奖励·功能1【在线礼包】开关(默认 true 开启)。claim_party: 领取奖励·功能2【花灵派对】开关(默认 true 开启)。claim_hb: 领取奖励·功能3【奇妙花宝】开关(默认 false 关闭; 入口坐标待实机校准, 见 PROGRESS 里程碑46)。enable_shine: 社交任务·家族活动【闪耀委托挑战】开关(默认 false 关闭)。流程 flow_social.json §4.1.2 内用 if_config 读取, false 时整段跳过(原 flow_shine.json 已于里程碑44 并入 flow_social.json 并删除)。enable_pollin: 社交任务·好友采粉开关(默认 true 开启)。flow_social.json 内用 if_config 读取, false 时跳过采粉段。enable_like: 社交任务·社区点赞开关(默认 false 关闭; 每日任务模块就绪前建议保持关闭, 以免误耗每期 20 次点赞额度)。log_click_pos: 【记录按钮位置】开关(默认 false 关闭)。true 时引擎运行时会把点到的按钮坐标写入知识库 data/click_log.json; false 时一律不写(只 gate 自动记录, 人工标注/直接编辑 click_log.json 不受影响)。use_cache_pos: 【使用缓存位置】开关(默认 false 关闭)。true 时识别不到会用知识库历史坐标回退盲点并做均值复核; false 时只认本次实时识别, 认不到就如实失败 —— 但流程里人工手写的 fallback_rel 兜底坐标仍生效(步骤级 no_fallback=true 才是连它一并禁用)。这两项默认关闭的原因见 docs/PROJECT_GUIDE.md §5 与 PROGRESS 里程碑 70(历史坐标写错会被回退链放大成系统性误点)。ocr_threads: RapidOCR 每 ONNX 会话的推理线程数(默认 2, 性能优化里程碑见协作区 zcode-20261003; 0=不限制即系统默认吃满全部物理核; 数值越大识别越快但越吃 CPU; 改后重启生效)。以上均可在 Web UI 或命令行修改。",
     "_usage": "这是模板文件: 复制为 data/config.json 后再填写。data/config.json 已被 .gitignore 排除, 不会进版本库(含账号尾号/浇水计数等本机状态)。"
 }

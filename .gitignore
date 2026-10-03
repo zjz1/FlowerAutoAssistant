@@ -1,9 +1,10 @@
 # ============================================================
-# 6 区同步契约（release / debug 区分）
+# 7 区同步契约（release / debug 区分）
 #   入仓(GitHub)：代码区(仓库根) + 资源区(resource/)
-#   出仓：开发区(dev_tools/ workbench/)、测试区(debug/ 与 data/ 运行产物)、
+#   出仓：协作开发区(FAA_basis/_collab/，其他 agent 只在此开发，成果等待合并)、
+#         开发区(dev_tools/ workbench/)、测试区(debug/ 与 data/ 运行产物)、
 #         备份区(见 FAA_basis/_backup/)、其他区(PROGRESS.md 等内部文档)
-#   详细约定见 docs/DEV_PROMPT.md「项目分区与同步契约」
+#   详细约定见 docs/DEV_PROMPT.md「项目分区与同步契约」与 docs/PROJECT_GUIDE.md §2.3
 # ============================================================
 
 # ---------- 环境 / IDE ----------
@@ -43,6 +44,7 @@ workbench/
 PROGRESS.md
 HANDOFF.md
 docs/DEV_PROMPT.md
+docs/PROJECT_GUIDE.md
 
 # ---------- 备份区 / 旧方案 / 临时 ----------
 legacy/

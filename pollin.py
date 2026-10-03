@@ -68,6 +68,20 @@ def wait_until(eng, cond, timeout, desc="", interval=1.0):
     return False
 
 
+def frame_diff(a, b):
+    """两张同尺寸 BGR 帧的粗略差异(0~1, 越大差别越大)。
+
+    用于「点完等画面变化, 变了就往下走」—— 缩到 96×54 灰度再比, 单次成本远低于一次全屏 OCR,
+    避免为等一个大概率已落地的动作空转满超时(2026-10-02 采粉提速)。
+    """
+    import cv2
+    if a is None or b is None or a.shape != b.shape:
+        return 1.0
+    ga = cv2.cvtColor(cv2.resize(a, (96, 54)), cv2.COLOR_BGR2GRAY)
+    gb = cv2.cvtColor(cv2.resize(b, (96, 54)), cv2.COLOR_BGR2GRAY)
+    return float(cv2.absdiff(ga, gb).mean()) / 255.0
+
+
 def adb_text(s):
     subprocess.run([ADB_PATH, "-s", ADB_ADDRESS, "shell", "input", "text", s],
                    capture_output=True, timeout=15)
@@ -86,7 +100,15 @@ def in_list(eng, img=None):
 
 
 def in_home(eng, img=None):
+    """自己家园主界面判据: 有「社交」**且不在好友列表**。
+
+    ⚠ 旧版只判「社交」二字 → 好友列表页也含该字样, 于是被误判成"已在主界面";
+      2026-10-02 日志: social 结束停在好友列表, ensure_home 直接收工,
+      claim 整段(5 分钟)在好友列表上空跑, 三个功能几乎全未触发。
+    """
     img = img if img is not None else eng.screenshot()
+    if in_list(eng, img):
+        return False
     return has(eng, "社交", img=img)
 
 
@@ -123,6 +145,17 @@ def in_family_panel(eng, img=None):
     """
     img = img if img is not None else eng.screenshot()
     return eng.locate(["家族首页", "家族排行"], img=img, min_score=0.4) is not None
+
+
+def in_delegate_subpage(eng, img=None):
+    """委托挑战全屏子页判据: 「委托排行」/「距离结束」任一命中。
+
+    该子页(点家族活动网格「闪耀委托挑战」进入)是整屏 UI, 右上角**没有**关闭 X,
+    家庭网格的 close_family 模板不会命中(实测恒 0.683); 真实出口是**左上角返回箭头**。
+    家族活动 2x2 网格不显示「委托排行/距离结束」, 故可用来区分子页与网格。
+    """
+    img = img if img is not None else eng.screenshot()
+    return eng.locate(["委托排行", "距离结束"], img=img, min_score=0.4) is not None
 
 
 def _panel_friend_pt(eng, img=None):
@@ -177,14 +210,21 @@ def click_top_right_close(eng):
 # ---------------- 环节: 回主界面 / 开列表 / 切页签 ----------------
 
 def ensure_home(eng):
-    """确保回到自己家园主界面: 关提示框 -> 离开好友花园 -> 关家族面板 -> 兜底点右上角关闭。"""
+    """确保回到自己家园主界面: 关提示框 -> 离开好友花园 -> 委托子页点左上角返回 -> 关家族面板 -> 兜底点右上角关闭。"""
     for _ in range(4):
         if stop_requested():
             return False
         img = eng.screenshot()
         if in_home(eng, img) and not in_garden(eng, img):
             print("  [主界面] 已在自己家园主界面")
+            eng.set_scene("家园主界面")
             return True
+        if in_list(eng, img):
+            # 整屏好友列表面板: 返回键无效, 也不能当"已在主界面"(in_home 已排除),
+            # 必须先关掉列表再往家园走 (2026-10-02 根因: 停在这里导致 claim 全程空跑)
+            print("  [主界面] 停在好友列表, 先关闭列表")
+            leave_friend_list(eng)
+            continue
         if has(eng, "确定", img=img) and has(eng, "抱歉", img=img):
             print(f"  [主界面] 关提示框 click_text(['确定']) -> {eng.click_text(['确定'])}")
             wait_until(eng, lambda: not has(eng, "抱歉"), 45, desc="提示框关闭")
@@ -192,8 +232,14 @@ def ensure_home(eng):
         if in_garden(eng, img):
             leave_garden(eng)
             continue
+        if in_delegate_subpage(eng, img):
+            # 委托挑战全屏子页右上角无关闭X, 真实出口是左上角返回箭头; 先回家族活动网格, 下一轮再关网格
+            print("  [主界面] 停在委托挑战子页(全屏, 右上角无关闭X), 点左上角返回箭头回家族网格")
+            eng.click_rel(0.035, 0.038)
+            time.sleep(2.0)
+            continue
         if in_family_panel(eng, img):
-            pt = eng.locate_template("close_family", threshold=0.75,
+            pt = eng.locate_template("close_family", threshold=0.92,
                                       region_rel=[0.90, 0.0, 1.0, 0.15])
             if pt is not None:
                 print(f"  [主界面] 关家族面板 点右上角关闭钮 ({pt.x},{pt.y})")
@@ -207,7 +253,10 @@ def ensure_home(eng):
         print("  [主界面] 未识别场景, 点右上角关闭区")
         click_top_right_close(eng)
         time.sleep(1.5)
-    return in_home(eng)
+    ok = in_home(eng)
+    if ok:
+        eng.set_scene("家园主界面")
+    return ok
 
 
 def leave_garden(eng):
@@ -228,7 +277,43 @@ def leave_garden(eng):
             eng.click_abs(pt.x, pt.y)
         else:
             print(f"  [离开] 底部栏未OCR到「离开」, 回退 click_text -> {eng.click_text(['离开'])}")
-    return wait_until(eng, lambda: in_home(eng) and not in_garden(eng), 75, desc="回到自己家园")
+    ok = wait_until(eng, lambda: in_home(eng) and not in_garden(eng), 75, desc="回到自己家园")
+    if ok:
+        eng.set_scene("家园主界面")
+    return ok
+
+
+def leave_friend_list(eng):
+    """关闭整屏好友列表面板, 回到自己家园。
+
+    ⚠ 2026-10-02 根因: 采粉完成后画面停在好友列表 → 引擎 close_dialog 反复点 (1216,106) 无效,
+      而旧 `in_home` 只判「社交」把列表误判成主界面 → `ensure_home` 直接收工 →
+      claim 三个功能整段在列表上空跑 5 分钟。故归位链必须先认出列表并关掉它。
+    出口优先「列表右上角 ✕」(与其它整屏面板一致), 未确认离开再试底部栏「离开」。
+    ⚠ 待实机校准: 好友列表真实关闭钮尚未定向采集; 若两轮都未确认离开, 按
+      `docs/PROJECT_GUIDE.md` §8.3 对「好友列表关闭钮」做一次定向采集后修正本函数。
+    """
+    for i in range(1, 3):
+        if stop_requested():
+            return False
+        img = eng.screenshot()
+        if not in_list(eng, img):
+            return True
+        print(f"  [列表] 第{i}次关闭好友列表: 点右上角关闭区")
+        click_top_right_close(eng)
+        if wait_until(eng, lambda: not in_list(eng), 15, desc=f"关闭好友列表(第{i}次)"):
+            return True
+        img = eng.screenshot()
+        pt = eng.locate(["离开"], img=img, region_rel=[0.70, 0.88, 1.0, 1.0], min_score=0.5)
+        if pt is not None:
+            print(f"  [列表] 底部栏定位「离开」({pt.x},{pt.y})")
+            eng.click_abs(pt.x, pt.y)
+            if wait_until(eng, lambda: not in_list(eng), 15, desc=f"离开好友列表(第{i}次)"):
+                return True
+    ok = not in_list(eng)
+    if not ok:
+        print("  [列表] 如实报出: 两轮均未确认离开好友列表")
+    return ok
 
 
 def open_friend_list(eng):
@@ -244,6 +329,7 @@ def open_friend_list(eng):
         img = eng.screenshot()
         if in_list(eng, img):
             print("  [列表] 已在好友列表")
+            eng.set_scene("好友列表")
             return True
         pt = _panel_friend_pt(eng, img)
         if pt is None:
@@ -260,6 +346,7 @@ def open_friend_list(eng):
             print(f"  [列表] 点社交面板内「好友」({pt.x},{pt.y})")
             eng.click_abs(pt.x, pt.y)
             if wait_until(eng, lambda: in_list(eng), 60, desc="好友列表出现"):
+                eng.set_scene("好友列表")
                 return True
         # 兜底: 列表已在(只是标记未识别)时, 点右侧竖排页签「好友」
         pt = eng.locate(["好友"], exact=True, region_rel=TAB_REGION, min_score=0.4)
@@ -267,6 +354,7 @@ def open_friend_list(eng):
             print(f"  [列表] 点右侧页签「好友」({pt.x},{pt.y})")
             eng.click_abs(pt.x, pt.y)
             if wait_until(eng, lambda: in_list(eng), 60, desc="好友列表出现"):
+                eng.set_scene("好友列表")
                 return True
     print("  [列表] 打开好友列表失败")
     return False
@@ -466,6 +554,9 @@ def collect_one(eng, x, y):
         break
     if not entered:
         return "fail"
+    # 已站到好友花园: 声明场景 —— 这里与「自己家园主界面」的「快捷操作/社交/离开」同名同位置,
+    # 不区分场景的话均值复核会拿主界面的历史坐标来比, 无法发现点偏。
+    eng.set_scene("好友花园")
 
     # 模拟器输入延迟/积压可达数十秒, 单次点击常被吞, 故「点-等-重试」而非一次定生死
     opened = False
@@ -478,21 +569,26 @@ def collect_one(eng, x, y):
         return "fail"
 
     eng.click_text(["采粉"])
-    # 有粉: 静默成功(菜单收起); 无粉: 弹「很抱歉, 这人花园里没有花粉可以采哦」+确定
+    # 有粉: 静默成功(菜单收起); 无粉: 弹「很抱歉, 这人花园里没有花粉可以采哦」+确定。
     # ⚠ 不能用裸「花粉」判定 —— 世界频道聊天常含「花粉」会误判,
     #   故要求「抱歉」与「确定」同时出现才算无花粉弹窗。
-    empty, t0 = False, time.time()
-    while time.time() - t0 < 45:
-        img = eng.screenshot()
-        if has(eng, "抱歉", img=img, min_score=0.3) and has(eng, "确定", img=img, min_score=0.3):
-            empty = True
-            break
-        if has(eng, "离开", img=img) and not has(eng, "采粉", img=img):
-            break                            # 菜单已收起 = 采集成功
-        time.sleep(1.0)
+    # ⚠ 性能(2026-10-02): 原固定轮询等 45s; 改为「首帧比对、变化即返回」+ 上限 20s ——
+    #   菜单收起/弹窗弹出都会让画面显著变化, 变化后只做一次确认 OCR 即可判定。
+    base = eng.screenshot()
+    changed = wait_until(eng, lambda: frame_diff(base, eng.screenshot()) >= 0.02, 20,
+                         desc="点采粉后画面变化", interval=0.5)
+    if not changed:
+        print("    [采集] 点采粉后 20s 画面无变化(点击可能被吞), 本槽位跳过")
+        return "fail"
+    img = eng.screenshot()
+    empty = has(eng, "抱歉", img=img, min_score=0.3) and has(eng, "确定", img=img, min_score=0.3)
     if empty:
         print(f"    [采集] 无花粉提示 -> click_text(['确定']) {eng.click_text(['确定'])}")
         time.sleep(1.0)
+    elif has(eng, "采粉", img=img):
+        # 画面变了但采粉菜单仍在: 不谎报成功, 如实报出并按"本槽位未确认"处理
+        print("    [采集] 画面已变化但「采粉」菜单仍在, 未确认采集成功, 本槽位跳过")
+        return "fail"
     else:
         print("    [采集] 静默成功(有花粉)")
 
@@ -508,8 +604,12 @@ def collect_one(eng, x, y):
 def run_category(eng, cat, max_pages=30):
     """跑完一个类别(密友/好友): 逐页扫标记 -> 逐个采集 -> 收敛到本页无标记 -> 下一页。
 
+    ⚠ 性能(2026-10-02): 旧版内层 `while True` 每采一个好友就重扫一次**全页模板**
+      (第3页扫5次 / 第6页4次 / 第8页3次 … 单轮共 24 次页扫描, 相邻两次常隔 130~295s)。
+      现改为**每页只扫一次**(`scan_marks`), 标记坐标在页内复用;
+      进园失败/无粉/未确认的槽位记入 failed 跳过, 不整页重采。
     ⚠ 每轮动作前先确认「人在好友列表」: 采集失败时人可能还站在好友花园,
-    此时翻页必然失败(花园里没有「跳」按钮), 必须先兜底回列表再继续。
+      此时翻页必然失败(花园里没有「跳」按钮), 必须先兜底回列表再继续。
     返回采到的次数; 打开列表失败返回 None。
     """
     print(f"\n=== 类别「{cat}」===")
@@ -524,41 +624,62 @@ def run_category(eng, cat, max_pages=30):
     print(f"  [{cat}] 总页数 {total}")
 
     collected, empty_cnt = 0, 0
+
+    def back_to_list_page(page):
+        """采集后回到好友列表并翻回第 page 页(采完人在好友花园)。返回 False=本页剩余标记放弃。"""
+        if not in_list(eng):
+            if not open_friend_list(eng):
+                print(f"  [{cat}] 第{page}页 无法回到好友列表, 放弃本页剩余标记")
+                return False
+        switch_tab(eng, cat)
+        if not goto_page(eng, page):
+            print(f"  [{cat}] 第{page}页 翻页未确认, 放弃本页剩余标记")
+            return False
+        return True
+
     for page in range(1, min(total, max_pages) + 1):
-        failed = set()                        # 本页「点标记后无结果/进园失败」的行槽位, 避免死循环
-        while True:
-            if stop_requested():
-                print(f"  [{cat}] 收到停止请求, 中断")
-                print(f"  [{cat}] 完成: 采到 {collected} 次, 空花粉 {empty_cnt} 次")
-                return collected
-            if not in_list(eng):              # 兜底: 不在列表就重开(含从好友花园回来)
-                if not open_friend_list(eng):
-                    print(f"  [{cat}] 第{page}页 无法回到好友列表, 跳过")
-                    break
-                switch_tab(eng, cat)
-            if not goto_page(eng, page):
-                break
-            marks = scan_marks(eng)
-            print(f"  [{cat}] 第{page}页 可采粉标记 {len(marks)} 个 {marks}")
-            target = next(((x, y, slot_of(eng, y)) for x, y in marks if slot_of(eng, y) not in failed), None)
-            if target is None:
-                break
-            res = collect_one(eng, target[0], target[1])
-            print(f"    [{cat}] 第{page}页 结果={res}")
-            if res == "fail":
-                # 进园失败(多为假标记, 实测绿花模板会误匹配到底部好友的「绿色家园图标」本身):
-                # 该槽位本页不再重采, 只跳过它继续看其它标记, 避免整页被跳过丢真实标记
-                failed.add(target[2])
-                if not open_friend_list(eng):
-                    ensure_home(eng)
-                    open_friend_list(eng)
+        if stop_requested():
+            print(f"  [{cat}] 收到停止请求, 中断")
+            break
+        if not in_list(eng):                  # 兜底: 不在列表就重开(含从好友花园回来)
+            if not open_friend_list(eng):
+                print(f"  [{cat}] 第{page}页 无法回到好友列表, 跳过")
                 continue
-            if res == "empty":
-                failed.add(target[2])
+            switch_tab(eng, cat)
+        if not goto_page(eng, page):
+            break
+        marks = scan_marks(eng)               # ← 本页**唯一**一次全页模板扫描
+        print(f"  [{cat}] 第{page}页 可采粉标记 {len(marks)} 个 {marks}")
+        # 同一槽位可能有多个残留标记(跨尺度/NMS 去重后仍可能重复), 每槽位只取一个
+        cand, seen = [], set()
+        for x, y in sorted(marks, key=lambda p: p[1]):
+            slot = slot_of(eng, y)
+            if slot in seen:
+                continue
+            seen.add(slot)
+            cand.append((x, y, slot))
+        failed = set()                        # 本页「进园失败/无粉/未确认」的槽位, 避免死循环
+        for i, (x, y, slot) in enumerate(cand):
+            if stop_requested():
+                break
+            if slot in failed:
+                continue
+            res = collect_one(eng, x, y)
+            print(f"    [{cat}] 第{page}页 标记({x},{y}) 槽位{slot} 结果={res}")
+            if res == "fail":
+                # 进园失败(多为假标记: 绿花模板会误匹配底部好友的「绿色家园图标」本身)
+                # 或点采粉未确认: 该槽位本页不再重采, 只跳过它继续看其它标记
+                failed.add(slot)
+            elif res == "empty":
+                failed.add(slot)
                 empty_cnt += 1
             else:
                 collected += 1
-            # 采完**不离开好友花园**, 下一轮循环开头会就地重开好友列表去下一个目标
+            # 采完**不离开好友花园**: 若本页后面还有候选标记, 就地重开列表并翻回本页;
+            # 没有后续候选就不做多余的一次「开列表+翻页」(旧版每轮都做, 白跑一趟)
+            if any(s not in failed for _, _, s in cand[i + 1:]):
+                if not back_to_list_page(page):
+                    break
     print(f"  [{cat}] 完成: 采到 {collected} 次, 空花粉 {empty_cnt} 次")
     return collected
 

@@ -51,6 +51,8 @@ FlowerAutoAssistant/
 │   ├── daily.json       #   编排：8 大模块按序调度
 │   ├── flow_*.json      #   各模块流程（startup/signin/plant/social/energy/daily_task/claim/idle）
 │   └── common/entries.json  # 公共导航注册表（navigate 步骤引用）
+├── tools/               # 项目校验 / 合并闸门
+│   └── check_project.py #   静态校验 JSON + 步骤类型 + 语法（合并前必跑，--map 打印项目地图）
 ├── data/
 │   ├── click_log.json      # 按钮知识库（v2 场景两层嵌套 + 均值/样本数）
 │   ├── close_buttons.json  # 关闭按钮-特殊逻辑注册表

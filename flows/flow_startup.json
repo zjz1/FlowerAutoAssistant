@@ -1,16 +1,26 @@
 {
     "name": "开始启动",
-    "description": "登录进游戏。可选功能: 若启用切换账号(enable_switch=true, 来自 data/config.json), 先点「切换账号」折角图标展开账号列表, 再按目标账号尾部数字(target_tail)点击切换; 然后点「登录」->点「点击进入游戏」。收尾守卫: 先 wait_text 等主界面加载(底部可见『社交』/『家园』/『仙境花园』), 未确认则脱困(close_dialog 关掉可能挡屏的公告/弹窗)后再点一次进入游戏, 最多两轮, 仍不行如实放弃——避免后续所有模块在登录界面上瞎跑。",
+    "description": "登录进游戏。可选功能: 若启用切换账号(enable_switch=true, 来自 data/config.json), 先在登录页右上传「切换账号/切换」入口展开账号列表, 再按目标账号尾部数字(target_tail)点击切换; 然后点「登录」->关掉登录后不定期弹出的「公告」窗口->点「点击进入游戏」。切换链全程 no_fallback + abort_on_fail: 认不到入口或点不到目标账号就如实中止 startup(绝不盲点历史坐标、绝不带着错账号继续去点「登录」)——用户 2026-10-03 决策『宁可当天不跑, 也不能用错误账号跑完当天全部任务』。收尾守卫: 先 wait_text 等主界面加载(底部可见『社交』/『家园』/『仙境花园』), 未确认则脱困(close_dialog 关掉可能挡屏的公告/弹窗)后再点一次进入游戏, 最多两轮, 仍不行如实放弃。",
     "steps": [
         { "type": "if_config",
           "key": "enable_switch",
           "value": true,
           "then": [
-              { "type": "click_text", "text": ["切换账号"], "delay": 1.8 },
+              { "_note": "「切换账号」是登录页的图形入口: 旧版是无可读文字的灰色折角图标(OCR 永远认不到, b1_switch_down.png 模板已于登录页改版后失效); 2026-10-03 日志显示改版后该处可 OCR 到「切换」@(1227,111)=rel(0.959,0.154), 故关键字同时给「切换账号」(旧版)与「切换」(新版)并限定右上区域。no_fallback=true: OCR/锚点/颜色全未命中就如实失败, 绝不用历史坐标盲点——历史坐标 (989,283) 如今正好是「登录」, 盲点即误登录, 之后的公告/进入游戏/收尾守卫会一路空转(2026-10-03 实际故障)。abort_on_fail=true: 没点到就中止 startup。" },
+              { "type": "click_text",
+                "text": ["切换账号", "切换"],
+                "region_rel": [0.85, 0.05, 1.0, 0.30],
+                "min_score": 0.5,
+                "no_fallback": true,
+                "abort_on_fail": true,
+                "abort_reason": "切换账号: 登录页右上未找到「切换账号/切换」入口(界面可能已改版), 为避免沿用当前账号误登录, 中止本轮",
+                "delay": 1.8 },
+              { "_note": "点击目标账号。旧版账号条目为 abc****de 掩码文本(click_account_tail 只认含 **** 的块, 保证不误点普通数字); region_rel 为改版后账号列表区域(右上玩家ID/昵称同列), 待实机/tpltool 复核。abort_on_fail: 点不到目标账号就中止 startup, 绝不接着去点「登录」。" },
               { "type": "click_account_tail",
                 "tail": "${target_tail}",
-                "region_rel": [0.45, 0.35, 0.58, 0.56],
+                "region_rel": [0.80, 0.03, 1.0, 0.65],
                 "min_score": 0.4,
+                "abort_on_fail": true,
                 "delay": 1.5 }
           ] },
         { "type": "if_text",
@@ -18,11 +28,42 @@
           "min_score": 0.35,
           "then": [{ "type": "click_text", "text": ["登录"], "delay": 2.0 }]
         },
+        { "_note": "登录后「公告」窗口会不定期弹出(实测会延迟数十秒才弹), 会盖住登录页的『点击进入游戏』按钮, 导致后续 wait_text 空等到超时。守卫用公告面板独有的页签名——注意不能用「公告」当锚点: 子串会撞上「版本公告」, 实测 locate('公告') 落在 (199,180) 即版本公告那一行。" },
         { "type": "if_text",
-          "text": ["点击进入游戏", "进入游戏"],
-          "min_score": 0.35,
-          "then": [{ "type": "click_text", "text": ["点击进入游戏", "进入游戏"], "delay": 2.0 }]
-        },
+          "text": ["社交", "家园", "仙境花园"],
+          "min_score": 0.4,
+          "region_rel": [0.0, 0.80, 1.0, 1.0],
+          "then": [],
+          "else": [
+              { "_note": "有限轮询: 边关公告边等『点击进入游戏』(8 轮约 35s, 覆盖实测延迟约 48s 才弹出的公告)。关闭钮不做盲点: 先用通用✕模板在本体区域定位, 实测 close_online_small score=1.000 @(1104,96)=rel(0.8625,0.1333); 模板未命中但有文字守卫时再回退该坐标。" },
+              { "type": "retry_loop",
+                "max_rounds": 8,
+                "do": [
+                    { "type": "if_text",
+                      "text": ["版本公告", "维护公告", "防诈骗提示"],
+                      "min_score": 0.4,
+                      "then": [
+                          { "type": "click_template",
+                            "template": "close_online_small.png",
+                            "threshold": 0.85,
+                            "region_rel": [0.80, 0.05, 0.92, 0.20],
+                            "fallback_rel": [0.8625, 0.1333],
+                            "delay": 1.5 }
+                      ] },
+                    { "type": "if_text",
+                      "text": ["点击进入游戏", "进入游戏"],
+                      "min_score": 0.35,
+                      "then": [
+                          { "type": "click_text",
+                            "text": ["点击进入游戏", "进入游戏"],
+                            "mark": true,
+                            "delay": 2.0 }
+                      ] }
+                ],
+                "fail_do": [
+                    { "type": "sleep", "seconds": 3.0 }
+                ] }
+          ] },
         { "_note": "收尾守卫: 先等主界面加载完再判断, 否则加载中会被误判成『没进去』而盲点关闭按钮" },
         { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 25, "interval": 1.5 },
         { "type": "if_text",

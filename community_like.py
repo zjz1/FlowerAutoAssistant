@@ -271,6 +271,7 @@ def enter_community(eng, tries=3):
         img = eng.screenshot()
         if _entered(eng, img):
             print(f"  [社区点赞] 已在种草社区（第 {i} 轮）")
+            eng.set_scene("种草社区")
             return True
         pt = eng.locate([ENTRY_TEXT], img=img, region_rel=ENTRY_REGION, min_score=0.4)
         if pt is not None:
@@ -280,6 +281,7 @@ def enter_community(eng, tries=3):
             print(f"  [社区点赞] 第 {i}/{tries} 轮: 未命中「{ENTRY_TEXT}」入口, 回退相对坐标 {ENTRY_FALLBACK_REL}")
             eng.click_rel(*ENTRY_FALLBACK_REL)
         if wait_until(eng, lambda: _entered(eng), ENTER_WAIT, desc="进入种草社区"):
+            eng.set_scene("种草社区")
             return True
         print("  [社区点赞] 点了入口但未确认进入, 继续重试")
         if i < tries:
@@ -313,6 +315,7 @@ def leave(eng):
         print("  [社区点赞] 社区页特征已消失, 视为已退出")
         if has(eng, [ENTRY_TEXT], region_rel=ENTRY_REGION):
             print("  [社区点赞] 且重新看到主界面右侧导航入口, 归位确认")
+        eng.set_scene("家园主界面")          # 归位后复位场景, 否则后续点击仍记在「种草社区」
         return True
 
     # 仍在社区页才动关闭注册表兜底 ——
@@ -326,6 +329,7 @@ def leave(eng):
         print("  [社区点赞] ⚠ 兜底关闭后仍在社区页, 请检查关闭按钮/模板")
         return False
     print("  [社区点赞] 兜底关闭生效")
+    eng.set_scene("家园主界面")
     return True
 
 
@@ -398,7 +402,7 @@ def like_some(eng, k, clicked):
     if not cand:
         print("  [社区点赞] 本页无可点赞按钮")
         return 0
-    gap = LIKE_HIT_GAP_FRAC * 1280
+    gap = LIKE_HIT_GAP_FRAC * (eng.screen_w or 1280)   # 按实际屏宽换算(原硬编码 1280 在非 1280 宽分辨率下与 like_at 判定不一致)
     cand = [p for p in cand
             if not any(abs(p[0] - c[0]) <= gap and abs(p[1] - c[1]) <= gap for c in clicked)]
     if not cand:

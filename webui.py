@@ -23,12 +23,28 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from ocr_engine import OCREngine, load_flows, select_flow, ADB_ADDRESS, ADB_PATH, request_stop
+from ocr_engine import (OCREngine, load_flows, select_flow, ADB_ADDRESS, ADB_PATH,
+                        request_stop, get_failures, clear_failures)
 
 BASE = Path(__file__).parent
 ENGINE: OCREngine | None = None
 ENGINE_LOCK = threading.Lock()
 _SERVER = None  # 当前 http server 实例, 用于 /api/shutdown
+
+# 流程运行状态(供前端「运行时关页面确认弹窗」判断, 2026-09-30)
+_RUNNING_LOCK = threading.Lock()
+_RUNNING = False
+
+
+def _set_running(v: bool) -> None:
+    global _RUNNING
+    with _RUNNING_LOCK:
+        _RUNNING = v
+
+
+def _running() -> bool:
+    with _RUNNING_LOCK:
+        return _RUNNING
 
 # 模板标注工具(人机协同标注): 只记录坐标标注, 不直接保存模板文件
 _ANNOT_FILE = BASE / "data" / "tplt_annotations.jsonl"   # 提交给助手的标注记录(追加)
@@ -41,16 +57,52 @@ _POST_ROUTES = {
     "/api/connect", "/api/set_mode", "/api/click", "/api/run",
     "/api/stop", "/api/set_config", "/api/run_daily", "/api/shutdown",
     "/api/tplt_load", "/api/tplt_submit", "/api/tplt_contour",
+    "/api/failures_clear", "/api/log_clear",
 }
 
 # ---- 运行日志环形缓冲 (支持增量拉取) ----
 _LOG_LOCK = threading.Lock()
 _LOGS: list[str] = []
+# 日志磁盘备份: 服务**运行期间**把日志追加落盘(便于本次会话崩溃后排查)。
+# 注意: **每次服务启动都会清空**内存缓冲与磁盘文件, 因此备份不跨会话保留 —— 重开 webui
+# 后不会再看到上一次会话的残留日志 (需求 2026-10-01)。
+_LOG_FILE = BASE / "data" / "webui_runtime_log.txt"
+
+
+def _log_persist(text: str) -> None:
+    """把日志分片追加到磁盘备份(仅追加; 失败静默, 不阻塞主流程)。
+
+    首次写盘时确保 data/ 目录存在 —— 全新克隆可能缺该目录, 否则日志永远不落盘且无人知晓。
+    """
+    try:
+        _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(text)
+    except Exception:
+        pass
 
 
 def log_append(text: str) -> None:
     with _LOG_LOCK:
         _LOGS.append(text)
+    _log_persist(text)
+
+
+def _log_reset_history() -> None:
+    """启动时清空上一次会话的日志缓存(内存缓冲 + 磁盘备份一并重置)。
+
+    需求(2026-10-01): 每次服务启动都从干净状态开始 —— 服务重启后重开页面不再看到
+    上一次会话残留的日志。磁盘备份以**截断**方式重建(而非追加), 避免旧内容越堆越多;
+    运行期间落盘的备份仅用于本次会话内崩溃排查, 不跨会话保留。
+    """
+    with _LOG_LOCK:
+        _LOGS.clear()
+    try:
+        _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_LOG_FILE, "w", encoding="utf-8"):
+            pass
+    except Exception:
+        pass
 
 
 class _TeeOut:
@@ -63,6 +115,7 @@ class _TeeOut:
         if s:
             with _LOG_LOCK:
                 self._buf.append(s)
+            _log_persist(s)
         try:
             return self._real.write(s)
         except Exception:
@@ -126,6 +179,7 @@ def _status() -> dict:
         "screen": [eng.screen_w, eng.screen_h] if eng.screen_w else None,
         "flow_dir": str(BASE / "flows"),
         "debug_click": bool(getattr(eng, "debug_click", False)),
+        "running": _running(),
     }
 
 
@@ -202,6 +256,8 @@ class Handler(BaseHTTPRequestHandler):
                 "claim_hb": bool(eng.config.get("claim_hb", False)),
                 "enable_pollin": bool(eng.config.get("enable_pollin", True)),
                 "enable_like": bool(eng.config.get("enable_like", False)),
+                "log_click_pos": bool(eng.config.get("log_click_pos", False)),
+                "use_cache_pos": bool(eng.config.get("use_cache_pos", False)),
             })
         if api == "daily" and self.command == "GET":
             return self._daily()
@@ -227,6 +283,10 @@ class Handler(BaseHTTPRequestHandler):
                 eng.update_config(enable_pollin=bool(data["enable_pollin"]))
             if "enable_like" in data:
                 eng.update_config(enable_like=bool(data["enable_like"]))
+            if "log_click_pos" in data:
+                eng.update_config(log_click_pos=bool(data["log_click_pos"]))
+            if "use_cache_pos" in data:
+                eng.update_config(use_cache_pos=bool(data["use_cache_pos"]))
             now = bool(eng.config.get("enable_switch", False))
             log_append(f"[config] 切换账号功能 {'启用' if now else '关闭'}"
                        + (f", 目标尾部={eng.config.get('target_tail')}" if now else ""))
@@ -236,6 +296,9 @@ class Handler(BaseHTTPRequestHandler):
                        f", 闪耀委托挑战={'开' if eng.config.get('enable_shine') else '关'}"
                        f", 好友采粉={'开' if eng.config.get('enable_pollin', True) else '关'}"
                        f", 社区点赞={'开' if eng.config.get('enable_like', False) else '关'}")
+            log_append(f"[config] 记录按钮位置={'开' if eng.config.get('log_click_pos', False) else '关'}"
+                       f", 使用缓存位置={'开' if eng.config.get('use_cache_pos', False) else '关'}"
+                       f" (两项默认关闭; 关闭时只认实时识别, 不用历史坐标盲点)")
             return self._send_json({
                 "ok": True, "changed": pre != now, "enable_switch": now,
                 "claim_online": bool(eng.config.get("claim_online", True)),
@@ -244,6 +307,8 @@ class Handler(BaseHTTPRequestHandler):
                 "enable_shine": bool(eng.config.get("enable_shine", False)),
                 "enable_pollin": bool(eng.config.get("enable_pollin", True)),
                 "enable_like": bool(eng.config.get("enable_like", False)),
+                "log_click_pos": bool(eng.config.get("log_click_pos", False)),
+                "use_cache_pos": bool(eng.config.get("use_cache_pos", False)),
             })
 
         if api == "connect" and self.command == "POST":
@@ -254,6 +319,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_ok()
         if api == "screen" and self.command == "GET":
             return self._screen()
+        if api == "ocr" and self.command == "GET":
+            return self._ocr()
+        if api == "failures" and self.command == "GET":
+            return self._failures()
+        if api == "failures_clear" and self.command == "POST":
+            clear_failures()
+            return self._send_ok()
         if api == "click" and self.command == "POST":
             return self._click()
         if api == "run" and self.command == "POST":
@@ -264,6 +336,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._log()
         if api == "log_download" and self.command == "GET":
             return self._log_download()
+        if api == "log_clear" and self.command == "POST":
+            return self._log_clear()
         if api == "shutdown" and self.command == "POST":
             return self._shutdown()
 
@@ -322,8 +396,12 @@ class Handler(BaseHTTPRequestHandler):
         path = str(data.get("path") or "")
         target = (BASE / path).resolve()
         allow = (BASE / "debug").resolve()
-        if not str(target).startswith(str(allow)) or not target.is_file():
+        try:
+            target.relative_to(allow)
+        except ValueError:
             return self._send_json({"error": "仅允许载入 debug/ 目录下的图片"}, 400)
+        if not target.is_file():
+            return self._send_json({"error": "文件不存在"}, 400)
         import cv2
         img = cv2.imread(str(target))
         if img is None:
@@ -450,20 +528,50 @@ class Handler(BaseHTTPRequestHandler):
         ok = eng.connect()
         return self._send_json({"ok": ok, **(_status() if ok else {})}, 200 if ok else 502)
 
-    # ---- API: 截图 + OCR 标注 ----
+    # ---- API: 截图 (只回图像, 不做 OCR) ----
     def _screen(self):
+        """预览帧: 只做「JPEG 编码」, **不做 OCR**; 流程运行期直接复用引擎最近一帧, 不再自己截图。
+
+        ⚠ 性能(2026-10-02): 原实现在这里每帧做一次**全屏 OCR** 并返回文字框,
+          前端每 1.5s 拉一次 → 单轮 1183 次全屏 OCR, 是「跑一轮 CPU >50%」的主凶。
+          文字框已拆到按需接口 GET /api/ocr。
+        ⚠ 性能(2026-10-03): 运行期引擎本身在连续截图, 预览再各自 post_screencap 会与引擎
+          争抢同一 ADB 控制器(拖慢引擎步骤)。改为: 引擎 2s 内截过帧 → 直接返回其 last_frame
+          (只花 JPEG 编码, 不动 ADB); 超过 2s(空闲期)才自己截 —— 空闲期行为与原来一致。
+        """
         eng = get_engine()
         if not _is_connected(eng):
             return self._send_json({"error": "未连接", "status": _status()}, 503)
-        img = eng.screenshot()
+        img = getattr(eng, "last_frame", None)
+        if img is None or (time.monotonic() - getattr(eng, "last_frame_ts", 0.0)) > 2.0:
+            img = eng.screenshot()
         if img is None:
             return self._send_json({"error": "截图失败"}, 500)
         jpg = _img_to_jpeg_b64(img)
         return self._send_json({
             "jpeg": jpg,
             "w": eng.screen_w, "h": eng.screen_h,
-            "boxes": _ocr_boxes(img),
         })
+
+    # ---- API: 按需 OCR 标注框 (用户点「取框」/勾选 OCR 标注时才调) ----
+    def _ocr(self):
+        eng = get_engine()
+        if not _is_connected(eng):
+            return self._send_json({"error": "未连接", "status": _status()}, 503)
+        img = eng.screenshot()
+        if img is None:
+            return self._send_json({"error": "截图失败"}, 500)
+        return self._send_json({"boxes": _ocr_boxes(img)})
+
+    # ---- API: 功能失败清单 (增量拉取, 供前端弹窗提醒) ----
+    def _failures(self):
+        after = 0
+        try:
+            after = max(0, int(self._query("after") or 0))
+        except (TypeError, ValueError):
+            after = 0
+        items, nxt = get_failures(after)
+        return self._send_json({"items": items, "next": nxt})
 
     # ---- API: 点击 (支持 rel 相对坐标) ----
     def _click(self):
@@ -537,6 +645,9 @@ class Handler(BaseHTTPRequestHandler):
             "modules": modules,
             "enable_switch": bool(eng.config.get("enable_switch", False)),
             "target_tail": eng.config.get("target_tail", ""),
+            # 全局识别设置(默认关; 供右栏「识别设置」面板回显)
+            "log_click_pos": bool(eng.config.get("log_click_pos", False)),
+            "use_cache_pos": bool(eng.config.get("use_cache_pos", False)),
         })
 
     # ---- API: 按勾选模块运行每日编排 (使用界面「开始一轮」) ----
@@ -567,10 +678,16 @@ class Handler(BaseHTTPRequestHandler):
         plan["modules"] = chosen
         plan["description"] = "Web UI 使用界面按勾选模块调度"
         name = plan.get("name", "每日编排")
+        if _running():
+            return self._send_json({"error": "已有流程在运行, 请先停止"}, 409)
         def job():
             eng = get_engine()
-            if not _is_connected(eng):
-                eng.connect()
+            try:
+                if not _is_connected(eng):
+                    eng.connect()
+            except Exception as e:
+                log_append(f"[run] 连接失败: {e}")
+            _set_running(True)
             import sys
             real_out, real_err = sys.stdout, sys.stderr
             sys.stdout = _TeeOut(real_out, _LOGS)
@@ -583,6 +700,7 @@ class Handler(BaseHTTPRequestHandler):
                 log_append(f"[run] 流程异常: {e}")
             finally:
                 sys.stdout, sys.stderr = real_out, real_err
+                _set_running(False)
         threading.Thread(target=job, daemon=True).start()
         return self._send_json({"ok": True, "started": name, "count": len(chosen)})
 
@@ -597,10 +715,16 @@ class Handler(BaseHTTPRequestHandler):
         if target is None:
             return self._send_json({"error": f"未找到流程: {key}"}, 400)
         name = target.get("name")
+        if _running():
+            return self._send_json({"error": "已有流程在运行, 请先停止"}, 409)
         def job():
             eng = get_engine()
-            if not _is_connected(eng):
-                eng.connect()
+            try:
+                if not _is_connected(eng):
+                    eng.connect()
+            except Exception as e:
+                log_append(f"[run] 连接失败: {e}")
+            _set_running(True)
             import sys
             real_out, real_err = sys.stdout, sys.stderr
             sys.stdout = _TeeOut(real_out, _LOGS)
@@ -616,6 +740,7 @@ class Handler(BaseHTTPRequestHandler):
                 log_append(f"[run] 流程异常: {e}")
             finally:
                 sys.stdout, sys.stderr = real_out, real_err
+                _set_running(False)
         threading.Thread(target=job, daemon=True).start()
         return self._send_json({"ok": True, "started": name})
 
@@ -632,8 +757,9 @@ class Handler(BaseHTTPRequestHandler):
     def _log_download(self):
         """把服务端日志缓冲**全量**导出为 .txt 下载。
 
-        注意: 导出的是服务端缓冲的全部内容(含页面打开之前的历史), 不只是前端 DOM
-        里已收到的那部分; 因此刷新页面后依然能拿到完整日志。
+        注意: 导出的是服务端缓冲的全部内容(含页面打开之前、**本次会话内**的历史),
+        不只是前端 DOM 里已收到的那部分; 因此刷新页面后依然能拿到完整日志。
+        服务每次启动都会清空缓冲(_log_reset_history), 故不包含上一次会话的日志 (2026-10-01)。
         """
         with _LOG_LOCK:
             lines = list(_LOGS)
@@ -654,6 +780,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    # ---- API: 清空运行日志 (UI「清除日志」按钮, 2026-10-03) ----
+    def _log_clear(self):
+        """清空服务端日志缓冲 + 磁盘备份, 让页面从干净状态重看一轮日志。
+
+        与启动时的 `_log_reset_history` 同语义(内存与磁盘一并清), 这里复用同一函数。
+        与「保存日志」配对: 只清前端 DOM 会变成"页面空的、导出却还是旧的"(导出读的是服务端缓冲),
+        只清服务端又会让下次增量拉取从新缓冲中部开始 —— 故三者必须一起动, 且**回 next=0**,
+        前端收到后必须把 logCursor 复位(见 webui.html clearLog)。
+        清完补一条标记日志, 让"清理确实生效、何时清理"可被验证(否则清空后页面一片空白, 无从判断)。
+        """
+        _log_reset_history()
+        log_append(f"[webui] 运行日志已被手动清除 {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        return self._send_json({"ok": True, "next": 0})
 
     # ---- API: 停止流程 (UI「停止」按钮, 不关闭服务) ----
     def _stop(self):
@@ -723,6 +863,14 @@ def main():
     global ENGINE, _SERVER
     if args.address != ADB_ADDRESS or args.adb != ADB_PATH:
         ENGINE = OCREngine(adb_path=args.adb, address=args.address)
+
+    # 每次启动都清空日志缓存(内存 + 磁盘), 避免重开 webui 后仍看到上一次会话的残留日志 (2026-10-01)
+    _log_reset_history()
+    _set_running(False)
+    # 启动即写一条日志: 既是落盘链路的第一条实证(此前启动横幅走裸 print, 不落盘 → 文件永远不生成),
+    # 也让「清空缓存后从干净状态起步、且本次启动可见」这件事可被验证 (2026-10-01)。
+    log_append(f"[webui] 服务启动 {time.strftime('%Y-%m-%d %H:%M:%S')} "
+               f"-> http://127.0.0.1:{args.port}/\n")
 
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     _SERVER = srv

@@ -64,12 +64,24 @@
                           { "type": "sleep", "seconds": 1.0 }
                           ] }
                       ] },
-                    { "type": "click_template",
-                      "template": "close_family.png",
-                      "threshold": 0.75,
-                      "region_rel": [0.90, 0.0, 1.0, 0.15],
-                      "fallback_rel": [0.9727, 0.0375],
-                      "delay": 1.5 }
+                    { "_note": "退出委托挑战全屏子页(2026-09-30 修复卡住): 子页右上角无关闭X, close_family 模板恒不命中(实测 0.683), 真实出口是左上角返回箭头; 先点左上角返回回家族活动网格, 再关网格回主界面" },
+                    { "type": "if_text",
+                      "text": ["委托排行", "距离结束"],
+                      "min_score": 0.4,
+                      "then": [
+                          { "type": "click_rel", "rel": [0.035, 0.038], "delay": 2.0 }
+                      ] },
+                    { "type": "if_text",
+                      "text": ["家族首页", "家族排行", "摇钱树"],
+                      "min_score": 0.4,
+                      "then": [
+                          { "type": "click_template",
+                            "template": "close_family.png",
+                            "threshold": 0.92,
+                            "region_rel": [0.90, 0.0, 1.0, 0.15],
+                            "fallback_rel": [0.9727, 0.0375],
+                            "delay": 2.0 }
+                      ] }
                 ],
                 "else": [
                     { "type": "sleep", "seconds": 0.5 }
@@ -77,14 +89,20 @@
           ],
           "else": [] },
 
-        { "_note": "4.1 收尾: 若仍停在家族活动面板(4.1.2 被开关/时段跳过时会残留)则关掉回主界面" },
+        { "_note": "4.1 收尾: 若仍停在委托子页(左上角返回出口)或家族活动网格(右上角关闭X)则依次退出回主界面 (2026-09-30 修复)" },
         { "type": "if_text",
-          "text": ["家族首页", "家族排行"],
+          "text": ["委托排行", "距离结束"],
+          "min_score": 0.4,
+          "then": [
+              { "type": "click_rel", "rel": [0.035, 0.038], "delay": 2.0 }
+          ] },
+        { "type": "if_text",
+          "text": ["家族首页", "家族排行", "摇钱树"],
           "min_score": 0.4,
           "then": [
               { "type": "click_template",
                 "template": "close_family.png",
-                "threshold": 0.75,
+                "threshold": 0.92,
                 "region_rel": [0.90, 0.0, 1.0, 0.15],
                 "fallback_rel": [0.9727, 0.0375],
                 "delay": 2.0 }

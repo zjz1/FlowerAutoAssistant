@@ -97,6 +97,21 @@
   #flows-table td.name{color:var(--accent)}
   .scroll{max-height:280px;overflow-y:auto}
   .muted{color:var(--muted)}
+
+  /* ---------- 功能失败提醒弹窗 ---------- */
+  .fail-pop{position:fixed;right:16px;bottom:16px;z-index:900;max-width:min(560px,92vw)}
+  .fail-pop-box{background:var(--panel);border:1px solid var(--err);border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.45);overflow:hidden}
+  .fail-pop-h{display:flex;align-items:center;gap:8px;padding:9px 12px;background:rgba(248,81,73,.14);color:var(--err);font-weight:700;font-size:13px}
+  .fail-pop-h b{color:var(--fg)}
+  .fail-pop-h button{margin-left:auto;background:transparent;border:none;color:var(--muted);font-size:14px;padding:0 4px;cursor:pointer}
+  .fail-pop-h button:hover{color:var(--err)}
+  .fail-pop-body{max-height:230px;overflow-y:auto;padding:8px 12px;font-size:12.5px;line-height:1.6}
+  .fail-pop-item{padding:5px 0;border-bottom:1px dashed var(--line)}
+  .fail-pop-item:last-child{border-bottom:none}
+  .fail-pop-item .fm{color:var(--accent);font-weight:600}
+  .fail-pop-item .ft{color:var(--muted);font-size:11px;margin-left:6px}
+  .fail-pop-f{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--line);background:var(--panel2)}
+  .fail-pop-f button{margin-left:auto}
   .mono{font-family:Consolas;font-size:11px}
   .section-t{font-size:12px;color:var(--muted);margin:14px 0 6px;font-weight:600}
   .kb-scene{margin:4px 0 10px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
@@ -259,6 +274,22 @@
       </div>
 
       <div class="maa-panel">
+        <h2>识别设置</h2>
+        <div class="cfg-row">
+          <span class="lbl">记录按钮位置</span>
+          <label class="cfg-hint"><input type="checkbox" id="maa-logpos-chk"> 启用</label>
+        </div>
+        <div class="cfg-row">
+          <span class="lbl">使用缓存位置</span>
+          <label class="cfg-hint"><input type="checkbox" id="maa-cachepos-chk"> 启用</label>
+        </div>
+        <p class="maa-note"><b>两项默认关闭。</b>关闭时只认本次实时识别（OCR/模板/锚点/颜色），
+          认不到就如实失败，绝不用知识库里的历史坐标盲点 —— 2026-10-03「切换账号」误登录正是回退历史坐标所致。
+          「使用缓存位置」只管<b>自动学到的</b>历史坐标；流程里人工写死的兜底坐标仍生效。
+          手动采集/标注不受「记录按钮位置」影响；改动即时保存，下次「开始一轮」生效。</p>
+      </div>
+
+      <div class="maa-panel">
         <h2>今日小提示</h2>
         <div class="muted" style="line-height:1.8">
           · 种植箱「一键种植」入库量基准<br>
@@ -286,7 +317,7 @@
           </label>
           <button id="refresh-btn">刷新</button>
           <label><input type="checkbox" id="auto-chk" checked> 自动刷新</label>
-          <label><input type="checkbox" id="ocr-chk" checked> OCR标注</label>
+          <label title="勾选时才做一次全屏 OCR 并画出文字框(默认关, 避免每帧 OCR 烧 CPU)"><input type="checkbox" id="ocr-chk"> OCR标注(按需)</label>
         </div>
       </div>
       <div class="screen-wrap" id="screen-wrap">
@@ -308,7 +339,8 @@
           <label>流程运行在后台, 日志实时滚动下方。</label>
         </div>
         <h2 style="margin-top:12px">运行日志
-          <button id="log-save" style="float:right;font-size:12px;padding:2px 10px">保存日志</button>
+          <button id="log-clear" style="float:right;font-size:12px;padding:2px 10px;margin-right:6px" title="清空服务端日志缓冲与磁盘备份，本页日志显示也会一并清空；不可恢复，如需留档请先点「保存日志」">清除日志</button>
+          <button id="log-save" style="float:right;font-size:12px;padding:2px 10px" title="服务端可用时导出服务端全量日志；服务已停(如 ctrl+c / 控制台被误关)时改为导出本页快照">保存日志</button>
         </h2>
         <div id="log"><span class="muted">暂无日志</span></div>
       </div>
@@ -327,12 +359,32 @@
   </div>
 </div>
 
+<!-- 功能失败提醒弹窗 (2026-10-02): 引擎 report_failure() 登记的真实失败, 增量拉取后弹出 -->
+<div id="fail-pop" class="fail-pop hidden">
+  <div class="fail-pop-box">
+    <div class="fail-pop-h">
+      <span>⚠ 功能失败提醒 <b id="fail-count">0</b></span>
+      <button id="fail-close" title="关闭">✕</button>
+    </div>
+    <div id="fail-list" class="fail-pop-body"></div>
+    <div class="fail-pop-f">
+      <span class="muted" style="font-size:12px">失败同时已写入运行日志（搜「[失败]」可定位）。</span>
+      <button id="fail-clear" style="font-size:12px;padding:3px 10px">已知悉，清空列表</button>
+    </div>
+  </div>
+</div>
+
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
 const el = {};
 let autoTimer = null;
 let logCursor = 0;
+let logPolling = true;    // 关闭服务后置 false: 服务已退出, 继续轮询只会不断抛错
+const logChunks = [];     // 服务端返回的**原始分片**(与 _LOGS 元素一一对应, 2026-10-01)
+                          // 离线导出必须用它 join("") 才能与服务端 "".join(_LOGS) 等价:
+                          // print("abc\n") 会产生 2 个分片, 按 div 拼行会多出空行/断行错位。
+let runningFlag = false;  // 服务端是否有流程在跑(用于运行时关页面确认弹窗, 2026-09-30)
 
 async function api(path, opts={}){
   const r = await fetch(path, {
@@ -344,6 +396,31 @@ async function api(path, opts={}){
   return d;
 }
 
+// ---- 防护: 用户误用 file:// 直接打开 html 文件时, 给出正确访问指引 (2026-09-30) ----
+function showFileProtocolNotice(){
+  const url = "http://127.0.0.1:8765/";
+  document.body.innerHTML =
+    '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#14161c;z-index:9999;font-family:sans-serif;color:#eee">' +
+    '<div style="max-width:560px;padding:36px 40px;border:1px solid #3a3f4a;border-radius:12px;background:#1c1f27;text-align:center">' +
+    '<div style="font-size:22px;font-weight:700;margin-bottom:14px">⚠ 请不要直接双击打开本文件</div>' +
+    '<p style="line-height:1.7;color:#c8cdd6;margin:0 0 18px">这样打开是全新静态页面, <b>无法连接</b>正在运行的挂机服务, 因此看不到日志、也下载不了日志。</p>' +
+    '<p style="margin:0 0 10px">请在浏览器地址栏打开: </p>' +
+    '<div style="font-size:18px;font-weight:700;color:#7fd3ff;user-select:all;word-break:break-all">' + url + '</div>' +
+    '<p style="margin:18px 0 0;font-size:13px;color:#9aa2b0">若该地址连不上, 说明服务已停止, 请先运行 start_webui.bat 或 python webui.py 启动服务。</p>' +
+    '</div></div>';
+}
+if(location.protocol === "file:"){
+  showFileProtocolNotice();
+}else{
+// ---- 运行时关闭页面确认: 有流程在跑时关闭浏览器标签会弹窗提醒 (2026-09-30) ----
+window.addEventListener("beforeunload", (e)=>{
+  if(runningFlag){
+    e.preventDefault();
+    e.returnValue = "任务正在运行中, 关闭页面将失去实时监控。确定要离开吗?";
+    return e.returnValue;
+  }
+});
+
 // ---- 界面切换 ----
 let currentView = "use";
 function switchView(view){
@@ -354,11 +431,14 @@ function switchView(view){
 }
 $("view-toggle").onclick = ()=> switchView(currentView === "use" ? "test" : "use");
 
-// 关闭服务
+// 关闭服务: 主动行为, 不做非破坏式改造 —— 直接整页替换为「服务已关闭」提示。
+// 关服务是用户明确意图, 1/2 两条防护是为误操作(误关页面 / 误关控制台)准备的。
 $("shutdown-btn").onclick = async ()=>{
   if(!confirm("确定要关闭 Web UI 服务吗？关闭后将无法通过网页操作，需重新启动服务。")) return;
   try{
     const d = await api("/api/shutdown", {method:"POST", body:"{}"});
+    logPolling = false;         // 服务即将退出, 停掉日志轮询(否则每 800ms 对死服务空转)
+    clearInterval(autoTimer);   // 停掉截屏/状态自动刷新
     alert((d.message || "服务已关闭") + "。此页面将失效。");
     document.body.innerHTML = "<div style='padding:40px;text-align:center;color:var(--muted);font-size:15px'>" +
       "Web UI 服务已关闭。<br>重新启动请运行 start_webui.bat 或 python webui.py</div>";
@@ -370,6 +450,11 @@ $("shutdown-btn").onclick = async ()=>{
 async function refreshStatus(){
   try{
     const s = await api("/api/status");
+    runningFlag = !!s.running;
+    try{
+      $("run-btn").disabled = runningFlag;
+      $("maa-start").disabled = runningFlag;
+    }catch(e){}
     const c = !!s.connected;
     $("conn-badge").textContent = c ? "已连接" : "未连接";
     $("conn-badge").className = "badge " + (c?"on":"off");
@@ -383,27 +468,49 @@ async function refreshStatus(){
       $("connect-btn").textContent = c ? "已连接" : "连接";
       $("connect-btn").classList.toggle("primary", c);
     }catch(e){}
+    refreshFailures();          // 顺带轮询失败清单 → 有新失败即弹窗
   }catch(e){}
 }
 
+// ---- 预览帧 (只取图像, 不做 OCR) ----
+// ⚠ 性能(2026-10-02): 原每帧 `/api/screen` 都会在服务端做**全屏 OCR** 返回文字框,
+// 1.5s 一帧 → 单轮 1183 次全屏 OCR, 是「CPU >50%」的主凶。现在:
+//   ① `/api/screen` 只回图像; ② 文字框走**按需** `refreshBoxes()`(勾选 OCR 标注 / 手动取框);
+//   ③ 标签页切到后台就停掉自动刷新 (visibilitychange)。
+let boxesCache = [];       // 最近一次按需取到的文字框(在帧之间复用, 不随每帧重取)
+let boxesStamp = 0;        // 取框时间: 画面在变, 超过 2.5s 的框不再叠加显示(避免误导)
+
 async function refreshScreen(){
+  if(document.hidden) return;                    // 后台标签页不抓帧
   try{
     const d = await api("/api/screen");
     if(!d.jpeg){ return; }
     const img = $("screen-img");
     img.onload = ()=>{
       $("screen-hint").style.display = "none";
-      drawBoxes(d.boxes);
+      // 复用已有框(不触发 OCR); 但框是上一帧取的, 超时就不再叠加, 避免错位误导
+      drawBoxes(Date.now() - boxesStamp < 2500 ? boxesCache : []);
     };
     img.src = "data:image/jpeg;base64," + d.jpeg;
   }catch(e){ /* 未连接则忽略 */ }
+}
+
+// ---- 按需取文字框 (唯一会触发全屏 OCR 的入口) ----
+async function refreshBoxes(){
+  if(!$("ocr-chk").checked){ boxesCache = []; drawBoxes(boxesCache); return; }
+  try{
+    const d = await api("/api/ocr");
+    boxesCache = d.boxes || [];
+    boxesStamp = Date.now();
+    drawBoxes(boxesCache);
+  }catch(e){}
 }
 
 async function drawBoxes(boxes){
   const ov = $("screen-overlay");
   ov.innerHTML = "";
   if(!$("ocr-chk").checked) return;
-  for(const b of boxes){
+  for(const b of (boxes||[])){
     const d = document.createElement("div");
     d.className = "box";
     d.style.left = b.box[0]*100 + "%";
@@ -417,6 +524,40 @@ async function drawBoxes(boxes){
     ov.appendChild(d);
   }
 }
+
+// ---- 功能失败提醒 (2026-10-02 需求: 任意功能失败就提醒) ----
+// 引擎 report_failure() 登记真实失败(等待超时/放弃/跑满轮数/模块异常/归位失败),
+// 前端增量拉取 → 右下角弹窗列出; 关闭只是收起, 新失败会再次弹出。
+let failSeen = 0;          // 已提示到的失败 id 游标
+
+async function refreshFailures(){
+  try{
+    const d = await api("/api/failures?after=" + failSeen);
+    if(d.next != null) failSeen = d.next;
+    if(d.items && d.items.length) showFailPopup(d.items);
+  }catch(e){}
+}
+
+function showFailPopup(items){
+  const box = $("fail-list");
+  for(const it of items){
+    const div = document.createElement("div");
+    div.className = "fail-pop-item";
+    div.innerHTML = `<span class="fm">[${esc(it.module)}]</span> ${esc(it.detail)}`
+                  + `<span class="ft">${esc(it.ts)}</span>`;
+    box.appendChild(div);
+  }
+  $("fail-count").textContent = box.children.length;
+  $("fail-pop").classList.remove("hidden");
+  box.scrollTop = box.scrollHeight;
+}
+
+$("fail-close").onclick = ()=> $("fail-pop").classList.add("hidden");
+$("fail-clear").onclick = async ()=>{
+  try{ await api("/api/failures_clear", {method:"POST", body:"{}"}); }catch(e){}
+  $("fail-list").innerHTML = "";
+  $("fail-pop").classList.add("hidden");
+};
 
 async function refreshFlows(){
   try{
@@ -491,6 +632,8 @@ async function refreshMaa(){
     maaTasks = (d.modules||[]).map(m=>({id:m.id, name:m.name, flow:m.flow, settings:m.settings||[], checked:true}));
     $("maa-switch-chk").checked = !!d.enable_switch;
     $("maa-switch-tail").value = d.target_tail || "";
+    $("maa-logpos-chk").checked = !!d.log_click_pos;
+    $("maa-cachepos-chk").checked = !!d.use_cache_pos;
     renderMaaTasks();
   }catch(e){}
 }
@@ -583,16 +726,28 @@ $("maa-switch-chk").onchange = async (ev)=>{
     enable_switch: ev.target.checked
   })});
 };
+// 使用界面: 识别设置两项开关(记录按钮位置 / 使用缓存位置), 即时持久化
+$("maa-logpos-chk").onchange = async (ev)=>{
+  await api("/api/set_config", {method:"POST", body:JSON.stringify({
+    log_click_pos: ev.target.checked
+  })});
+};
+$("maa-cachepos-chk").onchange = async (ev)=>{
+  await api("/api/set_config", {method:"POST", body:JSON.stringify({
+    use_cache_pos: ev.target.checked
+  })});
+};
 
 // 使用界面: 开始一轮
 $("maa-start").onclick = async ()=>{
   try{
     const sel = maaTasks.filter(t=>t.checked).map(t=>t.id);
     if(!sel.length){ alert("请至少勾选一个任务"); return; }
+    $("maa-start").disabled = true;
     $("maa-status").textContent = "已提交 " + sel.length + " 个任务, 后台运行中...";
     const d = await api("/api/run_daily", {method:"POST", body:JSON.stringify({selected:sel, mode:"use"})});
     $("maa-status").textContent = "开始: " + d.started + " (" + d.count + " 个任务)。查看运行日志请到测试界面或终端。";
-  }catch(e){ alert("无法运行: " + e.message); }
+  }catch(e){ $("maa-start").disabled = false; alert("无法运行: " + e.message); }
 };
 
 // 使用界面: 停止当前流程 (不关闭服务)
@@ -624,19 +779,21 @@ $("mode-sel").onchange = async ()=>{
   await api("/api/set_mode", {method:"POST", body:JSON.stringify({mode:$("mode-sel").value})});
   refreshStatus();
 };
-$("refresh-btn").onclick = refreshScreen;
+$("refresh-btn").onclick = async ()=>{ await refreshScreen(); await refreshBoxes(); };
+$("ocr-chk").onchange = refreshBoxes;      // 勾选时才取一次文字框(按需 OCR)
 $("auto-chk").onchange = ()=>{
   clearInterval(autoTimer);
-  if($("auto-chk").checked) autoTimer = setInterval(()=>{ refreshScreen(); }, 1500);
+  if($("auto-chk").checked && !document.hidden)
+    autoTimer = setInterval(()=>{ refreshScreen(); refreshStatus(); }, 1500);
 };
 $("run-btn").onclick = async ()=>{
   try{
     const flow = $("flow-sel").value;
-    $("log").innerHTML = "";
-    logCursor = 0;
+    $("run-btn").disabled = true;
+    $("log").innerHTML = "";   // 只清显示, 不重置 cursor/chunks: cursor=0 会把服务端全量历史重新拉回, 清空无效
     await api("/api/run", {method:"POST", body:JSON.stringify({flow, mode:"use"})});
     pollLog();
-  }catch(e){ alert("无法运行: "+e.message); }
+  }catch(e){ $("run-btn").disabled = false; alert("无法运行: "+e.message); }
 };
 // ---- 模块子面板: 加载 config 到各开关 + 保存 ----
 const MP_FIELDS = {
@@ -671,9 +828,69 @@ document.querySelectorAll("[data-save]").forEach(btn=>{
     }catch(e){ status.textContent = "失败: " + e.message; }
   };
 });
-// ---- 保存日志: 服务端全量导出为 .txt (含页面打开前的历史) ----
-$("log-save").onclick = ()=>{ location.href = "/api/log_download"; };
+// ---- 保存日志 (2026-10-01 改造) ----
+// 服务端可达 → 导出服务端全量缓冲(权威, 含页面打开之前的历史);
+// 服务端不可达(ctrl+c / 控制台被误关, 页面还开着) → 导出页面快照, 离线也有保存能力。
+// 不用 location.href 导航: 服务已死时会跳到打不开的地址, 反而丢掉页面与页面上的日志。
+$("log-save").onclick = saveLog;
+
+// ---- 清除日志 (2026-10-03) ----
+// 与「保存日志」配对: 保存把服务端全量缓冲导出, 清除则把服务端缓冲(含磁盘备份)与本页显示一并清掉。
+// 三处必须一起动 —— 只清本页 DOM 会变成"页面空的、保存出来却还是旧的"; 只清服务端会让下次
+// 增量拉取按旧下标从新缓冲中部开始(日志凭空缺一段)。故服务端清空后回 next=0, 这里同步复位 logCursor。
+// 清空不可恢复(磁盘备份也一起截断), 且日志是排查的主要依据 → 先 confirm; 要留档请先「保存日志」。
+$("log-clear").onclick = clearLog;
+
+async function clearLog(){
+  if(!confirm("确定清除日志？\n\n将清空服务端日志缓冲与磁盘备份，本页显示也一并清空，且不可恢复。\n如需留档请先点「保存日志」。")) return;
+  try{
+    const d = await api("/api/log_clear", {method:"POST"});
+    logCursor = d.next || 0;      // 服务端下标已归零, 必须同步复位(失败时不复位, 保持原游标)
+  }catch(e){
+    alert("清除服务端日志失败: " + e.message + "\n(服务端缓冲保持不变, 本页显示仍将清空)");
+  }
+  logChunks.length = 0;
+  $("log").innerHTML = '<span class="muted">暂无日志</span>';
+}
+
+function _logStamp(){
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+function _downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+
+async function saveLog(){
+  try{
+    const r = await fetch("/api/log_download");
+    if(r.ok){
+      _downloadBlob(await r.blob(), `faa_log_${_logStamp()}.txt`);
+      return;
+    }
+  }catch(e){ /* 服务不可达 → 落到下面的页面快照 */ }
+  const text = logChunks.join("");   // 原始分片拼接, 与服务端 "".join(_LOGS) 等价
+  const head = `# FlowerAutoAssistant 页面快照日志\n`
+             + `# 导出时间: ${new Date().toLocaleString("zh-CN")}\n`
+             + `# 服务端已不可达, 以下为页面已缓存的日志(增量拉取累积所得)\n`
+             + `# 总行数: ${(text.match(/\n/g) || []).length}\n`
+             + "-".repeat(40) + "\n";
+  // 前缀 \ufeff(BOM) 让 Windows 记事本按 UTF-8 打开, 避免中文乱码
+  _downloadBlob(new Blob(["\ufeff" + head + text], {type: "text/plain;charset=utf-8"}),
+                `faa_log_snapshot_${_logStamp()}.txt`);
+}
+
 async function pollLog(){
+  if(!logPolling) return;   // 关闭服务后由 shutdown 置 false, 主动结束自续链
+  if(document.hidden){ setTimeout(pollLog, 1500); return; }   // 后台标签页降频(省 CPU)
   try{
     const d = await api("/api/log?after="+logCursor);
     if(d.lines && d.lines.length){
@@ -681,6 +898,7 @@ async function pollLog(){
       const box = $("log");
       const isBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
       for(const line of d.lines){
+        logChunks.push(line);   // 留存原始分片供离线导出
         const div = document.createElement("div");
         div.textContent = line.replace(/\n$/,"");
         div.className = /异常|失败|错误/.test(line) ? "l-fail" : (/ok|成功/.test(line) ? "" : "");
@@ -709,23 +927,35 @@ $("screen-wrap").addEventListener("click", async (ev)=>{
   setTimeout(()=>hit.remove(), 800);
   try{
     await api("/api/click", {method:"POST", body:JSON.stringify({rel:[+rx.toFixed(4), +ry.toFixed(4)]})});
-    refreshScreen();
+    await refreshScreen();
+    await refreshBoxes();          // 点完画面变了, 若开着标注则重取一次框(按需)
   }catch(e){ alert("点击失败: "+e.message); }
+});
+
+// ---- 切到后台标签页: 暂停自动刷新(截图+状态+失败轮询), 回前台恢复 (省 CPU) ----
+document.addEventListener("visibilitychange", ()=>{
+  clearInterval(autoTimer);
+  if(document.hidden) return;
+  refreshScreen(); refreshStatus(); refreshFailures();
+  if($("auto-chk").checked)
+    autoTimer = setInterval(()=>{ refreshScreen(); refreshStatus(); }, 1500);
 });
 
 // 初始化
 (async ()=>{
+  if(location.protocol === "file:") return;  // 误开 file:// 时已在上面给出指引, 不再连服务
   await refreshStatus();
   await refreshMaa();
   await refreshFlows();
   await refreshKb();
   await loadModulePanels();
   clearInterval(autoTimer);
-  autoTimer = setInterval(()=>{ refreshScreen(); }, 1500);
+  autoTimer = setInterval(()=>{ refreshScreen(); refreshStatus(); }, 1500);
   $("auto-chk").checked = true;
   setTimeout(pollLog, 500);
   switchView("use");
 })();
+}
 </script>
 </body>
 </html>

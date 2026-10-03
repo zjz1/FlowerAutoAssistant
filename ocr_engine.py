@@ -15,6 +15,7 @@ FlowerAutoAssistant - OCR 数据驱动引擎核心（替代 MAA 模板匹配路�
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -28,7 +29,7 @@ from pathlib import Path
 import numpy as np
 
 # 复用 OCR 单例模块
-from ocr_ui import ocr_image, ocr_find
+from ocr_ui import ocr_image, ocr_find, set_thread_limit
 
 ADB_ADDRESS = "127.0.0.1:16384"
 ADB_PATH = r"D:\Program Files\Netease\MuMu\nx_main\adb.exe"
@@ -57,6 +58,17 @@ class StopRequested(BaseException):
     从而一路穿透到最外层 run_flow/run_daily 的统一停止处理。"""
 
 
+class FlowFailed(Exception):
+    """流程主动判定失败(由流程 JSON 的 `fail_flow` 步骤抛出)。
+
+    与 StopRequested 的区别: StopRequested 是「用户请求停止」(中断整轮, 不算失败);
+    FlowFailed 是「本模块确实没做成」(如实上报失败, 由 run_module 收成 'fail', 再交给编排的
+    on_fail 决定跳过还是终止本轮)。用于「前置条件不满足时, 继续往下会跑出一整轮假结果」的场景
+    ——例如切换账号失败仍去点「登录」, 就会用错误账号跑完当天全部任务。
+    继承 Exception -> 会被 run_module 捕获并登记失败, 不会冒泡到进程外。
+    """
+
+
 def request_stop() -> None:
     """请求停止当前正在进行的所有流程。服务/进程保持运行, 可再次开始新一轮。"""
     _STOP_EV.set()
@@ -70,6 +82,44 @@ def clear_stop() -> None:
 def stop_requested() -> bool:
     """是否已被请求停止。"""
     return _STOP_EV.is_set()
+
+
+# ---------------------------------------------------------------------------
+# 功能失败登记: 供「任意功能失败就提醒」(WebUI 弹窗, 2026-10-02 需求)。
+# 只登记**真实失败**(等待超时 / 放弃 / 跑满轮数 / 模块异常), 不得把缓存回退当失败或成功判据。
+# 登记 = ① print(带 [失败] 前缀, 落盘进运行日志) ② 存内存清单, 供 WebUI 增量拉取弹窗。
+# ---------------------------------------------------------------------------
+_FAIL_LOCK = threading.Lock()
+_FAILURES: list[dict] = []
+_FAIL_SEQ = 0
+
+
+def report_failure(module: str, detail: str) -> None:
+    """登记一次功能失败。module=当前模块/场景, detail=人可读原因。"""
+    global _FAIL_SEQ
+    with _FAIL_LOCK:
+        _FAIL_SEQ += 1
+        _FAILURES.append({
+            "id": _FAIL_SEQ,
+            "ts": time.strftime("%H:%M:%S"),
+            "module": str(module or "未分类"),
+            "detail": str(detail),
+        })
+    print(f"[失败] [{module or '未分类'}] {detail}")
+
+
+def get_failures(after: int = 0) -> tuple[list[dict], int]:
+    """取 id > after 的失败清单, 返回 (items, 最新 id)。供 WebUI 增量轮询。"""
+    with _FAIL_LOCK:
+        items = [dict(f) for f in _FAILURES if f["id"] > after]
+        return items, _FAIL_SEQ
+
+
+def clear_failures() -> None:
+    """清空失败清单(不影响已打印落盘的日志)。"""
+    with _FAIL_LOCK:
+        _FAILURES.clear()
+
 
 # 方案②「立体化分级+均值+偏差复核」: OCR 命中点与历史均值偏差超过该像素数即视为可疑,
 # 触发二次更精细处理(局部放大重识别, 无更优子块则沿用原命中, 仅记录日志)。
@@ -114,11 +164,21 @@ class OCREngine:
         self.click_log: dict[str, dict] = self._build_flat_index(self.click_log_scenes)
         self.close_buttons: list[dict] = self._load_close_buttons()  # 关闭按钮特殊逻辑注册表
         self.config: dict = self._load_config()  # 用户配置 (data/config.json), 支持 CLI 覆盖
+        if "ocr_threads" in self.config:  # RapidOCR 每会话线程数 (0=不限制; 缺省 2, 见 ocr_ui.py)
+            set_thread_limit(self.config.get("ocr_threads"))
         self._navigation: dict = self._load_navigation()  # 公共「进入目标界面」注册表 (navigate 步骤用)
         self._rr_hit = False  # retry_loop 本轮命中标记 (仅「真实识别命中」置真, 缓存回退不计)
         self._last_locate_source: str | None = None  # 上一次定位来源: ocr/anchor/color/template/fallback
         self._scene: str = "未分类"  # 当前界面场景 (流程步骤可声明, 默认未分类)
         self._step_category: str | None = None  # 步骤临时声明的按钮类别(click_text/click_rel 用)
+        self._module: str = "未分类"  # 当前模块名 (run_flow/run_module 设置), 供失败登记标注来源
+        # 同帧 OCR 结果复用 (性能长期目标 §11.3-2): 静态画面反复轮询时不再重复全屏 OCR, 见 _ocr_frame
+        self._frame_sig: bytes | None = None
+        self._frame_cache: tuple | None = None
+        self._frame_lock = threading.Lock()
+        # 最近一帧缓存: WebUI 预览在流程运行期直接复用引擎刚截的帧, 免去预览自己截图与引擎争抢 ADB
+        self.last_frame: np.ndarray | None = None
+        self.last_frame_ts: float = 0.0
 
     # ---- 公共导航注册表 (flows/common/entries.json) ----
     def _load_navigation(self) -> dict:
@@ -251,13 +311,31 @@ class OCREngine:
         """记录一次成功点击: 按钮名 + 文本 + 相对坐标 + 绝对坐标, 按场景分组存储。
         scene 缺省用 self._scene; 同场景同名按钮只保留一次(跨场景互不覆盖)。
         旧条目中人工标注的扩展字段(anchor/color/scene/note/category)会被保留, 不被自动日志覆盖。
+        全局开关 `log_click_pos`(data/config.json, **默认 false**) 关闭时本方法直接返回, 不做任何记录:
+        历史坐标一旦写错会被回退链放大成系统性误点(2026-10-03「切换账号」误登录), 故默认不记。
+        注意: 只 gate「引擎运行时的自动记录」; 人工标注(`/tpltool` 提交后写库)或直接编辑
+        `data/click_log.json` 是显式动作, 不受此开关影响。
         """
+        if not self.config.get("log_click_pos", False):
+            # 全局开关「记录按钮位置」(log_click_pos) 默认关闭: 运行时不再把点到的坐标写入知识库
+            # data/click_log.json。历史坐标一旦写错, 会被回退链反复放大成系统性误点
+            # (2026-10-03「切换账号」误登录即此链路), 故默认不记 —— 由用户显式开启后再积累样本。
+            # 注意: 只 gate「运行时自动记录」; 人工标注/直接编辑 click_log.json 是用户显式动作, 不受此开关影响。
+            # 提示只打印一次: 每次点击都刷一行会把日志淹掉(性能/可读性)。
+            if not getattr(self, "_logpos_notice_done", False):
+                self._logpos_notice_done = True
+                print("[记录] 记录按钮位置已关闭(log_click_pos=false), 运行时点击坐标不写入知识库(本提示只打一次)")
+            return
         kws = keywords if isinstance(keywords, list) else [keywords]
         sc = scene or self._scene or "未分类"
         old = (self.click_log_scenes.get(sc) or {}).get(name) or {}
-        # 缓存回退(fallback)不产生新位置证据: 已有实证条目(ocr/color/anchor)时不得降级覆盖其 rel/method
-        if method == "fallback" and old.get("method") in ("ocr", "color", "anchor"):
-            print(f"[记录] 按钮[{name}] 本次为缓存回退, 保留已有 {old['method']} 条目(不降级覆盖)")
+        # 缓存回退(fallback)不产生新位置证据 → 一律不落库。
+        # 曾只挡「已有 ocr/color/anchor 条目」的情形；旧条目本身就是 fallback 时会再次写入, 错坐标被固化并
+        # 自我强化：2026-10-03 日志里「切换账号」正是被历史 fallback 坐标(0.7727,0.3944) 盲点到「登录」,
+        # 误登录后公告/进入游戏/收尾守卫全部空转。回退坐标永远不是位置证据, 不得据以续传。
+        if method == "fallback":
+            kept = f"(已有 {old['method']} 条目, 其位置证据保留不变)" if old else "(本场景无既有条目, 不新建)"
+            print(f"[记录] 按钮[{name}] 本次为缓存回退, 不产生新位置证据, 不落库 {kept}")
             return
         entry = {
             "name": name,
@@ -293,6 +371,20 @@ class OCREngine:
         self._save_click_log()
         tail = f" 均值{entry['mean_rel']}(样本{entry.get('sample_n',1)})" if "mean_rel" in entry else ""
         print(f"[记录] [{sc}] 按钮[{name}] 相对{entry['rel']}{tail} 已存入 {CLICK_LOG_PATH.name}")
+
+    def set_scene(self, name: str, quiet: bool = False) -> None:
+        """**显式声明**当前所处界面场景, 之后的点击记录/均值复核都归到这个场景。
+
+        为什么需要这个 public 接口: `self._scene` 原本只在三处被改写 —— flow 的 "scene" 字段、
+        单步骤的 "scene" 字段、以及 navigate 命中进入时置为目标场景。**没有任何地方会在界面
+        真的切换后复位**, 于是 `navigate(家族活动)` 把场景钉死在「家族活动界面」, 之后同模块里
+        跑的好友采粉/社区点赞等操作全被误记进「家族活动界面」(实测 63 次误归)。
+        → 由 pollin/community_like 这类"自己会换界面"的子模块在切换点调用本方法声明场景。
+        """
+        if name and name != self._scene:
+            self._scene = name
+            if not quiet:
+                print(f"[场景] -> {name}")
 
     # ---- 方案②: 立体化分级 + 均值 + 偏差复核 ----
     def _entry_for(self, name: str) -> dict | None:
@@ -381,12 +473,17 @@ class OCREngine:
         return True
 
     def screenshot(self) -> np.ndarray | None:
-        """截图, 并记录当前屏幕尺寸。返回 BGR ndarray。"""
+        """截图, 并记录当前屏幕尺寸。返回 BGR ndarray。
+        同时记录最近一帧 last_frame/last_frame_ts, 供 WebUI 预览在流程运行期直接复用
+        (见 webui._screen) —— 引擎本就连续截图, 预览不再自己截, 消除两者对 ADB 控制器的争抢。
+        """
         img = self._ctrl.post_screencap().wait().get()
         if img is None:
             return None
         # img shape = (H, W, 3)
         self.screen_h, self.screen_w = img.shape[:2]
+        self.last_frame = img
+        self.last_frame_ts = time.monotonic()
         return img
 
     def click_abs(self, x: int, y: int) -> None:
@@ -446,25 +543,32 @@ class OCREngine:
             return False
 
     # ---- OCR 定位 ----
-    def find_text(self, keywords, img=None, top_k=3, exact=False, region_rel=None, exclude=None):
-        """在截图(或给定图)中按关键字找文字块。返回 OCR 块列表 (含坐标)。
-        exact=True 要求块文本与关键字完全相等, 避免『家园』误命中『勇气国花园』等。
-        region_rel=[x1,y1,x2,y2] (0~1) 时只保留中心落在该区域内的块 (用于区域限定文本判断)。
-        exclude=['已领取'] 时剔除「文字里含这些排除词」的块: 关键字默认是**子串匹配**,
-        所以「领取」会命中「已领取」——按钮已领取时点它当然什么都不会发生, 必须排除。
-        对过宽的合并块(宽>90, 如「种植箱一键种植」)尝试放大 2x 重识别拆出子按钮以提升
-        定位精度, 但始终保留原合并块(且置于拆分块之前优先匹配), 避免重识别丢失命中。
+    @staticmethod
+    def _frame_hash(img) -> "bytes | None":
+        """静态帧指纹: 画面像素完全一致则指纹一致。1280x720 实测 ~3ms, 远低于一次全屏 OCR。"""
+        try:
+            return hashlib.blake2b(img.tobytes(), digest_size=16).digest()
+        except Exception:
+            return None
+
+    def _ocr_frame(self, img) -> tuple[list, list]:
+        """对一帧做全图 OCR + 过宽块 2x 重识别拆分, 同一静态帧(指纹一致)直接复用上次结果。
+
+        性能(2026-10-03, 长期目标 §11.3-2「同一静态帧内的重复 OCR 必须复用」): wait_text 每个轮询周期、
+        相邻步骤(if_text 判断后紧跟 click_text)都会对**画面未变**的帧反复全屏 OCR, 每次实测烧 ~13 核 × 400ms。
+        这里对帧内容做 blake2b 指纹: 指纹一致 → 复用; 画面一变指纹失效 → 自动重新识别,
+        语义与逐次 OCR 完全一致(等待变化的循环不会被陈旧结果卡住 —— 变了指纹必然变)。
+        返回 (全图文字块, 过宽块拆出的精确子块)。
         """
-        img = img if img is not None else self.screenshot()
-        if img is None:
-            return []
+        sig = self._frame_hash(img)
+        if sig is not None:
+            with self._frame_lock:
+                if sig == self._frame_sig:
+                    return self._frame_cache
         blocks = ocr_image(img)
-        refined = []
-        sub_blocks = []  # 过宽块 2x 重识别拆出的精确子块, 点击定位时优先(点击点落到目标文字自身中心)
+        sub_blocks: list = []  # 过宽块 2x 重识别拆出的精确子块, 点击定位时优先(点击点落到目标文字自身中心)
         for b in blocks:
             x1, y1, x2, y2 = b["box"]
-            # 原块始终保留作为兜底: 即使拆分失败/丢字, 也能整体命中, 中心已落在目标按钮上
-            refined.append(b)
             w = x2 - x1
             if w > 90:  # 过宽, 疑似合并(如「菜单/奇妙花宝」挤在一起): 放大重识别尝试拆出更精确的子按钮
                 crop = img[max(0, y1 - 10):y2 + 10, max(0, x1 - 10):x2 + 10]
@@ -481,8 +585,28 @@ class OCREngine:
                                       int(nb["box"][2] / 2) + max(0, x1 - 10),
                                       int(nb["box"][3] / 2) + max(0, y1 - 10)]
                         sub_blocks.append(nb2)
+        if sig is not None:
+            with self._frame_lock:
+                self._frame_cache = (blocks, sub_blocks)
+                self._frame_sig = sig
+        return blocks, sub_blocks
+
+    def find_text(self, keywords, img=None, top_k=3, exact=False, region_rel=None, exclude=None):
+        """在截图(或给定图)中按关键字找文字块。返回 OCR 块列表 (含坐标)。
+        exact=True 要求块文本与关键字完全相等, 避免『家园』误命中『勇气国花园』等。
+        region_rel=[x1,y1,x2,y2] (0~1) 时只保留中心落在该区域内的块 (用于区域限定文本判断)。
+        exclude=['已领取'] 时剔除「文字里含这些排除词」的块: 关键字默认是**子串匹配**,
+        所以「领取」会命中「已领取」——按钮已领取时点它当然什么都不会发生, 必须排除。
+        对过宽的合并块(宽>90, 如「种植箱一键种植」)尝试放大 2x 重识别拆出子按钮以提升
+        定位精度, 但始终保留原合并块(且置于拆分块之前优先匹配), 避免重识别丢失命中。
+        全图 OCR + 过宽块拆分走 _ocr_frame(同一静态帧复用结果)。
+        """
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return []
+        blocks, sub_blocks = self._ocr_frame(img)
         # 精确子块优先(点击点优先落到「菜单」二字自身中心), 原合并块兜底保证整体命中
-        refined = sub_blocks + refined
+        refined = sub_blocks + blocks
         if region_rel:
             w, h = self.screen_w, self.screen_h
             rx1, ry1 = int(region_rel[0] * w), int(region_rel[1] * h)
@@ -671,7 +795,7 @@ class OCREngine:
             dx, dy = a.get("offset", [0, 0])
             pat = a.get("text_contains")
             if pat:
-                hit = next((b for b in ocr_image(img) if pat in b.get("text", "")), None)
+                hit = next((b for b in self._ocr_frame(img)[0] if pat in b.get("text", "")), None)
                 if hit is None:
                     print(f"[锚点偏移] 未找到含 '{pat}' 的文本块")
                     continue
@@ -696,7 +820,7 @@ class OCREngine:
         img = self.screenshot()
         if img is None:
             return False
-        blocks = [b for b in ocr_image(img) if b.get("score", 1) >= min_score]
+        blocks = [b for b in self._ocr_frame(img)[0] if b.get("score", 1) >= min_score]
         # 区域限定
         if region_rel:
             w, h = self.screen_w, self.screen_h
@@ -716,6 +840,8 @@ class OCREngine:
                 break
         if best is None:
             print(f"[账号尾部] 未找到尾部={tail} 的账号条目")
+            report_failure(self._module, f"切换账号: 账号列表中未找到尾部={tail} 的账号条目"
+                                        f"(账号列表可能未展开或已改版)")
             return False
         cx, cy = best["center"]
         pt = Point(cx, cy, self.screen_w, self.screen_h)
@@ -764,7 +890,7 @@ class OCREngine:
         w, h = self.screen_w, self.screen_h
         tx, ty = int(region_rel[0] * w), int(region_rel[1] * h)
         best, best_d = None, float("inf")
-        for b in ocr_image(img):
+        for b in self._ocr_frame(img)[0]:
             m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", b.get("text", "").strip())
             if not m:
                 continue
@@ -786,7 +912,7 @@ class OCREngine:
         w, h = self.screen_w, self.screen_h
         tx, ty = int(region_rel[0] * w), int(region_rel[1] * h)
         best, best_d = None, float("inf")
-        for b in ocr_image(img):
+        for b in self._ocr_frame(img)[0]:
             m = re.search(r"[:：]?\s*(\d+)\s*$", b.get("text", "").strip())
             if not m:
                 continue
@@ -827,7 +953,7 @@ class OCREngine:
             return 0
         w, h = self.screen_w, self.screen_h
         hits = 0
-        for b in ocr_image(img):
+        for b in self._ocr_frame(img)[0]:
             x1, y1, x2, y2 = b["box"]
             if region_rel:
                 rx1, ry1, rx2, ry2 = region_rel
@@ -1056,10 +1182,19 @@ class OCREngine:
         return True
 
     def click_text(self, keywords, img=None, fallback_rel=None, min_score=0.5, exact=False,
-                   region_rel=None, exclude=None) -> bool:
+                   region_rel=None, exclude=None, no_fallback=False) -> bool:
         """OCR 定位关键字并点击。命中返回 True。
         回退链: OCR → 颜色特征(若知识库有 color 配置) → 进程缓存 → 知识库坐标 → 失败
         exact=True 时用精确匹配(要求块文本完全等于关键字)。
+        no_fallback=True 时**禁止缓存回退**: OCR/锚点/颜色全部未命中就直接如实返回 False,
+        不采信任何历史坐标盲点。用于「点错后果严重」的高危按钮(如「切换账号」一旦盲点到
+        「登录」就会用错误账号跑完当天全部任务), 宁可失败交调用方处置。
+        全局开关 `use_cache_pos`(data/config.json, **默认 false**) 关闭时, **自动学习到的缓存**整条停用:
+        「均值复核」(拿历史均值 veto 本次 OCR 命中)不执行, 回退链也不再查 `mean_rel`/进程缓存 `last_rel`/
+        知识库 `rel`。但**步骤里显式手写的 `fallback_rel` 仍生效** —— 那是人工设计的兜底(flows 中数十处),
+        与"自动学到的历史坐标"性质不同, 全局开关不得静默禁用它。
+        no_fallback(步骤级)比全局开关更严格: 连显式 `fallback_rel` 一并禁用, 只认本次实时识别结果。
+        配套开关 `log_click_pos`(**默认 false**) 关闭时 `_log_click` 不再把坐标写入知识库(见 docstring)。
         region_rel 给定时只在限定区域内找文字, 并**跳过均值复核**: 同一个按钮在界面上出现多次时
         (如花灵派对面板里多处「领取」)单一均值必然对不上, 区域限定本身已是可信来源,
         不能再让缓存 veto 掉一个真实的 OCR 命中(缓存回退不得作为命中判据)。
@@ -1068,12 +1203,21 @@ class OCREngine:
         超过 BIAS_HARD_PX 则判为误命中并**弃用**(不点击/不写知识库), 交由回退链(均值/缓存)处理。
         """
         kw0 = keywords[0] if isinstance(keywords, list) else keywords
+        # 全局开关「使用缓存位置」(use_cache_pos) 默认关闭: 关闭后不采信**自动学习到的**历史坐标
+        # ——既不做「均值复核」(拿历史均值去 veto 本次 OCR 命中), 也不走缓存回退(不查 mean_rel/last_rel/
+        # 知识库 rel)。步骤里显式手写的 fallback_rel 属人工兜底, 不受此开关影响(见 docstring)。
+        use_cache = bool(self.config.get("use_cache_pos", False))
         pt = self.locate(keywords, img=img, min_score=min_score, exact=exact,
                          region_rel=region_rel, exclude=exclude)
         dropped_by_review = False   # 是否被复核判为误命中而弃用(用于日志如实描述, 不能与"未OCR到"混淆)
         if pt is not None and region_rel is not None:
             print(f"[复核] {kw0} 区域限定{list(region_rel)}, 跳过均值复核")
-        if pt is not None and region_rel is None:
+        elif pt is not None and not use_cache:
+            # 同一条全局事实不要在每次 OCR 命中时重复刷屏(提示只打一次)
+            if not getattr(self, "_cachepos_notice_done", False):
+                self._cachepos_notice_done = True
+                print("[复核] 使用缓存位置已关闭(use_cache_pos=false), 不做均值复核、不用历史坐标回退(本提示只打一次)")
+        if pt is not None and region_rel is None and use_cache:
             entry = self._entry_for(kw0)
             mean = entry.get("mean_rel") if entry else None
             dev = self._bias_px(pt, mean, self.screen_w, self.screen_h)
@@ -1124,23 +1268,44 @@ class OCREngine:
                     self.click_abs(pt_c.x, pt_c.y)
                     self._log_click(kw, [kw], pt_c, "color", category=self._step_category)
                     return True
-        # OCR+颜色均未命中: 尝试回退缓存 (方案②: 均值点补齐优先于进程缓存/最新坐标; 再无知识库坐标)
+        if no_fallback:
+            # 高危按钮: 本次实时识别(OCR/锚点/颜色)全部未命中时, 连步骤里显式写的回退坐标也不盲点
+            # (2026-10-03: 「切换账号」OCR 永远认不到折角图标, 一路回退到历史坐标 (989,283),
+            #  该点此时已是「登录」-> 误登录, 公告/进入游戏/收尾守卫全部空转)。
+            self._last_locate_source = "none"
+            print(f"[未命中] {keywords} (no_fallback=True: 禁用一切缓存/回退坐标, 交调用方处置)")
+            return False
+        # OCR+锚点+颜色均未命中: 尝试回退缓存 (方案②: 均值点补齐优先于进程缓存/最新坐标; 再无知识库坐标)
         if fallback_rel is None:
+            if not use_cache:
+                # 全局开关「使用缓存位置」(use_cache_pos) 默认关闭: 不查自动学习到的历史坐标
+                # (mean_rel 均值 / last_rel 进程缓存 / click_log 知识库坐标), 认不到就如实失败。
+                # 注意: 只挡"自动缓存"; 上面 no_fallback 分支已放行步骤里显式手写的 fallback_rel。
+                self._last_locate_source = "none"
+                print(f"[未命中] {keywords} (use_cache_pos=false: 不用自动缓存的历史坐标, 交调用方处置)")
+                return False
             for kw in kws:
                 e = self._entry_for(kw)
                 if e and e.get("mean_rel"):
                     fallback_rel = tuple(e["mean_rel"])
                     break
-        if fallback_rel is None:
-            for kw in kws:
-                if kw in self.last_rel:
-                    fallback_rel = self.last_rel[kw]
-                    break
-        if fallback_rel is None:
-            for kw in kws:
-                if kw in self.click_log:
-                    fallback_rel = tuple(self.click_log[kw]["rel"])
-                    break
+            if fallback_rel is None:
+                for kw in kws:
+                    if kw in self.last_rel:
+                        fallback_rel = self.last_rel[kw]
+                        break
+            if fallback_rel is None:
+                for kw in kws:
+                    e = self.click_log.get(kw) or {}
+                    if e.get("method") == "fallback":
+                        # 回退坐标不是位置证据, 不得再当作缓存复用 —— 否则一次"没识别到就盲点"会把错坐标
+                        # 反复续传(毒坐标自我强化)。本条防御与 _log_click 的"fallback 不落库"配套。
+                        print(f"[回退] 跳过 [{kw}] 的历史缓存回退条目(method=fallback, 非位置证据)")
+                        continue
+                    rel = e.get("rel")
+                    if rel:
+                        fallback_rel = tuple(rel)
+                        break
         if fallback_rel is not None:
             self._last_locate_source = "fallback"
             reason = "复核弃用后回退" if dropped_by_review else "未OCR到"
@@ -1303,9 +1468,12 @@ class OCREngine:
         return [Point(cx, cy, w, h) for cx, cy, _ in accepted]
 
     def click_template(self, template: str, img=None, threshold=0.8,
-                       region_rel=None, scale_range=(0.7, 1.0), fallback_rel=None) -> "Point | None":
+                       region_rel=None, scale_range=(0.7, 1.0), fallback_rel=None,
+                       no_fallback=False) -> "Point | None":
         """模板匹配点击: locate_template 命中则点击并记知识库(method=template)。
         未命中且有 fallback_rel 时回退到该相对坐标点击。返回命中的 Point, 否则 None。
+        no_fallback=True 时忽略 fallback_rel: 未命中就如实返回 None, 不用回退坐标盲点
+        (高危按钮「切换账号」类, 见 click_text 同名参数)。
         """
         pt = self.locate_template(template, img=img, threshold=threshold,
                                   region_rel=region_rel, scale_range=scale_range)
@@ -1314,6 +1482,9 @@ class OCREngine:
             self.click_abs(pt.x, pt.y)
             self._log_click(template, [template], pt, "template", category=self._step_category)
             return pt
+        if fallback_rel is not None and no_fallback:
+            print(f"[未命中] 模板 {template} (no_fallback=True: 虽有回退坐标 {fallback_rel} 也不盲点)")
+            return None
         if fallback_rel is not None:
             self._last_locate_source = "fallback"
             print(f"[回退缓存] 模板 {template} 未命中, 用回退坐标 {fallback_rel}")
@@ -1343,6 +1514,7 @@ class OCREngine:
                 return pt
             time.sleep(interval)
         print(f"[等待超时] {kws} ({timeout}s)")
+        report_failure(self._module, f"等待文本 {kws} 超时 {timeout}s")
         return None
 
     def wait_text_gone(self, keywords, timeout=30, interval=1.0):
@@ -1357,6 +1529,7 @@ class OCREngine:
                 return True
             time.sleep(interval)
         print(f"[消失超时] {kws} ({timeout}s)")
+        report_failure(self._module, f"等待文本 {kws} 消失超时 {timeout}s")
         return False
 
     def detect_scene(self, timeouts: dict) -> str:
@@ -1391,6 +1564,10 @@ class OCREngine:
         self._check_stop()
         pad = "  " * indent
         s_type = step.get("type")
+        if not s_type:
+            # 纯文档节点(如 {"_note": "..."}): 不是可执行步骤。
+            # 此前会一路落到末尾的 [未知步骤] None, 每遇到一个就在日志里刷一行噪音。
+            return
         kws = step.get("text", step.get("keywords"))
         # 步骤可声明当前界面场景(如 "scene": "家园主界面"), 之后的点击默认记入该场景
         if step.get("scene"):
@@ -1407,8 +1584,13 @@ class OCREngine:
                                  min_score=step.get("min_score", 0.5),
                                  exact=step.get("exact", False),
                                  region_rel=step.get("region_rel"),
-                                 exclude=step.get("exclude"))
+                                 exclude=step.get("exclude"),
+                                 no_fallback=step.get("no_fallback", False))
             print(f"{pad}[click_text] {kws} -> {'ok' if ok else 'fail'}")
+            if not ok and step.get("abort_on_fail"):
+                # 高危步骤(如「切换账号」): 没点到就如实中止本模块, 不让流程带着错前提继续往下跑
+                raise FlowFailed(step.get("abort_reason")
+                                 or f"click_text {kws} 未命中, 按 abort_on_fail 中止本模块")
             if ok and step.get("mark"):
                 # P0-3: 缓存回退只是「照旧点一下」的兜底, 不构成「已进入目标界面」的证据,
                 # 否则进入链永远"成功", 识别层整体失效也无人察觉。
@@ -1427,9 +1609,13 @@ class OCREngine:
                 region_rel=step.get("region_rel"),
                 scale_range=step.get("scale_range", (0.7, 1.0)),
                 fallback_rel=step.get("fallback_rel"),
+                no_fallback=step.get("no_fallback", False),
             )
             ok = pt is not None
             print(f"{pad}[click_template] {step.get('template')} -> {'ok' if ok else 'fail'}")
+            if not ok and step.get("abort_on_fail"):
+                raise FlowFailed(step.get("abort_reason")
+                                 or f"click_template {step.get('template')} 未命中, 按 abort_on_fail 中止本模块")
             if ok and step.get("mark"):
                 if self._last_locate_source == "fallback":
                     print(f"{pad}[mark] 模板 {step.get('template')} 本次为回退坐标, 不计入命中")
@@ -1445,6 +1631,11 @@ class OCREngine:
             ok = self.click_account_tail(str(tail), region_rel=step.get("region_rel"),
                                          min_score=step.get("min_score", 0.4))
             print(f"{pad}[click_account_tail] tail={tail} -> {'ok' if ok else 'fail'}")
+            if not ok and step.get("abort_on_fail"):
+                # 点不到目标账号就不许继续去点「登录」——否则会沿用当前(非目标)账号登录,
+                # 之后整轮任务都跑在错误账号上。宁可当天不跑(用户 2026-10-03 决策)。
+                raise FlowFailed(step.get("abort_reason")
+                                 or f"切换账号: 未找到尾部={tail} 的账号条目, 按 abort_on_fail 中止本模块")
             time.sleep(step.get("delay", 0.5))
         elif s_type == "sleep":
             time.sleep(step.get("seconds", 1.0))
@@ -1569,6 +1760,7 @@ class OCREngine:
             elif n >= guard:
                 # 到上限退出时按钮可能仍然存在, 不能说成"不存在/完成"(否则把放弃谎报成成功)
                 print(f"{pad}[loop_text] {kws} 已达上限 {guard} 次仍在, 放弃本轮循环(未确认真已领完)")
+                report_failure(self._module, f"loop_text {kws} 达上限 {guard} 次仍在, 放弃本轮(未确认真领完)")
             else:
                 print(f"{pad}[loop_text] {kws} 不存在, 领取/操作完成, 退出")
         elif s_type == "loop_fraction":
@@ -1586,16 +1778,19 @@ class OCREngine:
             # 每轮执行 do; 只要 do 内任一带 mark 的正常点击真实命中(本轮回成),
             # 本轮即成功, 退出循环。若整轮无命中(被弹窗/无关界面挡住), 执行
             # fail_do 脱困(未提供则自动 close_dialog 尝试全部关闭类型)再进入下一轮。
-            # 跑满 max_rounds 仍无命中 → 放弃, 继续流程后续步骤(不抛错)。
+            # 跑满 max_rounds 仍无命中 → 放弃, 继续流程后续步骤(不抛错), 并 report_failure 上报。
+            # 若该目标"不存在属正常状态"(如已领取时入口不显示), 步骤可写 "report_fail": false 免打扰。
             rounds = step.get("max_rounds", 3)
             body = step.get("do", [])
             fail_do = step.get("fail_do")
+            hit = False
             for i in range(rounds):
                 print(f"{pad}[retry_loop] 第 {i+1}/{rounds} 轮")
                 self._rr_hit = False
                 self.run_steps(body, indent=indent + 1)
                 if self._rr_hit:
                     print(f"{pad}[retry_loop] 第 {i+1} 轮命中目标, 退出")
+                    hit = True
                     break
                 print(f"{pad}[retry_loop] 第 {i+1} 轮未命中, 脱困重试")
                 if fail_do:
@@ -1603,6 +1798,9 @@ class OCREngine:
                 else:
                     self.close_dialog()
                     time.sleep(step.get("delay", 1.0))
+            if not hit and step.get("report_fail", True):
+                # 跑满轮数仍无任何带 mark 的真实命中 = 该功能的进入/触发失败(如实上报, 供失败弹窗)
+                report_failure(self._module, f"retry_loop 跑满 {rounds} 轮仍未命中目标步骤")
         elif s_type == "navigate":
             # 公共「进入某目标界面」: 从公共注册表按 target 取进入链并执行。
             # 语义与 retry_loop 一致: 目标 mark 命中即本轮成功(进入后自动切换 self._scene);
@@ -1615,7 +1813,19 @@ class OCREngine:
             from pollin import run_friend_pollin
             res = run_friend_pollin(self)
             print(f"{pad}[friend_pollin] 结果 {res}")
+            if isinstance(res, dict) and any(v is None for v in res.values()):
+                report_failure(self._module, f"好友采粉: 有类别未跑通(打开好友列表失败) 结果={res}")
             time.sleep(step.get("delay", 1.0))
+        elif s_type == "ensure_home":
+            # 归位守卫: 确保回到自己家园主界面(pollin.ensure_home: 关提示框→离开好友花园→
+            # 关好友列表→关家族面板→右上角兜底)。用于模块开头, 防止上一模块停在别处导致整段空跑
+            # (2026-10-02: social 结束停在好友列表 → claim 全程在列表上空跑 5 分钟)。
+            from pollin import ensure_home
+            ok = ensure_home(self)
+            print(f"{pad}[ensure_home] 归位到自己家园 -> {'ok' if ok else 'fail'}")
+            if not ok:
+                report_failure(self._module, "ensure_home 未确认回到自己家园主界面(已如实报出, 不假装成功)")
+            time.sleep(step.get("delay", 0.5))
         elif s_type == "community_like":
             # 社区点赞闭环(社交 4.3): 进「种草社区」-> 随机向右翻页 -> 随机点 2 个未点赞按钮 -> 退出回主界面。
             # 实现见 community_like.py。点赞成功判据 = 点击后该处「亮紫胶囊」消失(实测按钮位置/颜色/大小三者同时变化);
@@ -1624,6 +1834,14 @@ class OCREngine:
             res = run_community_like(self)
             print(f"{pad}[community_like] 结果 {res}")
             time.sleep(step.get("delay", 1.0))
+        elif s_type == "fail_flow":
+            # 流程主动判失败: 如实中止本模块(不再往下执行, 也不假装成功)。
+            # 用于「前置条件不满足, 继续执行会跑出一整轮假结果」的场景——
+            # 如切换账号失败仍去点「登录」-> 用错误账号跑完当天全部任务。
+            # reason 会被 run_module 登记进失败清单(WebUI 弹窗), 并让编排按 on_fail 处置。
+            reason = step.get("reason") or "流程主动中止(未说明原因)"
+            print(f"{pad}[fail_flow] {reason} -> 中止本模块")
+            raise FlowFailed(str(reason))
         else:
             print(f"[未知步骤] {s_type}")
 
@@ -1639,6 +1857,7 @@ class OCREngine:
         entry = self._navigation.get("targets", {}).get(target)
         if not entry:
             print(f"{pad}[navigate] 未在注册表找到目标『{target}』, 跳过")
+            report_failure(self._module, f"navigate 目标《{target}》未在公共注册表 entries.json 中定义")
             return False
         mark_text = entry.get("mark_text", [])
         mfb = entry.get("mark_fallback_rel")
@@ -1669,6 +1888,7 @@ class OCREngine:
             self.close_dialog()
             time.sleep(step.get("delay", 1.0))
         print(f"{pad}[navigate] 《{target}》 {rounds} 轮未命中, 放弃")
+        report_failure(self._module, f"navigate 进入《{target}》{rounds} 轮未命中, 放弃")
         return False
 
     def run_flow(self, flow: dict):
@@ -1677,6 +1897,7 @@ class OCREngine:
         """
         clear_stop()
         name = flow.get("name", "未命名流程")
+        self._module = name          # 失败登记时标注来源模块
         if flow.get("scene"):
             self._scene = flow["scene"]
         print(f"\n===== 流程: {name} (scene={self._scene}) =====")
@@ -1686,6 +1907,10 @@ class OCREngine:
         except StopRequested:
             print(f"===== 流程已由停止请求中断: {name} =====")
             return
+        except FlowFailed as e:
+            # 单跑该流程(非编排)时同样如实中止, 不把 fail_flow 当成未捕获异常抛到调用方
+            print(f"===== 流程中止(主动判失败): {name} -> {e} =====")
+            return
         print(f"===== 流程完成: {name} =====")
 
     def run_module(self, module: dict, registry: dict) -> str:
@@ -1694,10 +1919,13 @@ class OCREngine:
         registry: {文件名: 已加载的 flow dict}, 避免重复读盘。
         """
         mid = module.get("id", "?")
+        self._module = str(mid)      # 失败登记时标注来源模块
         fname = module.get("flow")
         flow = module.get("flow_data") or registry.get(fname)
         if flow is None:
-            print(f"[模块:{mid}] 未找到流程文件 {fname}")
+            print(f"[模块:{mid}] 未找到流程文件 {fname}, 标记失败")
+            report_failure(mid, f"模块流程文件缺失: {fname}")
+            return "fail"
         on_fail = module.get("on_fail", "stop_round")
         required = module.get("required", False)
         desc = flow.get("description", "") if isinstance(flow, dict) else ""
@@ -1707,8 +1935,14 @@ class OCREngine:
                 self.run_steps(flow.get("steps", []))
             print(f"<<< 模块完成: {mid}")
             return "ok"
+        except FlowFailed as e:
+            # 流程用 fail_flow 步骤主动判失败: 如实收成 'fail'(不是"模块异常"), 交编排 on_fail 处置
+            print(f"<<< 模块失败: {mid} -> {e} (on_fail={on_fail})")
+            report_failure(mid, str(e))
+            return "fail"
         except Exception as e:
             print(f"<<< 模块异常: {mid} -> {e} (on_fail={on_fail})")
+            report_failure(mid, f"模块异常: {e}")
             return "fail"
 
     def run_daily(self, plan: dict) -> dict:
