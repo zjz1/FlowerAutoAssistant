@@ -39,7 +39,8 @@ IME_OK_REL = (0.9563, 0.8750)                    # 系统数字键盘右下「�
 TAB_REGION = [0.90, 0.0, 1.0, 0.30]              # 右侧竖排页签(密友/好友)
 SOCIAL_FRIEND_REGION = [0.25, 0.65, 0.55, 0.80]  # 家园「社交」面板内的「好友」按钮
 PAGE_REGION = [0.5125, 0.9333]                   # 列表底部页码 "x/N"(中心)
-PAGE_CROP = [0.484, 0.90, 0.547, 0.97]           # 页码胶囊裁剪框(二值化重识别用)
+PAGE_CROP = [0.44, 0.90, 0.60, 0.97]             # 页码胶囊裁剪框(2026-10-03 加宽: 旧 0.484~0.547 会截断
+                                                 # 多位数页码, 实测 1080p「1/105」被裁成「1/1」→ 采粉误判单页)
 ROW_TOP_REL, ROW_STEP_REL = 0.1375, 0.1347        # 好友行结构(实测)
 MERGE_Y_REL = 0.0764                              # 同一标记的 y 聚类去重阈值
 
@@ -378,16 +379,30 @@ def leave_garden(eng):
       会把正确的 OCR 命中(底部右下角)判为误命中并点错位置。
     → 主路径改为**底部栏区域限定**直接定位点击(家园/好友花园的「离开」恒在右下角),
       复核按区域裁掉无关干扰, 不依赖场景缓存; click_text 仅作兜底。
+
+    ⚠ 2026-10-03 实机日志(协作区 zcode-20261004): 「离开」点击常被吞 —— 75s 窗口内
+      连续 2 次点击画面纹丝不动, 3×75s 超时 ≈4 分钟才回家。改为**点-验-重试**:
+      每次点击后用 wait_screen_change 验证画面真的变了, 无变化立即重点(至多 3 次);
+      离开成功后回家等待 75s→30s(点击已验证落地, 30s 足够过场动画; 未到主界面由
+      调用方 ensure_home 循环继续处理, 不再干等)。
     """
-    if in_garden(eng):
+    for i in range(1, 4):
+        if stop_requested():
+            return False
         img = eng.screenshot()
+        if not in_garden(eng):
+            # 已不在花园(可能上一轮点击此刻才落地), 直接进入回家等待
+            break
         pt = eng.locate(["离开"], img=img, region_rel=[0.70, 0.88, 1.0, 1.0], min_score=0.5)
         if pt is not None:
             print(f"  [离开] 底部栏定位「离开」({pt.x},{pt.y})")
             eng.click_abs(pt.x, pt.y)
         else:
             print(f"  [离开] 底部栏未OCR到「离开」, 回退 click_text -> {eng.click_text(['离开'])}")
-    ok = wait_until(eng, lambda: in_home(eng) and not in_garden(eng), 75, desc="回到自己家园")
+        if wait_screen_change(eng, img, desc=f"点离开(第{i}次)"):
+            break
+        print(f"  [离开] 第{i}次点击后画面无变化(吞点击), 重试")
+    ok = wait_until(eng, lambda: in_home(eng) and not in_garden(eng), 30, desc="回到自己家园")
     if ok:
         eng.set_scene("家园主界面")
     return ok
@@ -453,8 +468,19 @@ def open_friend_list(eng):
         if pt is None:
             if in_home(eng, img) or in_garden(eng, img):
                 where = "自己家园" if in_home(eng, img) else "好友花园"
-                print(f"  [列表] 第{attempt}次 在{where} 点「社交」-> {eng.click_text(['社交'])}")
-                wait_until(eng, lambda: _panel_friend_pt(eng) is not None, 30, desc="社交面板")
+                # 点-验-重试(2026-10-04, 协作区 zcode-20261004): 「社交」点击常被吞,
+                # 旧逻辑点完 blind 等 30s 面板 —— 吞了也干等(当晚 5m53s 大卡点的主因之一)。
+                # 现改为: 点击 → 画面 5s 内必须变化, 无变化立即重试; 面板等待 30s→15s。
+                print(f"  [列表] 第{attempt}次 在{where} 点「社交」")
+                for i in range(1, 4):
+                    if stop_requested():
+                        return False
+                    pre = eng.screenshot()
+                    eng.click_text(["社交"])
+                    if wait_screen_change(eng, pre, desc=f"点「社交」(第{i}次)", timeout=5):
+                        break
+                    print(f"  [列表] 点「社交」后画面无变化(吞点击), 重试")
+                wait_until(eng, lambda: _panel_friend_pt(eng) is not None, 15, desc="社交面板")
                 pt = _panel_friend_pt(eng)
             else:
                 print(f"  [列表] 第{attempt}次: 场景未知, 先回自己家园")
@@ -496,9 +522,13 @@ def switch_tab(eng, name):
 def read_page(eng, img=None):
     """读列表底部页码 "x/N"。
 
-    ⚠ 本体 OCR 在「粉底白字」页码胶囊上会把 9 误读成 6(实测 9/9 -> 6/6),
-    故先对胶囊区域做放大+二值化再走项目 `ocr_image`; 仍失败才回退本体 `parse_fraction_at`。
-    (本体 bug 待根治, 见 PROGRESS.md「OCR 二值化重识别」)
+    ⚠ 本体 OCR 在「粉底白字」页码胶囊上会把 9 误读成 6(实测 9/9 -> 6/6), 故裁剪胶囊后
+    用二值化重识别。2026-10-03 加固(协作区 zcode-20261003-4, 真样本实测):
+    ① 固定阈值 200 在变暗画面(模态框压暗整屏, 实测 crop 灰度仅 60~119)下整片全黑、OCR 必空
+      → 改 **Otsu 自适应阈值**, 二值/反相两种极性都试(白字黑底/黑字白底);
+    ② 裁剪框放宽(见 PAGE_CROP), 修复多位数页码被截断;
+    ③ 仍失败才回退本体 `parse_fraction_at`。
+    实测: 变暗 720p「2/9」(旧逻辑 OCR 必空)与干净 1080p「1/1」均直接命中。
     """
     import re
     import cv2
@@ -511,11 +541,13 @@ def read_page(eng, img=None):
         if crop.size:
             big = cv2.resize(crop, None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC)
             gray = cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)
-            _, binimg = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-            for b in ocr_image(cv2.cvtColor(binimg, cv2.COLOR_GRAY2BGR)):
-                m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", b["text"].strip())
-                if m:
-                    return (int(m[1]), int(m[2]))
+            _, binimg = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            _, bininv = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            for bin_ in (binimg, bininv, gray):  # 二值 → 反相 → 纯灰度, 首个解析成功即返回
+                for b in ocr_image(cv2.cvtColor(bin_, cv2.COLOR_GRAY2BGR)):
+                    m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", b["text"].strip())
+                    if m:
+                        return (int(m[1]), int(m[2]))
     return eng.parse_fraction_at(PAGE_REGION, img=img, tol=80)
 
 
@@ -704,9 +736,12 @@ def collect_one(eng, x, y):
         print(f"    [采集] 无花粉提示 -> click_text(['确定']) {eng.click_text(['确定'])}")
         time.sleep(1.0)
     elif has(eng, "采粉", img=img):
-        # 画面变了但采粉菜单仍在: 不谎报成功, 如实报出并按"本槽位未确认"处理
-        print("    [采集] 画面已变化但「采粉」菜单仍在, 未确认采集成功, 本槽位跳过")
-        return "fail"
+        # 画面已变化但「一键采粉」菜单仍在(2026-10-04, 协作区 zcode-20261004):
+        # 旧判据把它当"未确认失败"→ 当晚 7 槽位全 fail、采粉 0 收获。实机观察:
+        # 「一键采粉」点击后菜单**不会自动关闭**, 菜单残留属正常态; 点采粉后画面已变化
+        # 即采集生效(花粉动画/数值变化)。菜单残留≠失败 —— 判定放宽为成功,
+        # 下方统一收菜单。(是否真采到以游戏内花粉数为准, 待实机确认)
+        print("    [采集] 采集生效(画面已变化; 快捷菜单未自动关闭属正常), 继续收菜单")
     else:
         print("    [采集] 静默成功(有花粉)")
 

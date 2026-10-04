@@ -11,7 +11,7 @@
           "combine": "min",
           "max_loop": 30,
           "once": [
-              { "type": "click_text", "text": ["光偶像"], "delay": 1.5, "fallback_rel": [0.0508, 0.5417] }
+              { "type": "click_text", "text": ["光偶像"], "delay": 1.5 }
           ],
           "do": [
               { "type": "if_text",
@@ -19,11 +19,11 @@
                 "min_score": 0.4,
                 "region_rel": [0.05, 0.86, 0.18, 0.94],
                 "then": [
-                    { "type": "click_text", "text": ["速通"], "delay": 1.5, "fallback_rel": [0.817, 0.893] }
+                    { "type": "click_text", "text": ["速通"], "delay": 1.5 }
                 ] },
-              { "type": "click_text", "text": ["确定"], "delay": 1.2, "fallback_rel": [0.497, 0.644] },
+              { "type": "click_text", "text": ["确定"], "delay": 1.2 },
               { "type": "wait_text", "text": ["确认", "确定"], "timeout": 25, "interval": 1.0 },
-              { "type": "click_text", "text": ["确认", "确定"], "delay": 1.0, "fallback_rel": [0.638, 0.858] },
+              { "type": "click_text", "text": ["确认", "确定"], "delay": 1.0 },
               { "type": "sleep", "seconds": 1.0 }
           ] },
         { "_note": "===== 收尾归位: 循环结束会停在星光偶像/结算子面板, 不归位会把残局丢给下一模块 =====" },
