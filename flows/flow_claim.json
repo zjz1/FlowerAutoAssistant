@@ -30,7 +30,8 @@
                                   "region_rel": [0.6047, 0.4931],
                                   "condition": "N>0",
                                   "then": [
-                                      { "type": "click_rel", "rel": [0.6102, 0.5681], "delay": 1.0, "name": "抽奖(纯图形钮, 待模板化 - A类遗留)" },
+                                      { "type": "click_text", "text": ["抽奖"], "min_score": 0.5, "region_rel": [0.55, 0.52, 0.70, 0.62], "delay": 1.0, "name": "抽奖(OCR)",
+                                        "_note": "合规改造(2026-10-04, zcode-20261004-4): 实机采集发现抽奖钮**自带文字**「抽奖」(1080p 实测 s=0.67 @rel 0.6094,0.5685), 直坐标 (0.6102,0.5681) 废弃; region 限定在按钮带内" },
                                       { "type": "wait_text", "text": ["点击任意处关闭"], "timeout": 8, "interval": 1.0 },
                                       { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭恭喜获得(OCR)",
                                         "_note": "合规改造: 弹窗有「点击任意处关闭」文字, 直坐标改 OCR 点击" }
@@ -135,8 +136,12 @@
                     { "type": "if_text", "text": ["菜单", "离开"], "min_score": 0.4,
                       "_note": "回没回到家园的判据: 家园页面有「菜单」「离开」。不能用「奇妙花宝」判定——花灵派对与奇妙花宝是两个分立功能",
                       "else": [
-                          { "type": "click_rel", "rel": [0.9711, 0.0389], "delay": 1.5,
-                            "name": "花灵派对主面板右上角关闭(兜底, 已按 09-28 实测 (1243,28) 校准)" },
+                          { "type": "click_template",
+                            "template": "party_close.png",
+                            "threshold": 0.97,
+                            "region_rel": [0.93, 0.0, 1.0, 0.12],
+                            "delay": 1.5,
+                            "name": "花灵派对主面板右上角关闭(模板, 合规改造 zcode-20261004-4; 旧直坐标 (0.9711,0.0389) 废弃)" },
                           { "type": "sleep", "seconds": 1.0 },
                           { "type": "if_text", "text": ["菜单", "离开"], "min_score": 0.4,
                             "_note": "兜底点完再确认一次; 仍未回到家园就如实报出来, 不再假装成功",

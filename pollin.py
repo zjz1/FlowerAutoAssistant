@@ -32,10 +32,26 @@ HOUSE_DX_REL = -0.0172                           # 绿花角标 -> 家园图标�
 HOUSE_DY_REL = 0.0417
 JUMP_TH = 0.80
 JUMP_REGION = [0.38, 0.86, 0.52, 1.0]
-NUM_BAR_REL = (0.5000, 0.4583)                   # 对话框「前往 第 [N] 页」数字条(点它弹数字键盘)
-DLG_CONFIRM_REGION = [0.35, 0.60, 0.65, 0.72]    # 对话框「确认」按钮所在区域
-DLG_CLOSE_REL = (0.7016, 0.3208)                 # 对话框右上 ✕
-IME_OK_REL = (0.9563, 0.8750)                    # 系统数字键盘右下「确定」
+# ---- 纯图形出口/控件: 全部模板化(2026-10-04 合规改造 zcode-20261004-4, 规则6: 禁直坐标) ----
+# 模板均按 1280 基准尺寸入库(resource/template/), 引擎按 screen_w/1280 尺度自适应;
+# 阈值=各模板离线实测(源图命中 vs 异图假阳性)的分离值。
+TPL_DELEGATE_CLOSE = "delegate_close.png"        # 委托子页内容区右上角白圆粉花✕(源图0.999/异图0.742)
+DELEGATE_CLOSE_REGION = [0.82, 0.0, 1.0, 0.20]
+DELEGATE_CLOSE_TH = 0.90
+TPL_SHELL_CLOSE = "shell_close.png"              # 家族外壳右上角花形✕(源图0.995/异图0.766)
+SHELL_CLOSE_REGION = [0.93, 0.0, 1.0, 0.12]
+SHELL_CLOSE_TH = 0.90
+TPL_FRIENDLIST_EXIT = "friendlist_exit.png"      # 好友列表左缘中央 » 抽屉钮(源图0.999/异图0.939→阈值取中)
+FRIENDLIST_EXIT_REGION = [0.37, 0.35, 0.52, 0.60]
+FRIENDLIST_EXIT_TH = 0.95
+TPL_NUM_BAR = "num_bar.png"                      # 跳转页签对话框数字条(源图0.999/异图0.987→仅对话框上下文使用)
+NUM_BAR_REGION = [0.35, 0.38, 0.72, 0.55]
+NUM_BAR_TH = 0.90
+TPL_DLG_CLOSE = "dlg_close.png"                  # 跳转页签对话框右上✕(源图0.999/异图0.955→阈值0.97)
+DLG_CLOSE_REGION = [0.62, 0.24, 0.80, 0.42]
+DLG_CLOSE_TH = 0.97
+DLG_CONFIRM_REGION = [0.35, 0.60, 0.65, 0.72]    # 对话框「确认」按钮所在区域(有文字, OCR)
+IME_OK_REGION = [0.85, 0.88, 1.0, 1.0]           # 系统数字键盘右下「确定」(有文字, OCR)
 TAB_REGION = [0.90, 0.0, 1.0, 0.30]              # 右侧竖排页签(密友/好友)
 SOCIAL_FRIEND_REGION = [0.25, 0.65, 0.55, 0.80]  # 家园「社交」面板内的「好友」按钮
 PAGE_REGION = [0.5125, 0.9333]                   # 列表底部页码 "x/N"(中心)
@@ -89,20 +105,14 @@ def frame_diff(a, b):
 ESCAPE_CHANGE_TH = 0.05
 ESCAPE_WAIT_S = 6.0
 
-# ---- 实机验证过的退出控件坐标 (2026-10-03 晚, 1920x1080 实测后归一化; 相对坐标适配任意分辨率) ----
-# ① 委托挑战全屏子页的退出 = 内容区右上角「白色圆形粉花✕」(非外壳装饰花!):
-#    旧值 (0.035,0.038) 点在「家族」标题文字上, 点击画面无变化 (2026-10-03 日志卡死 40 分钟的根因)。
-#    实测: 点击 (0.9010,0.1065) → frame_diff 0.25, 回到家族活动 2x2 网格 ✓
-#    ⚠ 外壳右上角的裸粉花 (rel≈0.983,0.051) 在子页上被内容层压住点不动, 必须先点本钮。
-DELEGATE_EXIT_REL = (0.9010, 0.1065)
-# ② 家族界面外壳的关闭 = 右上角「裸粉花✕」(close_family 模板的历史真身, 720p 时代 0.946 自匹配):
-#    实测: 在网格上点击 (0.9833,0.0509) → 回主界面 ✓ (close_family 模板匹配在 1080p 因尺度 1.5 超范围
-#    而失灵, 故脱困链直接用坐标点击, 模板仅留给注册表「家族活动右上角关闭」在尺度修复后使用)。
-FAMILY_SHELL_EXIT_REL = (0.9833, 0.0509)
-# ③ 好友列表的退出 = 列表面板左缘中央的「粉色凸出小抽屉钮 + 白色向右双箭头»」(无任何文字, OCR 不可达,
-#    右上角是页签列没有✕ —— 2026-10-03 离线排查+用户指认+实机点击验证):
-#    实测: 点击 (0.4313,0.4694) → frame_diff 0.31, 列表收起回社交面板视图 ✓
-FRIENDLIST_EXIT_REL = (0.4313, 0.4694)
+# ---- 纯图形出口控件: 模板化改造记录 (2026-10-04, zcode-20261004-4) ----
+# ① 委托挑战全屏子页退出 = 内容区右上角「白色圆形粉花✕」→ delegate_close.png
+#    (旧直坐标 (0.9010,0.1065) 为 2026-10-03 实测过渡态; 该✕与外壳装饰花不同, 必须先点它)。
+# ② 家族界面外壳关闭 = 右上角「花形✕」→ shell_close.png
+#    (旧 FAMILY_SHELL_EXIT_REL (0.9833,0.0509); close_family 旧模板带背景有假阳性史, 已裁新鲜模板)。
+# ③ 好友列表退出 = 左缘中央「粉色凸出抽屉钮 + 白色向右双箭头»」→ friendlist_exit.png
+#    (旧 FRIENDLIST_EXIT_REL (0.4313,0.4694); 右上角是页签列没有✕, 该钮是整个列表唯一出口)。
+# 模板素材与离线验证证据: _collab/inbox/zcode-20261004-4/{files/resource/template,evidence}/
 
 
 def wait_screen_change(eng, base, desc="画面变化", timeout=None, threshold=None, interval=1.0):
@@ -134,8 +144,8 @@ def save_escape_evidence(eng, tag):
     背景(2026-10-03): 委托子页/好友列表的真实出口控件位置失准且仓库内**没有**这些界面的
     干净截图(历史素材已被清理), 导致无法离线重采。本钩子在失败现场自动落盘
     debug/escape_fail_<tag>_<时刻>.png, 下次实机再卡死即产出校准素材 ——
-    用户可直接在 WebUI /tpltool「载入 debug 图片」框选真实出口, 据此修订
-    DELEGATE_EXIT_REL / close_family 阈值 / leave_friend_list 出口。
+    用户可直接在 WebUI /tpltool「载入 debug 图片」框选真实出口, 据此修订对应模板
+    (delegate_close/shell_close/friendlist_exit 等)与阈值/region。
     与既有 debug/_enter_garden_fail.png 同类机制; debug/ 为测试区出仓目录, 不入 git。
     """
     try:
@@ -315,13 +325,19 @@ def ensure_home(eng):
             leave_garden(eng)
             continue
         if in_delegate_subpage(eng, img):
-            # 委托挑战全屏子页右上角无关闭X, 真实出口是左上角返回箭头; 先回家族活动网格, 下一轮再关网格
-            print(f"  [主界面] 停在委托挑战子页(全屏, 右上角无关闭X), 点左上角返回箭头回家族网格 rel{DELEGATE_EXIT_REL}")
-            eng.click_rel(*DELEGATE_EXIT_REL)
-            if wait_screen_change(eng, img, desc="委托子页返回箭头"):
-                stale = 0
-                continue
-            print("  [主界面] 返回箭头点击后画面无变化(疑似出口失效), 换右上角关闭区兜底")
+            # 委托挑战全屏子页: 出口=内容区右上角白圆粉花✕ → 模板定位(合规改造 2026-10-04;
+            # 该✕与外壳装饰花不同形, 在子页上外壳花被内容层压住点不动, 必须先点本钮)
+            pt = eng.locate_template(TPL_DELEGATE_CLOSE, img=img,
+                                     threshold=DELEGATE_CLOSE_TH, region_rel=DELEGATE_CLOSE_REGION)
+            if pt is not None:
+                print(f"  [主界面] 停在委托挑战子页, 模板命中✕ ({pt.x},{pt.y})")
+                eng.click_abs(pt.x, pt.y)
+                if wait_screen_change(eng, img, desc="委托子页✕"):
+                    stale = 0
+                    continue
+                print("  [主界面] ✕点击后画面无变化, 换右上角关闭区兜底")
+            else:
+                print("  [主界面] 委托子页✕模板未命中(delegate_close), 换右上角关闭区兜底")
             click_top_right_close(eng)
             if wait_screen_change(eng, img, desc="委托子页右上角兜底"):
                 stale = 0
@@ -334,15 +350,19 @@ def ensure_home(eng):
                 return False
             continue
         if in_family_panel(eng, img):
-            # 主路径: 外壳右上角裸粉花✕ (2026-10-03 实机验证坐标, 见 FAMILY_SHELL_EXIT_REL 注)。
-            # 不再用 close_family 模板作主路径: 该模板自带背景, 1080p 需尺度 1.5 超出引擎范围,
-            # 且历史上在好友列表等画面以 0.72~0.90 误命中右上角空点。
-            print(f"  [主界面] 关家族外壳 点右上角花形✕ rel{FAMILY_SHELL_EXIT_REL}")
-            eng.click_rel(*FAMILY_SHELL_EXIT_REL)
-            if wait_screen_change(eng, img, desc="关家族面板"):
-                stale = 0
-                continue
-            print("  [主界面] 花形✕点击后画面无变化, 换右上角关闭区兜底")
+            # 主路径: 外壳右上角花形✕ → 模板定位(合规改造 2026-10-04; 新鲜裁切模板,
+            # 弃用 close_family 旧模板——自带背景, 有在其它画面误命中右上角空点的历史)
+            pt = eng.locate_template(TPL_SHELL_CLOSE, img=img,
+                                     threshold=SHELL_CLOSE_TH, region_rel=SHELL_CLOSE_REGION)
+            if pt is not None:
+                print(f"  [主界面] 关家族外壳 模板命中花形✕ ({pt.x},{pt.y})")
+                eng.click_abs(pt.x, pt.y)
+                if wait_screen_change(eng, img, desc="关家族面板"):
+                    stale = 0
+                    continue
+                print("  [主界面] 花形✕点击后画面无变化, 换右上角关闭区兜底")
+            else:
+                print("  [主界面] 外壳✕模板未命中(shell_close), 换右上角关闭区兜底")
             click_top_right_close(eng)
             if wait_screen_change(eng, img, desc="关家族面板(兜底)"):
                 stale = 0
@@ -422,8 +442,9 @@ def leave_friend_list(eng):
       删除好友/好友设置/添加好友(无「离开」), 旧主路径 click_top_right_close 的区域中心兜底
       恰好点在「密友」页签(1216,57)上, 等于切页签而非关闭。
       真实出口 = 列表面板**左缘中央**的「粉色凸出小抽屉钮 + 白色向右双箭头»」(纯图形, OCR 不可达):
-      FRIENDLIST_EXIT_REL, 实测点击 → 列表收起回社交面板视图(frame_diff 0.31)。
-      次路径保留底部栏「离开」; 两轮都失败仍如实报出并存证 escape_fail_friendlist_*.png。
+      实测点击 → 列表收起回社交面板视图(frame_diff 0.31)。2026-10-04 合规改造: 该钮已模板化
+      (friendlist_exit.png), 不再使用直坐标; 次路径保留底部栏「离开」;
+      两轮都失败仍如实报出并存证 escape_fail_friendlist_*.png。
     """
     for i in range(1, 3):
         if stop_requested():
@@ -431,8 +452,13 @@ def leave_friend_list(eng):
         img = eng.screenshot()
         if not in_list(eng, img):
             return True
-        print(f"  [列表] 第{i}次关闭好友列表: 点左缘中央向右箭头钮 rel{FRIENDLIST_EXIT_REL}")
-        eng.click_rel(*FRIENDLIST_EXIT_REL)
+        pt = eng.locate_template(TPL_FRIENDLIST_EXIT, img=img,
+                                 threshold=FRIENDLIST_EXIT_TH, region_rel=FRIENDLIST_EXIT_REGION)
+        if pt is not None:
+            print(f"  [列表] 第{i}次关闭好友列表: 模板命中»钮 ({pt.x},{pt.y})")
+            eng.click_abs(pt.x, pt.y)
+        else:
+            print(f"  [列表] 第{i}次: »钮模板未命中(friendlist_exit), 直接试底部栏「离开」")
         if wait_until(eng, lambda: not in_list(eng), 15, desc=f"关闭好友列表(第{i}次)"):
             return True
         img = eng.screenshot()
@@ -559,7 +585,13 @@ def read_total(eng):
     if not open_jump_dialog(eng):
         return None
     n = eng.parse_count_at([0.5, 0.52], tol=150)
-    eng.click_rel(*DLG_CLOSE_REL)            # 点 ✕ 关掉对话框, 不改页码
+    pt = eng.locate_template(TPL_DLG_CLOSE, img=eng.screenshot(),
+                             threshold=DLG_CLOSE_TH, region_rel=DLG_CLOSE_REGION)
+    if pt is not None:
+        print(f"  [翻页] 点对话框✕ ({pt.x},{pt.y}) 关掉对话框, 不改页码")
+        eng.click_abs(pt.x, pt.y)
+    else:
+        print("  [翻页] 对话框✕模板未命中(dlg_close), 不盲点")
     time.sleep(1.5)
     return n
 
@@ -581,16 +613,21 @@ def _jump_once(eng, n):
     """一次翻页尝试: 点「跳」-> 点数字条弹数字键盘 -> 清空 -> 输入 n -> 确认。"""
     if not open_jump_dialog(eng):
         return False
-    print(f"  [翻页] 点数字条 {NUM_BAR_REL} 唤起数字键盘")
-    eng.click_rel(*NUM_BAR_REL)
+    pt = eng.locate_template(TPL_NUM_BAR, img=eng.screenshot(),
+                             threshold=NUM_BAR_TH, region_rel=NUM_BAR_REGION)
+    if pt is None:
+        print("  [翻页] 数字条模板未命中(num_bar)")
+        return False
+    print(f"  [翻页] 模板命中数字条 ({pt.x},{pt.y}) 唤起数字键盘")
+    eng.click_abs(pt.x, pt.y)
     time.sleep(2.5)
     adb_key(123)                             # 光标移到行尾
     for _ in range(5):
         adb_key(67)                          # 退格清空(最大两位数, 5 次足够)
     adb_text(str(n))
     time.sleep(1.5)
-    print(f"  [翻页] 点键盘「确定」{IME_OK_REL} 提交")
-    eng.click_rel(*IME_OK_REL)
+    print("  [翻页] 点键盘「确定」(OCR, 系统键盘有该文字)")
+    eng.click_text(["确定"], region_rel=IME_OK_REGION, min_score=0.4)
     time.sleep(1.5)
     pt = eng.locate(["确认"], region_rel=DLG_CONFIRM_REGION, min_score=0.4)
     if pt is None:

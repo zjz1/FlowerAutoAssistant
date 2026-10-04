@@ -2218,3 +2218,36 @@ template 识别，获取到实时相对坐标或者绝对坐标，然后点击�
 - 验证：闸门全绿（JSON 14/14、步骤 25 种/216 处/0 未知、语法 8/8）；五 flow grep 确认 `fallback_rel` 键为 0；
   残留 10 处直坐标逐一核对均为 A 类纯图形钮。**待实机回归**：全模块 OCR 未命中应「如实失败+重试」
   （zcode-developing C8）、切号模板未命中即中止（C1）。
+
+
+## 2026-10-04 · 合并协作区 zcode-20261004-4（A 类模板化批：7 新模板 + pollin/community_like/flows 直坐标清零）（里程碑 77）
+
+**来源**：协作 agent `zcode` 提交（基线 `4d72af2` 里程碑 75/76），响应规则 6「严禁直接坐标点击」A 类整改主线；
+素材来自今晨组2实机采集（14 张 1080p 截图）与 10-03 实机存证。A 类 12 项完成 9 项。
+
+- **7 新模板入库（`resource/template/`，1280 基准）**：`delegate_close.png`（委托子页✕ 0.90/0.999源图）、
+  `shell_close.png`（家族外壳✕ 0.90/0.995，**弃 close_family 旧模板**）、`tree_close.png`（摇钱树✕ 0.90/0.998，
+  「今日浇水次数」守卫保留）、`friendlist_exit.png`（好友列表»钮 0.95）、`party_close.png`（花灵派对主面板✕ 0.97）、
+  `dlg_close.png`（跳转页签对话框✕ 0.97）、`num_bar.png`（数字条 0.90，仅对话框上下文）。
+- **pollin.py（FIX-H，9 hunks）**：`DELEGATE_EXIT_REL`/`FAMILY_SHELL_EXIT_REL`/`FRIENDLIST_EXIT_REL`/
+  `NUM_BAR_REL`/`DLG_CLOSE_REL`/`IME_OK_REL` 六直坐标常量全部删除 → 模板 `locate_template`（未命中不点、
+  走既有兜底/重试链，不再盲点）；键盘「确定」实采有文字（s=0.60）→ OCR 化 `click_text(["确定"])`+`IME_OK_REGION`；
+  `read_total`/`_jump_once` 对话框✕/数字条模板化。
+- **community_like.py（FIX-I，6 hunks）**：`ENTRY_FALLBACK_REL`/`MENU_FALLBACK_REL`/`HOME_FALLBACK_REL`/
+  `CLOSE_FALLBACK_REL` 四直坐标删除；入口未命中走归位重试、escape 兜底「菜单→家园」纯 OCR、
+  关闭模板未命中不点由退出判据如实处理。
+- **flows**：`flow_social.json` 三处 `click_rel`（树✕/委托✕/外壳✕）→ `click_template`；
+  `flow_claim.json` 抽奖钮实采发现**自带文字「抽奖」**（s=0.67）→ 直接 OCR 化 `click_text ["抽奖"]`+region
+  （A6 由 A 类转 B 类，比模板更优）、花灵派对主面板✕兜底 → `click_template party_close`。
+- **「跳」按钮 OCR 化实测不成立（已记录）**：裁切×3/灰度/二值化三档预处理 RapidOCR 均读不出（金色圆钮艺术字体），
+  维持模板方案 —— 教训：识别预处理对美术字体未必有效，判据以实测为准。
+- **主 agent 独立复验**：7 模板走主仓库引擎真实路径（`locate_template`+尺度自适应）× **1080p/720p 双档** 15/15 全过
+  （坐标偏差 ≤8px）+ delegate_close 在主界面帧 region 限定下不误命中；两补丁 `git -c core.autocrlf=false apply`
+  rc=0；pollin `click_rel` 调用零残留（剩余 `*_REL` 均为几何换算常量）；编译通过；闸门全绿（JSON 15/15、
+  步骤 25 种/216 处/0 未知、语法 8/8）。
+- **归档**：A1-A7/A11/A12 共 9 项已在 `zcode-developing/A类_直坐标模板化改造.md` 标 ✅（里程碑 77）；
+  剩 A8/A9（奇妙花宝，需实机采集）、A10（浇水确认弹窗，组2未捕获，待冷却连拍定案）、
+  **A13（新发现：entries.json 花灵派对 `mark_fallback_rel` 过期违规 —— 主界面活动图标每日轮换，纯配置可改）**；
+  C 类回归新增 C9-C12（7 模板实机/抽奖 OCR/翻页链模板化/community_like）。
+- 同步 `docs/FLOWS.md`（§4.1.1/§4.1.2/§4.2/§7.2/§10）、本地 PROJECT_GUIDE §3.1/§5。
+- 待实机：C9-C12 + A10 定案（见 `zcode-developing/C类_待实机回归.md`）。

@@ -64,10 +64,10 @@ from ocr_ui import ocr_image
 # ---- 入口（主界面文字按钮 -> OCR）----
 ENTRY_TEXT = "种草社区"
 ENTRY_REGION = [0.88, 0.38, 1.00, 0.53]          # 主界面右侧竖排导航带(防命中其他页面的同名标题)
-ENTRY_FALLBACK_REL = (0.9609, 0.4556)            # 2026-09-29 实测 abs(1230,328) score0.80
 TITLE_REGION = [0.00, 0.00, 0.20, 0.10]          # 社区页左上角标题「种草社区」
-MENU_FALLBACK_REL = (0.054, 0.081)               # 复用 entries.json 花灵派对链已验证值
-HOME_FALLBACK_REL = (0.8711, 0.9500)             # 复用 FLOWS.md §7.3 已验证值
+# 合规改造(2026-10-04, zcode-20261004-4, 规则6: 禁直坐标): 删除 ENTRY_FALLBACK_REL /
+# MENU_FALLBACK_REL / HOME_FALLBACK_REL 三个直坐标兜底 —— OCR 未命中时不再盲点,
+# 由各自的轮询重试链处理(入口 3 轮 / ensure_home 循环)。
 
 # ---- 点赞按钮（纯图形 -> HSV 颜色 + 形状检测; 模板匹配实测失效, 见文件头②）----
 LIKE_BAND = [0.735, 0.815]                       # 卡片底部条纵带(实测胶囊恒在 abs y 535~575)
@@ -99,7 +99,8 @@ QUOTA_RE = r"(?:本期|本周)点赞数\s*[：:]\s*(\d+)\s*/\s*(\d+)"
 CLOSE_TEMPLATE = "community_close"               # 已采集: 右上角粉色花 X
 CLOSE_TH = 0.95                                  # 实测 th=0.95 唯一命中(0.90 起出现误命中)
 CLOSE_REGION = [0.93, 0.0, 1.00, 0.14]
-CLOSE_FALLBACK_REL = (0.9734, 0.0361)            # 实测 abs(1246,26)
+# 合规改造(2026-10-04, zcode-20261004-4): 删除 CLOSE_FALLBACK_REL 直坐标兜底 ——
+# 关闭✕本就已模板化(仅剩 else 分支在模板未命中时盲点), 现改为不点, 由上方退出判据如实报出。
 
 # ---- 行为参数 ----
 CAP = 25            # 单次随机翻页次数硬上限（用户要求不超过 25）
@@ -238,7 +239,8 @@ def escape_to_main(eng):
     故脱困必须**先关模态框**，顺序为：
       ① `close_dialog()` —— 注册表已含「跳转页签」锚点（关闭钮实测 @abs(889,232)）与通用「提示」锚点弹窗；
       ② `pollin.ensure_home()` —— 关提示框/离开好友花园/关家族面板/右上角兜底，既有实战链路**直接复用不重造**；
-      ③ 仍不到位才用「菜单 → 家园」相对坐标兜底（ensure_home 未成功时才做，避免在主界面上空点菜单）。
+      ③ 仍不到位才用「菜单 → 家园」OCR 点击兜底（ensure_home 未成功时才做，避免在主界面上空点菜单；
+        合规改造 2026-10-04: 已删这两个按钮的直坐标 fallback，OCR 未命中就不点）。
     """
     try:
         eng.close_dialog()                      # ① 先关模态框(否则后面全部点击都会被吞)
@@ -252,10 +254,11 @@ def escape_to_main(eng):
     except Exception as e:
         print(f"  [社区点赞] ensure_home 异常: {e}")
     time.sleep(0.8)
-    if not ok:                                  # ③ 兜底: 菜单 -> 家园
-        eng.click_text(["菜单"], fallback_rel=MENU_FALLBACK_REL)
+    if not ok:                                  # ③ 兜底: 菜单 -> 家园(OCR; 未命中不盲点, 如实留痕)
+        print("  [社区点赞] ensure_home 未归位, 走「菜单→家园」OCR 兜底")
+        eng.click_text(["菜单"])
         time.sleep(1.2)
-        eng.click_text(["家园"], fallback_rel=HOME_FALLBACK_REL)
+        eng.click_text(["家园"])
         time.sleep(1.5)
 
 
@@ -278,8 +281,7 @@ def enter_community(eng, tries=3):
             print(f"  [社区点赞] 主界面右侧导航命中「{ENTRY_TEXT}」({pt.x},{pt.y})")
             eng.click_abs(pt.x, pt.y)
         else:
-            print(f"  [社区点赞] 第 {i}/{tries} 轮: 未命中「{ENTRY_TEXT}」入口, 回退相对坐标 {ENTRY_FALLBACK_REL}")
-            eng.click_rel(*ENTRY_FALLBACK_REL)
+            print(f"  [社区点赞] 第 {i}/{tries} 轮: 未命中「{ENTRY_TEXT}」入口(OCR), 不盲点, 走归位重试")
         if wait_until(eng, lambda: _entered(eng), ENTER_WAIT, desc="进入种草社区"):
             eng.set_scene("种草社区")
             return True
@@ -304,8 +306,7 @@ def leave(eng):
         print(f"  [社区点赞] 点社区页关闭 X ({pt.x},{pt.y})")
         eng.click_abs(pt.x, pt.y)
     else:
-        print(f"  [社区点赞] 关闭模板未命中, 点兜底关闭位 {CLOSE_FALLBACK_REL}")
-        eng.click_rel(*CLOSE_FALLBACK_REL)
+        print("  [社区点赞] 关闭模板未命中(community_close), 不盲点; 由下方退出判据如实处理")
     time.sleep(1.5)
 
     # ⚠ 不能用「重新看到入口」做成功判据: 主界面右侧导航是**活动主题位**, 实测有时显示
