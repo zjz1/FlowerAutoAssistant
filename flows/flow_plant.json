@@ -17,7 +17,7 @@
                     { "type": "sleep", "seconds": 1.5 }
                 ] },
               { "_note": "③ 等家园界面加载, 再用同一判据复核(不把『点了按钮』当成『已到位』)" },
-              { "type": "wait_text", "text": ["菜单", "离开", "奇妙花宝"], "timeout": 12, "interval": 1.0 },
+              { "type": "wait_text", "text": ["菜单", "离开", "奇妙花宝"], "timeout": 5, "interval": 1.0 },
               { "type": "if_text",
                 "text": ["菜单", "离开", "奇妙花宝"],
                 "min_score": 0.4,
@@ -27,7 +27,7 @@
                     { "_note": "仍未到家园: 再脱困一次并补点一次『家园』" },
                     { "type": "close_dialog", "delay": 1.5 },
                     { "type": "click_text", "text": ["家园"], "delay": 2.5 },
-                    { "type": "wait_text", "text": ["菜单", "离开", "奇妙花宝"], "timeout": 12, "interval": 1.0 },
+                    { "type": "wait_text", "text": ["菜单", "离开", "奇妙花宝"], "timeout": 5, "interval": 1.0 },
                     { "type": "if_text",
                       "text": ["菜单", "离开", "奇妙花宝"],
                       "min_score": 0.4,

@@ -1,6 +1,6 @@
 {
     "name": "领取奖励",
-    "description": "领取奖励(含三个可用 if_config 开关): 功能1 claim_online【在线礼包】: 进面板->抽奖耗尽剩余次数(抽奖仅每日8时后开放, 用 if_time window=[8,23] 守卫, 0~7时整段跳过)->时间礼包从长到短领取->关闭; 功能2 claim_party【花灵派对】: navigate(公共注册表)进花灵派对->派对时长礼包->loop_text 有'领取'就点(领完按钮消失即停)->关闭; 功能3 claim_hb【奇妙花宝】: retry_loop(点-等-重试)进家园->点顶部工具栏'奇妙花宝'->点左侧'奇妙特权'页签->右侧'奇妙礼包'每日/每周/每月三档各自按区域限定绿勾判定是否已领, 未领则点该档圆形'领'按钮->关闭面板。任一开关设 false 则该功能整段跳过。",
+    "description": "领取奖励(含三个可用 if_config 开关): 功能1 claim_online【在线礼包】: 进面板->抽奖耗尽剩余次数(抽奖仅每日8时后开放, 用 if_time window=[8,23] 守卫, 0~7时整段跳过)->时间礼包从长到短领取->关闭; 功能2 claim_party【花灵派对】: navigate(公共注册表)进花灵派对->wait_text 载入守卫(面板可能仍在加载, 2026-10-05 日志 P4: 89% 加载中全屏仅 2 个 OCR 块)->派对时长礼包->loop_text 有'领取'就点(领完按钮消失即停)->关闭; 功能3 claim_hb【奇妙花宝】: retry_loop(点-等-重试)进家园->点顶部工具栏'奇妙花宝'->点左侧'奇妙特权'页签->右侧'奇妙礼包'每日/每周/每月三档各自按区域限定绿勾判定是否已领, 未领则点该档圆形'领'按钮->关闭面板。任一开关设 false 则该功能整段跳过。",
     "steps": [
         { "_note": "===== 0. 归位守卫（2026-10-02）=====" },
         { "_note": "领取奖励的三个功能入口(在线礼包/花灵派对/奇妙花宝)都只在家园主界面可见。此前 social 结束停在好友列表时, in_home 误判为主界面, ensure_home 直接收工 -> 本模块整段空跑(2026-10-02 日志: 奖励领取几乎全未触发)。故本模块首步强制归位。" },
@@ -32,7 +32,7 @@
                                   "then": [
                                       { "type": "click_text", "text": ["抽奖"], "min_score": 0.5, "region_rel": [0.55, 0.52, 0.70, 0.62], "delay": 1.0, "name": "抽奖(OCR)",
                                         "_note": "合规改造(2026-10-04, zcode-20261004-4): 实机采集发现抽奖钮**自带文字**「抽奖」(1080p 实测 s=0.67 @rel 0.6094,0.5685), 直坐标 (0.6102,0.5681) 废弃; region 限定在按钮带内" },
-                                      { "type": "wait_text", "text": ["点击任意处关闭"], "timeout": 8, "interval": 1.0 },
+                                      { "type": "wait_text", "text": ["点击任意处关闭"], "timeout": 5, "interval": 1.0 },
                                       { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭恭喜获得(OCR)",
                                         "_note": "合规改造: 弹窗有「点击任意处关闭」文字, 直坐标改 OCR 点击" }
                                   ] }
@@ -41,48 +41,23 @@
                       "else": [
                           { "type": "sleep", "seconds": 0.3 }
                       ] },
-                    { "type": "count_text",
-                      "text": ["已领取"],
-                      "threshold": 3,
-                      "region_rel": [0.13, 0.1, 0.6, 0.9],
-                      "then": [],
-                      "else": [
-                        { "type": "if_text",
-                          "text": ["50分钟"],
-                          "min_score": 0.5,
-                          "region_rel": [0.13, 0.6, 0.25, 0.75],
-                          "then": [
-                              { "type": "click_text", "text": ["领取"], "min_score": 0.4, "delay": 1.0, "name": "领取50分钟(自动连领30/10)",
-                                "region_rel": [0.08, 0.60, 0.35, 0.78],
-                                "_note": "合规改造: 直坐标改区域限定 OCR(按钮有「领取」文字; 行区域由 50分钟标签守卫)" },
-                              { "type": "wait_text", "text": ["点击任意处关闭"], "timeout": 8, "interval": 1.0 },
-                              { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭领取弹窗(OCR)" }
-                          ],
-                          "else": [
-                            { "type": "if_text",
-                              "text": ["30分钟"],
-                              "min_score": 0.5,
-                              "region_rel": [0.13, 0.38, 0.25, 0.53],
-                              "then": [
-                                  { "type": "click_text", "text": ["领取"], "min_score": 0.4, "delay": 1.0, "name": "领取30分钟(自动连领10)",
-                                    "region_rel": [0.08, 0.38, 0.35, 0.53] },
-                                  { "type": "wait_text", "text": ["点击任意处关闭"], "timeout": 8, "interval": 1.0 },
-                                  { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭领取弹窗(OCR)" }
-                              ],
-                              "else": [
-                                { "type": "if_text",
-                                  "text": ["10分钟"],
-                                  "min_score": 0.5,
-                                  "region_rel": [0.13, 0.14, 0.25, 0.3],
-                                  "then": [
-                                      { "type": "click_text", "text": ["领取"], "min_score": 0.4, "delay": 1.0, "name": "领取10分钟",
-                                        "region_rel": [0.08, 0.14, 0.35, 0.30] },
-                                      { "type": "wait_text", "text": ["点击任意处关闭"], "timeout": 8, "interval": 1.0 },
-                                      { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭领取弹窗(OCR)" }
-                                  ] }
-                              ] }
-                          ] }
-                      ] },
+                    { "_note": "时间礼包三行重构(2026-10-05, 协作区 zcode-20261005 S7 实机采集): 领取按钮=**礼盒本身**(纯图形, 无任何文字) —— 旧链 click_text[「领取」] 永远 MISS(10-04-3 合规改造误以为按钮有文字, 引入回归: 抽奖正常/领取礼包全灭), count_text[「已领取」]同因失效(永远 0 次) → 双双退役。用户授权代点实测: 可领态=彩色礼盒+右上红!角标+呼吸光效, 已领态=**礼盒灰化**(角标消失); 领取高档自动连领低档(50→30+10, 30→10, 用户口述+10分钟代点验证), 故按 50→30→10 顺序。og_giftXX 模板(紧盒体 130×104→87×69@1280, 中心=盒体=点击点)即判据即点击: 可领 0.998+(跨光效相位稳定, 光效在裁切外) / 已领灰盒 ≤0.970 / 跨档 ≤0.965 → 阈值 0.985, 未命中=不可领如实跳过。行 region 下移包住礼盒(旧区域是标签带, 盒中心 rel y 0.345/0.581/0.815 比标签低)。领取弹窗=标准奖励弹窗(恭喜获得@(0.5,0.237)/点击任意处关闭, 实拍 ~1s 弹出不自动关), 关闭**点标题区**防点击穿透(矿洞页实测: 点弹窗底部文字会穿透到底层 UI)" },
+                    { "type": "click_template", "template": "og_gift50.png", "threshold": 0.985,
+                      "region_rel": [0.08, 0.74, 0.40, 0.92], "delay": 2.0, "name": "领50分钟礼包(礼盒模板, 自动连领30/10)" },
+                    { "type": "wait_text", "text": ["恭喜获得"], "timeout": 3, "interval": 1.0 },
+                    { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
+                      "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" },
+                    { "type": "click_template", "template": "og_gift30.png", "threshold": 0.985,
+                      "region_rel": [0.08, 0.51, 0.40, 0.69], "delay": 2.0, "name": "领30分钟礼包(礼盒模板, 自动连领10)" },
+                    { "type": "wait_text", "text": ["恭喜获得"], "timeout": 3, "interval": 1.0 },
+                    { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
+                      "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" },
+                    { "type": "click_template", "template": "og_gift10.png", "threshold": 0.985,
+                      "region_rel": [0.08, 0.26, 0.40, 0.44], "delay": 2.0, "name": "领10分钟礼包(礼盒模板)" },
+                    { "type": "wait_text", "text": ["恭喜获得"], "timeout": 3, "interval": 1.0 },
+                    { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
+                      "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)",
+                      "_note": "三档各自独立判跳: 模板未命中(灰盒=已领/未到在线时长)则该档跳过, 其后 wait_text 最多空等 3s —— 全已领日整段最多多花 ~9s(对比坏链时代 24s+ 且功能全灭)" },
                     { "type": "close_dialog", "only_types": ["anchor_color"], "delay": 1.0, "name": "关闭在线礼包面板(锚点:在线礼包)",
                       "_note": "改走锚点: 注册表新增「在线礼包」anchor_color 条目(标题@(202,90) 右侧 dx 700~1100 找粉花✕@(1105,97))。不再用通用的 close_online_small.png(仅17×21、各面板同形✕、到处 0.94+ 会误命中)" },
                     { "type": "close_dialog", "only_types": ["anchor_color"], "delay": 1.0, "name": "复核再关一次" }
@@ -95,6 +70,8 @@
           "value": true,
           "then": [
               { "type": "navigate", "target": "花灵派对", "max_rounds": 3 },
+              { "type": "wait_text", "text": ["时长礼包", "每日任务"], "timeout": 3, "interval": 1.0,
+                "_note": "载入守卫(2026-10-05, 10-05 日志 P4; 同日用户复核定值 3s): navigate 命中后面板可能仍在加载 —— 当晚实测停在 89% 加载中, 全屏只有 2 个 OCR 块, 立即判定「时长礼包」必然 MISS → 6 个时长礼包全跳过。先等面板左侧导航出现再判定, 加载通常 3s 内完成; 超时只登记软失败不中止, 由下方 if_text 如实判定" },
               { "type": "if_text",
                 "text": ["时长礼包"],
                 "min_score": 0.4,
@@ -211,7 +188,9 @@
                       "op": "<",
                       "threshold": 1,
                       "then": [
-                          { "type": "click_rel", "rel": [0.9055, 0.2861], "delay": 2.0, "name": "领每日礼包" },
+                          { "type": "click_template", "template": "hb_claim.png", "threshold": 0.90,
+                            "region_rel": [0.84, 0.22, 0.98, 0.35], "delay": 2.0, "name": "领每日礼包(模板)",
+                            "_note": "合规改造(2026-10-05, zcode-20261005 S1/A8): 实机采集奇妙花宝-奇妙特权面板裁「领」圆钮模板 hb_claim.png(76px→51×51@1280基准, 三档同字形复用: 源图 1.000/每周档 0.975/每月档 0.990; 异图(其它界面)全屏最高 0.959 但均在各档 region 外, 且本步前置有 P0-1 面板守卫+绿勾守卫)。直坐标 (0.9055,0.2861) 废弃(规则6)。⚠ 模板取自『已领』态按钮(当日三档均绿✓, 领钮仍可见); 若『可领』态配色不同致低于阈值, 该档如实跳过 —— 首个可领日回归确认" },
                           { "type": "sleep", "seconds": 1.5 },
                           { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
                             "then": [ { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭恭喜获得(OCR)",
@@ -227,7 +206,9 @@
                       "op": "<",
                       "threshold": 1,
                       "then": [
-                          { "type": "click_rel", "rel": [0.9039, 0.4903], "delay": 2.0, "name": "领每周礼包" },
+                          { "type": "click_template", "template": "hb_claim.png", "threshold": 0.90,
+                            "region_rel": [0.84, 0.43, 0.98, 0.56], "delay": 2.0, "name": "领每周礼包(模板)",
+                            "_note": "同每日档: hb_claim.png 三档复用(每周档源图 0.975); 直坐标 (0.9039,0.4903) 废弃(规则6)" },
                           { "type": "sleep", "seconds": 1.5 },
                           { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
                             "then": [ { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭恭喜获得(OCR)",
@@ -243,7 +224,9 @@
                       "op": "<",
                       "threshold": 1,
                       "then": [
-                          { "type": "click_rel", "rel": [0.9000, 0.7208], "delay": 2.0, "name": "领每月礼包" },
+                          { "type": "click_template", "template": "hb_claim.png", "threshold": 0.90,
+                            "region_rel": [0.84, 0.66, 0.98, 0.79], "delay": 2.0, "name": "领每月礼包(模板)",
+                            "_note": "同每日档: hb_claim.png 三档复用(每月档源图 0.990); 直坐标 (0.9000,0.7208) 废弃(规则6)" },
                           { "type": "sleep", "seconds": 1.5 },
                           { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
                             "then": [ { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭恭喜获得(OCR)",
@@ -251,8 +234,10 @@
                       ] },
                     { "type": "if_text", "text": ["奇妙特权"], "min_score": 0.4,
                       "then": [
-                          { "type": "click_rel", "rel": [0.9731, 0.0356], "delay": 2.0,
-                            "name": "关闭奇妙花宝面板(右上粉色X)" }
+                          { "type": "click_template", "template": "hb_close.png", "threshold": 0.95,
+                            "region_rel": [0.92, 0.0, 1.0, 0.12], "delay": 2.0,
+                            "name": "关闭奇妙花宝面板(右上粉花✕模板)",
+                            "_note": "合规改造(2026-10-05, zcode-20261005 S1/A9): 实机采集右上✕裁 hb_close.png(68×64→45×43@1280基准, 源图 0.999); 直坐标 (0.9731,0.0356) 废弃(规则6)" }
                       ] }
                 ] }
           ],

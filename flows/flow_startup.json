@@ -69,8 +69,8 @@
                     { "type": "sleep", "seconds": 3.0 }
                 ] }
           ] },
-        { "_note": "收尾守卫: 先等主界面加载完再判断, 否则加载中会被误判成『没进去』而盲点关闭按钮" },
-        { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 25, "interval": 1.5 },
+        { "_note": "收尾守卫: 先等主界面加载完再判断, 否则加载中会被误判成『没进去』而盲点关闭按钮。等待定值 2026-10-05 按用户规则 25s→10s(全项目长等待整改, 见 zcode-20261005 REPORT §5)" },
+        { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 10, "interval": 1.5 },
         { "type": "if_text",
           "text": ["社交", "家园", "仙境花园"],
           "min_score": 0.4,
@@ -80,7 +80,7 @@
               { "_note": "第1轮脱困-尝试: 关掉挡屏弹窗(公告/更新提示等)后再点一次进入游戏" },
               { "type": "close_dialog", "delay": 1.5 },
               { "type": "click_text", "text": ["点击进入游戏", "进入游戏"], "delay": 2.5 },
-              { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 20, "interval": 1.5 },
+              { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 10, "interval": 1.5 },
               { "type": "if_text",
                 "text": ["社交", "家园", "仙境花园"],
                 "min_score": 0.4,
@@ -90,7 +90,7 @@
                     { "_note": "第2轮脱困-尝试: 再关一次弹窗并补点一次" },
                     { "type": "close_dialog", "delay": 1.5 },
                     { "type": "click_text", "text": ["点击进入游戏", "进入游戏"], "delay": 2.5 },
-                    { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 20, "interval": 1.5 },
+                    { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 10, "interval": 1.5 },
                     { "type": "if_text",
                       "text": ["社交", "家园", "仙境花园"],
                       "min_score": 0.4,

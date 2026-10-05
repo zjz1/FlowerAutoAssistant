@@ -60,7 +60,7 @@ PAGE_CROP = [0.44, 0.90, 0.60, 0.97]             # 页码胶囊裁剪框(2026-10
 ROW_TOP_REL, ROW_STEP_REL = 0.1375, 0.1347        # 好友行结构(实测)
 MERGE_Y_REL = 0.0764                              # 同一标记的 y 聚类去重阈值
 
-LIST_MARKS = ("删除好友", "好友设置")             # 好友列表存在性判据
+LIST_MARKS = ("删除好友", "好友设置")             # 好友列表存在性判据(2026-10-05 已迁至 scenes.json「好友列表」, 常量保留供参考)
 CATEGORIES = ("密友", "好友")
 
 
@@ -178,47 +178,42 @@ def adb_key(code):
 
 
 def in_list(eng, img=None):
-    """好友列表判据。⚠ 本体每次 locate 都会重跑一遍整图 OCR, 故多个关键字合成**一次**调用。"""
-    img = img if img is not None else eng.screenshot()
-    return eng.locate(list(LIST_MARKS), img=img, min_score=0.4) is not None
+    """好友列表判据(2026-10-05 迁移至场景注册表): scenes.json「好友列表」=「删除好友」「好友设置」
+    任一命中即算(原 LIST_MARKS 常量判据原样迁入, 本函数保留为兼容入口)。"""
+    return eng.judge_scene("好友列表", img=img)
 
 
 def in_home(eng, img=None):
-    """自己家园主界面判据: 有「社交」**且不在好友列表**。
+    """自己家园主界面判据: 「户外主界面」场景(底部导航「社交」可见) **且不在好友列表**。
 
     ⚠ 旧版只判「社交」二字 → 好友列表页也含该字样, 于是被误判成"已在主界面";
       2026-10-02 日志: social 结束停在好友列表, ensure_home 直接收工,
       claim 整段(5 分钟)在好友列表上空跑, 三个功能几乎全未触发。
+    ⚠ 2026-10-05 起底层走 scenes.json「户外主界面」(社交/家园/仙境花园, 锚点=社交)。
     """
     img = img if img is not None else eng.screenshot()
     if in_list(eng, img):
         return False
-    return has(eng, "社交", img=img)
+    return eng.judge_scene("户外主界面", img=img)
 
 
 def in_garden(eng, img=None):
-    """好友花园判据: 有「快捷操作」**且没有**「勇气国花园」(排除法)。
+    """好友花园判据(2026-10-05 场景注册表版): 「家园界面」场景命中 **且没有**「勇气国花园」。
 
-    ⚠ 实测(2026-09-22)发现:
-      ① 自己家园主界面底部**也有「快捷操作」按钮**(851,676), 与好友花园位置完全一致
-         → 仅判「快捷操作」会把主界面误判为好友花园, ensure_home 反复点「离开」死循环;
-      ② 好友花园左下角地图名**每个好友各不相同**(失落的遗迹家园/神罚之地·暗/之城家园…),
-         → 不能写死任一好友花园名作判据。
-    可靠规律(多次实测): 自己家园左下角固定显示「勇气国花园」, 好友花园永不显示。
-    故好友花园 = 「快捷操作」命中 且 「勇气国花园」不命中。
-
-    ⚠ 性能: 用**一次** ocr_image 取全图块再就地判断两个关键词,
-      避免两次 locate(每次全图 OCR) —— wait_until 高频轮询时判定成本减半。
+    ⚠ 判据来源(2026-10-05 用户口述): 家园界面 = 右下角 快捷操作/种植箱/一键种植/离开/地图
+      + 左上角 菜单/奇妙花宝/园艺店, 「一键种植」或「菜单」其一命中再任意两钮即算 ——
+      已录入 flows/common/scenes.json「家园界面」条目。
+    ⚠ 好友家园与自己家园无可辨差异(用户 2026-10-05), 业务上不区分谁的家;
+      本函数保留「排除自己家园」语义, 仅供回家链(ensure_home/leave_garden)决定是否点「离开」。
+      排除法仍靠左下角地图名「勇气国花园」(自己家园恒显示, 好友花园永不显示,
+      2026-09-22 多次实测; 不能写死任一好友花园名作判据)。
+    ⚠ 性能: judge_scene 一次全图 OCR 判完全部锚点; 「勇气国花园」复核走引擎帧缓存,
+      不再产生第二次整图识别。
     """
     img = img if img is not None else eng.screenshot()
-    kc, yq = False, False
-    for b in ocr_image(img):
-        t = b.get("text", "")
-        if "快捷操作" in t:
-            kc = True
-        if "勇气国花园" in t:
-            yq = True
-    return kc and not yq
+    if not eng.judge_scene("家园界面", img=img):
+        return False
+    return not has(eng, "勇气国花园", img=img)
 
 
 def in_family_panel(eng, img=None):
@@ -319,7 +314,7 @@ def ensure_home(eng):
             continue
         if has(eng, "确定", img=img) and has(eng, "抱歉", img=img):
             print(f"  [主界面] 关提示框 click_text(['确定']) -> {eng.click_text(['确定'])}")
-            wait_until(eng, lambda: not has(eng, "抱歉"), 45, desc="提示框关闭")
+            wait_until(eng, lambda: not has(eng, "抱歉"), 5, desc="提示框关闭")
             continue
         if in_garden(eng, img):
             leave_garden(eng)
@@ -422,7 +417,7 @@ def leave_garden(eng):
         if wait_screen_change(eng, img, desc=f"点离开(第{i}次)"):
             break
         print(f"  [离开] 第{i}次点击后画面无变化(吞点击), 重试")
-    ok = wait_until(eng, lambda: in_home(eng) and not in_garden(eng), 30, desc="回到自己家园")
+    ok = wait_until(eng, lambda: in_home(eng) and not in_garden(eng), 10, desc="回到自己家园")
     if ok:
         eng.set_scene("家园主界面")
     return ok
@@ -459,14 +454,14 @@ def leave_friend_list(eng):
             eng.click_abs(pt.x, pt.y)
         else:
             print(f"  [列表] 第{i}次: »钮模板未命中(friendlist_exit), 直接试底部栏「离开」")
-        if wait_until(eng, lambda: not in_list(eng), 15, desc=f"关闭好友列表(第{i}次)"):
+        if wait_until(eng, lambda: not in_list(eng), 5, desc=f"关闭好友列表(第{i}次)"):
             return True
         img = eng.screenshot()
         pt = eng.locate(["离开"], img=img, region_rel=[0.70, 0.88, 1.0, 1.0], min_score=0.5)
         if pt is not None:
             print(f"  [列表] 底部栏定位「离开」({pt.x},{pt.y})")
             eng.click_abs(pt.x, pt.y)
-            if wait_until(eng, lambda: not in_list(eng), 15, desc=f"离开好友列表(第{i}次)"):
+            if wait_until(eng, lambda: not in_list(eng), 5, desc=f"离开好友列表(第{i}次)"):
                 return True
     ok = not in_list(eng)
     if not ok:
@@ -476,11 +471,16 @@ def leave_friend_list(eng):
 
 
 def open_friend_list(eng):
-    """开好友列表。起点可以是**自己家园主界面**, 也可以是**好友花园** —— 两处底部都有「社交」,
+    """开好友列表。起点可以是**自己家园主界面**, 也可以是**好友花园** —— 两处底部都有「社交」
+    (用户 2026-10-05 确认: 好友家园与自己家园**按钮一致**, 无需回自己家园再开列表),
     采完粉不必先回自己家园, 直接在好友花园里开列表去下一个目标。
 
     ⚠ 点「社交」只弹出**面板**(不是列表), 必须再点面板内的「好友」才进列表;
       早期版本点完「社交」直接等列表出现, 每次都白等 60s。
+    ⚠ 2026-10-05 日志「社交面板 超时」×26 的根因 = 好友花园内「社交」被**临时遮挡**
+      (底部 NPC 对话气泡@(602,679) / 中央活动横幅), OCR 暂时读不到 —— 靠点-验-重试自然恢复
+      (气泡会轮走), 不做「先回家再开」绕路(用户裁定: 按钮一致, 绕路不合理)。
+      面板等待已按定值规则 15s→5s, 空转代价同步压缩。
     """
     for attempt in range(1, 4):
         if stop_requested():
@@ -493,10 +493,10 @@ def open_friend_list(eng):
         pt = _panel_friend_pt(eng, img)
         if pt is None:
             if in_home(eng, img) or in_garden(eng, img):
-                where = "自己家园" if in_home(eng, img) else "好友花园"
-                # 点-验-重试(2026-10-04, 协作区 zcode-20261004): 「社交」点击常被吞,
-                # 旧逻辑点完 blind 等 30s 面板 —— 吞了也干等(当晚 5m53s 大卡点的主因之一)。
-                # 现改为: 点击 → 画面 5s 内必须变化, 无变化立即重试; 面板等待 30s→15s。
+                # 自己家园/好友花园按钮一致(用户 2026-10-05), 统一处理:
+                # 点-验-重试(2026-10-04 引入): 「社交」点击常被吞/被气泡遮挡 —— 点击后画面
+                # 5s 内必须变化, 无变化立即重点(至多 3 次); 面板等待 15s→5s(定值规则)。
+                where = "好友花园" if in_garden(eng, img) else "自己家园"
                 print(f"  [列表] 第{attempt}次 在{where} 点「社交」")
                 for i in range(1, 4):
                     if stop_requested():
@@ -505,8 +505,8 @@ def open_friend_list(eng):
                     eng.click_text(["社交"])
                     if wait_screen_change(eng, pre, desc=f"点「社交」(第{i}次)", timeout=5):
                         break
-                    print(f"  [列表] 点「社交」后画面无变化(吞点击), 重试")
-                wait_until(eng, lambda: _panel_friend_pt(eng) is not None, 15, desc="社交面板")
+                    print(f"  [列表] 点「社交」后画面无变化(吞点击/被遮挡), 重试")
+                wait_until(eng, lambda: _panel_friend_pt(eng) is not None, 5, desc="社交面板")
                 pt = _panel_friend_pt(eng)
             else:
                 print(f"  [列表] 第{attempt}次: 场景未知, 先回自己家园")
@@ -515,7 +515,7 @@ def open_friend_list(eng):
         if pt is not None:
             print(f"  [列表] 点社交面板内「好友」({pt.x},{pt.y})")
             eng.click_abs(pt.x, pt.y)
-            if wait_until(eng, lambda: in_list(eng), 60, desc="好友列表出现"):
+            if wait_until(eng, lambda: in_list(eng), 5, desc="好友列表出现"):
                 eng.set_scene("好友列表")
                 return True
         # 兜底: 列表已在(只是标记未识别)时, 点右侧竖排页签「好友」
@@ -523,7 +523,7 @@ def open_friend_list(eng):
         if pt is not None:
             print(f"  [列表] 点右侧页签「好友」({pt.x},{pt.y})")
             eng.click_abs(pt.x, pt.y)
-            if wait_until(eng, lambda: in_list(eng), 60, desc="好友列表出现"):
+            if wait_until(eng, lambda: in_list(eng), 5, desc="好友列表出现"):
                 eng.set_scene("好友列表")
                 return True
     print("  [列表] 打开好友列表失败")
@@ -606,7 +606,7 @@ def open_jump_dialog(eng):
         return False
     print(f"  [翻页] 点「跳」按钮 ({pt.x},{pt.y})")
     eng.click_abs(pt.x, pt.y)
-    return wait_until(eng, lambda: has(eng, "跳转页签"), 60, desc="跳转页签对话框")
+    return wait_until(eng, lambda: has(eng, "跳转页签"), 5, desc="跳转页签对话框")
 
 
 def _jump_once(eng, n):
@@ -654,7 +654,7 @@ def goto_page(eng, n, tries=3):
         print(f"  [翻页] 第{i}次尝试 -> 第{n}页")
         if not _jump_once(eng, n):
             continue
-        if wait_until(eng, lambda: (read_page(eng) or (0, 0))[0] == n, 45, desc=f"第{n}页"):
+        if wait_until(eng, lambda: (read_page(eng) or (0, 0))[0] == n, 5, desc=f"第{n}页"):
             return True
     print(f"  [翻页] 重试 {tries} 次仍未到第 {n} 页")
     return False
@@ -717,7 +717,7 @@ def collect_one(eng, x, y):
             break
         print(f"  [采集] 第{i}次点击家园图标")
         eng.click_abs(hx, hy)
-        if wait_until(eng, lambda: in_garden(eng), 45, desc=f"进入好友花园(第{i}次)"):
+        if wait_until(eng, lambda: in_garden(eng), 15, desc=f"进入好友花园(第{i}次)"):
             entered = True
             break
         time.sleep(2)                      # 输入队列延迟宽限: 点击可能刚落地
@@ -749,7 +749,7 @@ def collect_one(eng, x, y):
     opened = False
     for i in range(1, 4):
         eng.click_text(["快捷操作"])
-        if wait_until(eng, lambda: has(eng, "采粉"), 45, desc=f"快捷操作菜单(第{i}次)"):
+        if wait_until(eng, lambda: has(eng, "采粉"), 5, desc=f"快捷操作菜单(第{i}次)"):
             opened = True
             break
     if not opened:
@@ -762,10 +762,10 @@ def collect_one(eng, x, y):
     # ⚠ 性能(2026-10-02): 原固定轮询等 45s; 改为「首帧比对、变化即返回」+ 上限 20s ——
     #   菜单收起/弹窗弹出都会让画面显著变化, 变化后只做一次确认 OCR 即可判定。
     base = eng.screenshot()
-    changed = wait_until(eng, lambda: frame_diff(base, eng.screenshot()) >= 0.02, 20,
+    changed = wait_until(eng, lambda: frame_diff(base, eng.screenshot()) >= 0.02, 5,
                          desc="点采粉后画面变化", interval=0.5)
     if not changed:
-        print("    [采集] 点采粉后 20s 画面无变化(点击可能被吞), 本槽位跳过")
+        print("    [采集] 点采粉后 5s 画面无变化(点击可能被吞/被气泡遮挡), 本槽位跳过")
         return "fail"
     img = eng.screenshot()
     empty = has(eng, "抱歉", img=img, min_score=0.3) and has(eng, "确定", img=img, min_score=0.3)

@@ -1,6 +1,6 @@
 {
     "name": "体力任务",
-    "description": "navigate(公共导航注册表 entries.json)进入闪耀变身 -> loop_fraction: 读顶栏算 n=ceil((b-a)/57) 与 m=floor(a/20)，取 m=min(m,n)（均<=0不循环），once 点光偶像进星光偶像，再按 m 次重复 do(若区域有成为最闪耀明星则点速通->点确定->等结算确认->点确认)。收尾归位: loop 结束会停在『星光偶像/结算』子面板, 必须确认回到主界面(底部『社交』/『家园』/『仙境花园』)或家园(左上『菜单』/『离开』/『奇妙花宝』), 否则脱困一次-尝试-不行再脱困, 最多两轮; 仍不行如实报出, 不假装成功。",
+    "description": "navigate(公共导航注册表 entries.json)进入闪耀变身 -> loop_fraction: 读顶栏算 n=ceil((b-a)/57) 与 m=floor(a/20)，取 m=min(m,n)（均<=0不循环），once 用 retry_loop 点光偶像进星光偶像（入口页可能卡在加载占位画面致「光偶像」OCR 短暂不可见——2026-10-05 用户反馈: 活动实际不会显示「暂未开启」, 该态即加载中, 等约 3s 即载入完成; 故未命中每轮只等 3s 再试, 点中即停），再按 m 次重复 do(若区域有成为最闪耀明星则点速通->点确定->等结算确认->点确认)。收尾归位: loop 结束会停在『星光偶像/结算』子面板, 必须确认回到主界面(底部『社交』/『家园』/『仙境花园』)或家园(左上『菜单』/『离开』/『奇妙花宝』), 否则脱困一次-尝试-不行再脱困, 最多两轮; 仍不行如实报出, 不假装成功。",
     "steps": [
         { "type": "navigate", "target": "闪耀变身", "max_rounds": 3 },
         { "type": "loop_fraction",
@@ -11,7 +11,10 @@
           "combine": "min",
           "max_loop": 30,
           "once": [
-              { "type": "click_text", "text": ["光偶像"], "delay": 1.5 }
+              { "type": "retry_loop", "max_rounds": 3,
+                "_note": "入口载入重试(2026-10-05 用户反馈修正, 协作区 zcode-20261005): 10-05 日志中「暂未开启@(139,627)」实为**加载占位画面**, 非活动关闭态 —— 用户确认体力活动不会显示「暂未开启」, 加载约 3s 即完成, 加载中「光偶像」OCR 不可见导致点击失败。故改为 retry_loop: 点中(mark, 真实 OCR 命中)即退出; 未命中每轮只 sleep 3s 再试(3 轮 ≈ 9s, 覆盖加载窗口), 不再用 5 轮 do × 25s 超时白等。3 轮全空才如实上报软失败",
+                "do": [ { "type": "click_text", "text": ["光偶像"], "mark": true, "delay": 1.5 } ],
+                "fail_do": [ { "type": "sleep", "seconds": 3.0 } ] }
           ],
           "do": [
               { "type": "if_text",
@@ -22,7 +25,7 @@
                     { "type": "click_text", "text": ["速通"], "delay": 1.5 }
                 ] },
               { "type": "click_text", "text": ["确定"], "delay": 1.2 },
-              { "type": "wait_text", "text": ["确认", "确定"], "timeout": 25, "interval": 1.0 },
+              { "type": "wait_text", "text": ["确认", "确定"], "timeout": 5, "interval": 1.0 },
               { "type": "click_text", "text": ["确认", "确定"], "delay": 1.0 },
               { "type": "sleep", "seconds": 1.0 }
           ] },
@@ -41,7 +44,7 @@
                 "else": [
                     { "_note": "第1轮脱困-尝试: 关掉子面板/弹窗后重新判定" },
                     { "type": "close_dialog", "delay": 1.5 },
-                    { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 10, "interval": 1.0 },
+                    { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 5, "interval": 1.0 },
                     { "type": "if_text",
                       "text": ["社交", "家园", "仙境花园"],
                       "min_score": 0.4,
@@ -56,7 +59,7 @@
                             "else": [
                                 { "_note": "第2轮脱困-尝试" },
                                 { "type": "close_dialog", "delay": 1.5 },
-                                { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 10, "interval": 1.0 },
+                                { "type": "wait_text", "text": ["社交", "家园", "仙境花园"], "timeout": 5, "interval": 1.0 },
                                 { "type": "if_text",
                                   "text": ["社交", "家园", "仙境花园"],
                                   "min_score": 0.4,

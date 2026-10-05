@@ -1,54 +1,53 @@
 {
   "version": 1,
-  "description": "公共「进入目标界面」导航注册表。流程步骤 `{\"type\":\"navigate\",\"target\":\"<名称>\"}` 引用。每个 target 定义: scene(进入后点击记录归属场景), mark_text(目标按钮文字, 命中即成功), mark_fallback_rel(目标按钮回退坐标), max_rounds(脱困重试轮数,默认3), nav(未直接看到目标时的多层导航链, 用引擎标准步骤 schema, 内层点到目标的 click_text 带 mark:true)。",
+  "description": "公共「进入目标界面」导航注册表。流程步骤 `{\"type\":\"navigate\",\"target\":\"<名称>\"}` 引用。每个 target 定义: scene(进入后点击记录归属场景), mark_text(目标按钮文字, 命中即成功), max_rounds(脱困重试轮数,默认3), nav(未直接看到目标时的多层导航链, 用引擎标准步骤 schema, 内层点到目标的 click_text 带 mark:true)。",
+  "_note_20261005": "合规清理(协作区 zcode-20261005, A13 及其扩展): ① 三个 target 的 mark_fallback_rel 全删 —— 主界面活动图标**每日轮换**, KB 历史坐标已过期(2026-10-04 组2 实测花灵派对图标已不在该位), 且 navigate 自带 mark_text OCR 探测 + 多层 nav 链重试 + 轮末 close_dialog 脱困, fallback 属多余; ② nav 链内 click_text 的 fallback_rel 全删(社交/家族/家族活动/菜单/家园/闪耀变身/花灵派对均为标准文字按钮, OCR 可达, 属 B 类) —— OCR 未命中就不点, 由 navigate 下一轮脱困重试如实处理。至此本注册表内不再有任何直接坐标; flows 内亦已无任何 click_rel 步骤(奇妙花宝 4 处已随 S1 实机采集模板化, 同批 §7)。",
   "targets": {
     "家族活动": {
       "scene": "家族活动界面",
       "mark_text": ["家族活动"],
-      "mark_fallback_rel": [0.0773, 0.4569],
       "max_rounds": 3,
       "nav": [
         { "type": "if_text", "text": ["家族"], "min_score": 0.4,
           "region_rel": [0.25, 0.6, 0.45, 0.92],
           "then": [
-            { "type": "click_text", "text": ["家族"], "exact": true, "fallback_rel": [0.3305, 0.8264], "delay": 1.5 },
+            { "type": "click_text", "text": ["家族"], "exact": true, "delay": 1.5 },
             { "type": "sleep", "seconds": 1.5 },
-            { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5, "fallback_rel": [0.0773, 0.4569] }
+            { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5 }
           ],
           "else": [
-            { "type": "click_text", "text": ["社交"], "fallback_rel": [0.3312, 0.9486], "delay": 1.5 },
+            { "type": "click_text", "text": ["社交"], "delay": 1.5 },
             { "type": "sleep", "seconds": 1.5 },
-            { "type": "click_text", "text": ["家族"], "exact": true, "fallback_rel": [0.3305, 0.8264], "delay": 1.5 },
+            { "type": "click_text", "text": ["家族"], "exact": true, "delay": 1.5 },
             { "type": "sleep", "seconds": 1.5 },
-            { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5, "fallback_rel": [0.0773, 0.4569] }
+            { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5 }
           ] }
       ]
     },
     "闪耀变身": {
       "scene": "体力界面",
       "mark_text": ["闪耀变身"],
-      "mark_fallback_rel": [0.105, 0.625],
       "max_rounds": 3,
       "nav": [
         { "type": "if_text", "text": ["菜单"], "min_score": 0.4,
           "then": [
-            { "type": "click_text", "text": ["菜单"], "fallback_rel": [0.054, 0.081], "delay": 1.5 },
+            { "type": "click_text", "text": ["菜单"], "delay": 1.5 },
             { "type": "sleep", "seconds": 1.0 },
             { "type": "if_text", "text": ["闪耀变身"], "min_score": 0.4,
               "then": [
-                { "type": "click_text", "text": ["闪耀变身"], "mark": true, "delay": 1.5, "fallback_rel": [0.105, 0.625] }
+                { "type": "click_text", "text": ["闪耀变身"], "mark": true, "delay": 1.5 }
               ] }
           ],
           "else": [
             { "type": "if_text", "text": ["家园"], "min_score": 0.4,
               "then": [
-                { "type": "click_text", "text": ["家园"], "fallback_rel": [0.872, 0.95], "delay": 1.5 },
+                { "type": "click_text", "text": ["家园"], "delay": 1.5 },
                 { "type": "sleep", "seconds": 1.0 },
-                { "type": "click_text", "text": ["菜单"], "fallback_rel": [0.054, 0.081], "delay": 1.5 },
+                { "type": "click_text", "text": ["菜单"], "delay": 1.5 },
                 { "type": "sleep", "seconds": 1.0 },
                 { "type": "if_text", "text": ["闪耀变身"], "min_score": 0.4,
                   "then": [
-                    { "type": "click_text", "text": ["闪耀变身"], "mark": true, "delay": 1.5, "fallback_rel": [0.105, 0.625] }
+                    { "type": "click_text", "text": ["闪耀变身"], "mark": true, "delay": 1.5 }
                   ] }
               ] }
           ] }
@@ -57,28 +56,27 @@
     "花灵派对": {
       "scene": "花灵派对界面",
       "mark_text": ["花灵派对"],
-      "mark_fallback_rel": [0.1859, 0.7528],
       "max_rounds": 3,
       "nav": [
         { "type": "if_text", "text": ["菜单"], "min_score": 0.4,
           "then": [
-            { "type": "click_text", "text": ["菜单"], "fallback_rel": [0.054, 0.081], "delay": 1.5 },
+            { "type": "click_text", "text": ["菜单"], "delay": 1.5 },
             { "type": "sleep", "seconds": 1.0 },
             { "type": "if_text", "text": ["花灵派对"], "min_score": 0.4,
               "then": [
-                { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5, "fallback_rel": [0.1859, 0.7528] }
+                { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5 }
               ] }
           ],
           "else": [
             { "type": "if_text", "text": ["家园"], "min_score": 0.4,
               "then": [
-                { "type": "click_text", "text": ["家园"], "fallback_rel": [0.872, 0.95], "delay": 1.5 },
+                { "type": "click_text", "text": ["家园"], "delay": 1.5 },
                 { "type": "sleep", "seconds": 1.0 },
-                { "type": "click_text", "text": ["菜单"], "fallback_rel": [0.054, 0.081], "delay": 1.5 },
+                { "type": "click_text", "text": ["菜单"], "delay": 1.5 },
                 { "type": "sleep", "seconds": 1.0 },
                 { "type": "if_text", "text": ["花灵派对"], "min_score": 0.4,
                   "then": [
-                    { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5, "fallback_rel": [0.1859, 0.7528] }
+                    { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5 }
                   ] }
               ] }
           ] }

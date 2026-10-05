@@ -41,6 +41,7 @@ TEMPLATE_DIR = Path(__file__).parent / "resource" / "template"
 # 公共「进入目标界面」导航注册表(flows/common/entries.json), 供 navigate 步骤按 target 查进入链。
 # 子目录不被 load_flows() 扫入主流程列表(load_flows 只 glob 顶层 *.json), 故作为公共资源单独加载。
 NAV_ENTRIES_PATH = FLOW_DIR / "common" / "entries.json"
+NAV_SCENES_PATH = FLOW_DIR / "common" / "scenes.json"
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +173,7 @@ class OCREngine:
         if "ocr_threads" in self.config:  # RapidOCR 每会话线程数 (0=不限制; 缺省 2, 见 ocr_ui.py)
             set_thread_limit(self.config.get("ocr_threads"))
         self._navigation: dict = self._load_navigation()  # 公共「进入目标界面」注册表 (navigate 步骤用)
+        self._scenes: dict = self._load_scenes()          # 公共「场景判断」注册表 (judge_scene/if_scene 用)
         self._rr_hit = False  # retry_loop 本轮命中标记 (仅「真实识别命中」置真, 缓存回退不计)
         self._last_locate_source: str | None = None  # 上一次定位来源: ocr/anchor/color/template/fallback
         self._scene: str = "未分类"  # 当前界面场景 (流程步骤可声明, 默认未分类)
@@ -199,6 +201,119 @@ class OCREngine:
         except Exception as e:
             print(f"[导航注册表加载失败] {e}")
         return {}
+
+    def _load_scenes(self) -> dict:
+        """加载公共「场景判断」注册表。返回 {"scenes": {场景名: {description, markers, any_of, min_total}}}。"""
+        try:
+            if NAV_SCENES_PATH.exists():
+                with open(NAV_SCENES_PATH, encoding="utf-8") as fp:
+                    data = json.load(fp)
+                    return data if isinstance(data, dict) else {}
+        except Exception as e:
+            print(f"[场景注册表加载失败] {e}")
+        return {}
+
+    # ---- 场景判断 (继 OCR 判断 / template 判断后的第三种判定, 2026-10-05 用户定立) ----
+    # 判定条件完全声明在 flows/common/scenes.json 每个场景的 rule 条件树里(JSON 声明式,
+    # 改条件/加场景不动引擎代码, 条件树可整体复制迁移到其它场景甚至其它项目):
+    #   {"op":"hit",   "kw":"X",              "region_rel"?}  单关键字命中(子串包含)
+    #   {"op":"any",   "kws":[...],           "region_rel"?}  至少其一命中
+    #   {"op":"all",   "kws":[...],           "region_rel"?}  全部命中
+    #   {"op":"count", "kws":[...],"min":N,"max":M,"region_rel"?}  命中数落在 [min,max]
+    #   {"op":"absent","kws":[...],           "region_rel"?}  关键字均不出现(排除法)
+    #   {"op":"and","conds":[...]} / {"op":"or","conds":[...]} / {"op":"not","cond":{...}}
+    # region_rel=[x1,y1,x2,y2](0~1, 相对截图宽高)限定该叶子条件的判定区域。
+    # 兼容旧版简写 schema(markers/any_of/min_total): 无 rule 时自动编译为等价条件树。
+    @staticmethod
+    def _rule_kws(cond) -> set:
+        """收集条件树引用的全部关键字(仅用于日志展示命中集)。"""
+        op = cond.get("op")
+        if op in ("and", "or"):
+            out: set = set()
+            for c in cond.get("conds", []):
+                out |= OCREngine._rule_kws(c)
+            return out
+        if op == "not":
+            return OCREngine._rule_kws(cond.get("cond") or {})
+        kws = set(cond.get("kws") or [])
+        if cond.get("kw"):
+            kws.add(cond["kw"])
+        return kws
+
+    @staticmethod
+    def _compile_legacy_scene(entry: dict) -> dict:
+        """旧版简写(markers/any_of/min_total) → 等价条件树, 保证旧条目继续可用。"""
+        markers = list(entry.get("markers") or [])
+        any_of = list(entry.get("any_of") or markers)
+        min_total = entry.get("min_total", 1)
+        conds = [{"op": "any", "kws": any_of}]
+        if min_total > 1 and markers:
+            conds.append({"op": "count", "kws": markers, "min": min_total})
+        return conds[0] if len(conds) == 1 else {"op": "and", "conds": conds}
+
+    def _scene_blocks(self, img, min_score: float) -> list:
+        """场景判定的 OCR 块(一次全图识别, 引擎帧缓存复用)。"""
+        return [b for b in self._ocr_frame(img)[0] if b.get("score", 1) >= min_score]
+
+    @staticmethod
+    def _kw_hits(blocks: list, kws, region=None) -> set:
+        """返回 kws 中命中的子集(子串包含)。region=(x1,y1,x2,y2) 绝对像素, 限定块中心。"""
+        if region is not None:
+            x1, y1, x2, y2 = region
+            blocks = [b for b in blocks
+                      if x1 <= b.get("center", [0, 0])[0] <= x2
+                      and y1 <= b.get("center", [0, 0])[1] <= y2]
+        texts = [b.get("text", "") for b in blocks]
+        return {kw for kw in kws if any(kw in t for t in texts)}
+
+    def _eval_rule(self, cond, blocks) -> bool:
+        """递归求值条件树。叶子节点带 region_rel 时按截图宽高换算为绝对像素区域。"""
+        op = cond.get("op")
+        if op in ("and", "or"):
+            conds = cond.get("conds", [])
+            if op == "and":
+                return all(self._eval_rule(c, blocks) for c in conds)
+            return any(self._eval_rule(c, blocks) for c in conds)
+        if op == "not":
+            return not self._eval_rule(cond.get("cond") or {}, blocks)
+        region = None
+        rr = cond.get("region_rel")
+        if rr and self.screen_w and self.screen_h:
+            region = (rr[0] * self.screen_w, rr[1] * self.screen_h,
+                      rr[2] * self.screen_w, rr[3] * self.screen_h)
+        kws = list(cond.get("kws") or [])
+        if cond.get("kw"):
+            kws.append(cond["kw"])
+        hits = self._kw_hits(blocks, kws, region)
+        if op in ("hit", "any"):
+            return bool(hits)
+        if op == "all":
+            return len(hits) >= len(kws) if kws else False
+        if op == "count":
+            n = len(hits)
+            return n >= cond.get("min", 0) and (cond.get("max") is None or n <= cond["max"])
+        if op == "absent":
+            return not hits
+        print(f"[场景判断] 未知条件 op='{op}', 按 MISS")
+        return False
+
+    def judge_scene(self, name: str, img=None, min_score: float = 0.4) -> bool:
+        """按 flows/common/scenes.json 注册表判定当前画面是否为指定场景(第三种判定)。
+        判定条件 = 注册表里该场景的 rule 条件树(JSON 声明式, 改条件不动代码, ops 见类头注释);
+        旧版简写(markers/any_of/min_total)自动编译为等价条件树。未注册场景按 MISS(不抛错)。"""
+        entry = self._scenes.get("scenes", {}).get(name)
+        if not entry:
+            print(f"[场景判断] 场景『{name}』未在 scenes.json 注册, 按 MISS")
+            return False
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return False
+        rule = entry.get("rule") or self._compile_legacy_scene(entry)
+        blocks = self._scene_blocks(img, min_score)
+        hits = self._kw_hits(blocks, self._rule_kws(rule))
+        ok = self._eval_rule(rule, blocks)
+        print(f"[场景判断] {name}: 命中{len(hits)}处{sorted(hits)} -> {'HIT' if ok else 'MISS'}")
+        return ok
 
     # ---- 用户配置 (data/config.json) ----
     def _load_config(self) -> dict:
@@ -1371,9 +1486,12 @@ class OCREngine:
         整体缩放 —— 720p 下行为与旧版完全一致; 1080p 等更高分辨率自动等效放大搜索尺度
         (实测 close_family 在 1080p 需 scale≈1.5, 旧版 0.7~1.0 全部漏检)。
         metric(2026-10-03): "sqdiff"(默认, 与旧版一致) | "ccoeff"。可选能力, 本项目模板
-        (同源截图裁切)实测 sqdiff 即精确命中(b1_switch_down 全尺度 0.99+, 无假阳性);
-        ccoeff 保留给「模板与当前背景明暗相反」的场景(相关系数对亮度偏移不敏感,
-        实测同模板跨底色时 sqdiff 仍准而 ccoeff 为负相关)。
+        (同源截图裁切)实测 sqdiff 即精确命中(里程碑77 七块新模板 源图 0.99+ / 异图 0.33~0.99
+        均低于各自阈值, 无假阳性; 早期引用的 b1_switch_down 已随登录页改版失效, 不再作证据);
+        ccoeff 保留给「模板与当前背景明暗相反」的场景(相关系数对亮度偏移不敏感)。
+        ⚠ 取分注意(2026-10-04 教训): TM_SQDIFF_NORMED 的结果图要取 minMaxLoc 的
+        minVal/minLoc 才是最佳命中, 误用 maxVal/maxLoc 会把最差点当成命中 ——
+        分析脚本与流程代码各踩过一次; 自测先怀疑自己的解包, 再下「假阳性」结论。
         """
         import cv2
         import numpy as np
@@ -1708,6 +1826,30 @@ class OCREngine:
             print(f"{pad}[if_text] {kws} {'区域'+str(step.get('region_rel'))+' ' if step.get('region_rel') else ''}-> {'HIT' if hit else 'MISS'}")
             if branch:
                 self.run_steps(branch, indent=indent + 1)
+        elif s_type == "if_scene":
+            # 条件分支: 按场景注册表(scenes.json)判定当前画面是否为指定场景
+            # (2026-10-05 用户定立的引擎第三种判定; 判据示例见 scenes.json「家园界面」)
+            hit = self.judge_scene(step.get("scene", ""), min_score=step.get("min_score", 0.4))
+            branch = step.get("then") if hit else step.get("else")
+            if branch:
+                self.run_steps(branch, indent=indent + 1)
+        elif s_type == "wait_scene":
+            # 轮询等待进入指定场景; 超时只登记软失败不中止(与 wait_text 同语义)。
+            # 典型用法: 进面板后的载入守卫(如花灵派对 wait_scene 花灵派对界面)。
+            scene = step.get("scene", "")
+            timeout = step.get("timeout", 10)
+            interval = step.get("interval", 1.0)
+            okflag = False
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                self._check_stop()
+                if self.judge_scene(scene, min_score=step.get("min_score", 0.4)):
+                    okflag = True
+                    break
+                time.sleep(interval)
+            if not okflag:
+                print(f"[等待超时] 场景『{scene}』({timeout}s)")
+                report_failure(self._module, f"等待场景『{scene}』超时 {timeout}s")
         elif s_type == "if_account_tail":
             # 条件分支(登录页): 画面中含 **** 的脱敏账号块的尾部数字 == tail 时执行 then, 否则 else。
             # 用于「当前选中账号已是目标 → 跳过切号直接登录」(2026-10-03 用户决策:

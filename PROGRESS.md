@@ -2251,3 +2251,35 @@ template 识别，获取到实时相对坐标或者绝对坐标，然后点击�
   C 类回归新增 C9-C12（7 模板实机/抽奖 OCR/翻页链模板化/community_like）。
 - 同步 `docs/FLOWS.md`（§4.1.1/§4.1.2/§4.2/§7.2/§10）、本地 PROJECT_GUIDE §3.1/§5。
 - 待实机：C9-C12 + A10 定案（见 `zcode-developing/C类_待实机回归.md`）。
+
+
+## 2026-10-05 · 合并协作区 zcode-20261005（A 类收官 + 场景判断引擎功能 + 矿洞探险 + 时间礼盒重构 + 29 处等待定值）（里程碑 78）
+
+**来源**：协作 agent `zcode` 提交（基线 `2fa4d1b`），响应 10-05 日志（15m18s，ok=2 fail=3）五问题 + S1/S2/S3/S7 实机闭环。
+主 agent 独立复验 **21/21 全过**；闸门全绿（JSON 16/16、步骤 **27 种**/235 处/0 未知、语法 8/8）。
+
+- **A 类 13 项全部闭环（规则 6 达成）**：A8/A9 奇妙花宝实采模板化（`hb_claim.png` 三档复用 th0.90/`hb_close.png` th0.95，
+  「领」为美术字但图形与领取状态解耦）；A10 浇水弹窗连拍定案（**延迟 ~4s 弹出、不自动关**——删无效
+  `click_rel(0.5,0.9389)` + N1 三处「恭喜获得」守卫，关键字与实拍逐字一致）；A13 entries.json 3 处
+  `mark_fallback_rel` + nav 链 12 处 `fallback_rel` 全删。**flows+common 内直坐标步骤全项目清零。**
+- **S7 在线礼包时间礼盒重构（修复 10-04-3 引入的回归）**：领取按钮=礼盒本体纯图形（面板无「领取/已领取」文字，
+  旧 `click_text`/`count_text` 双双永远 MISS）→ 三档 `click_template og_gift10/30/50.png th=0.985`（可领 0.998~0.999/
+  已领灰盒 ≤0.970，行 region 下移包住礼盒——旧区域是标签带根本不含礼盒）；关弹窗点标题区（防点击穿透）。
+- **引擎新功能·场景判断（第三种判定）**：`flows/common/scenes.json`（v2）声明式 rule 条件树
+  （hit/any/all/count/absent/and/or/not + region_rel，兼容 legacy markers 简写）；`ocr_engine.py` 新增
+  `_load_scenes`/`judge_scene`/`if_scene`/`wait_scene`（步骤 25→27）；pollin `in_list/in_home/in_garden`
+  迁移注册表（签名与语义不变；in_home 宽语义「社交可见且非列表」忠实保留）。流程侧暂无调用方，待后续采用。
+- **新功能·4.1.3 矿洞探险（enable_mine 默认 false）**：用户定稿流程（双「每日礼包」=可领任点其一/
+  「明日再来」+单礼包=已领跳过/状态未识别诚实跳过）；当日已实领验证；发现并防御**点击穿透**
+  （弹窗关闭改点「恭喜获得」标题区）。
+- **N2/N3/S3 修复**：花灵派对 navigate 后 3s 载入守卫（修 89% 加载中全屏 2 块误判 MISS）；体力 once 改
+  retry_loop×3（修「暂未开启」实为加载占位致 135s 白等）；采粉好友花园/自己家园**统一**点-验-重试开列表
+  （「社交」被气泡临时遮挡靠重试自然恢复，不再绕路回家，单次最坏 105s→~60s）。
+- **全项目 29 处等待定值（用户三轮裁决）**：wait_text/wait_until 收敛为 3s/5s/10s/15s 四档
+  （重点三处：回家 10s、startup 主界面 10s、进花园 15s）；community_like ENTER_WAIT 15→5s。
+- **N5**：`locate_template` docstring 换失效证据（b1_switch_down→里程碑 77 七模板）+ minMaxLoc 取分教训。
+- **主 agent 修正 1 处**：pollin 点采粉失败打印「20s 画面无变化」与定值 5s 不符 → 改「5s…被吞/被气泡遮挡」。
+- **文档同步**：FLOWS §4/§5/§7/§9/§10、PROJECT_GUIDE §3.1/§5；归档 A 类收官至 zcode-developing、
+  C 类扩至 19 项（C17 首个可领日强制检查点）。
+- 待实机：C13-C19（矿洞首跑/时间礼盒全链/场景判断/花宝可领态），观察项：存量弹窗穿透（F4）、
+  矿洞 count_text 无 region（F5）、时间礼盒「未到在线时长」形态（F7）。
