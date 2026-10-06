@@ -85,6 +85,45 @@ def wait_until(eng, cond, timeout, desc="", interval=1.0):
     return False
 
 
+# ---------------- 运行期按钮区域缓存 + 滤色精识 (2026-10-06, 用户方案) ----------------
+# 背景: 好友花园底栏「社交」按钮存在, 但不同好友花园的紫/蓝等彩底会把常规 OCR 置信度
+# 压到阈值以下造成整词 MISS(10-06 日志: 110 次尝试 0 命中, 10 页采粉全部放弃, 仅采 1 次)。
+# 方案: 首次真实命中时缓存按钮相对区域(命中点外扩), 之后未命中时对该小区域做
+# 「放大 + 白字滤色」精识(eng.locate_fine)。
+# 合规性(规则 6): 区域来自**本次运行的真实识别命中**动态推导, 非写死坐标; 最终点击仍来自
+# 精识 OCR 的实时命中 —— 不是盲点历史坐标。
+# 开销(用户约束): 命中路径零额外开销; 未命中才做一次小裁片推理(毫秒级);
+# 缓存为内存字典(每键 4 个 float), 仅本次运行有效, 不落盘、不跨运行、不占额外内存。
+BTN_REGION_CACHE: dict = {}   # {按钮关键字: [x1,y1,x2,y2] 相对坐标}
+BTN_EXPAND = (0.06, 0.08)     # 命中点向外扩展比例 (宽, 高)
+
+
+def click_btn_fine(eng, kws, img=None, min_score=0.4):
+    """带「区域缓存 + 滤色精识」兜底的按钮点击: 常规 OCR 命中即点(并学习缓存区域);
+    未命中且有缓存 → 对缓存小区域滤色放大精识, 命中即点。返回 Point 或 None(未命中)。"""
+    kws = kws if isinstance(kws, list) else [kws]
+    pt = eng.locate(kws, img=img, min_score=min_score)
+    how = "ocr"
+    if pt is None:
+        for kw in kws:
+            reg = BTN_REGION_CACHE.get(kw)
+            if not reg:
+                continue
+            pt = eng.locate_fine(kws, reg, min_score=max(0.30, min_score - 0.10), img=img)
+            if pt is not None:
+                how = "滤色精识"
+                break
+    if pt is None:
+        return None
+    w, h = eng.screen_w or 1280, eng.screen_h or 720
+    ex, ey = BTN_EXPAND
+    BTN_REGION_CACHE[kws[0]] = [max(0.0, pt.x / w - ex), max(0.0, pt.y / h - ey),
+                                min(1.0, pt.x / w + ex), min(1.0, pt.y / h + ey)]
+    print(f"  [按钮] {'/'.join(kws)} {how}命中 ({pt.x},{pt.y})")
+    eng.click_abs(pt.x, pt.y)
+    return pt
+
+
 def frame_diff(a, b):
     """两张同尺寸 BGR 帧的粗略差异(0~1, 越大差别越大)。
 
@@ -239,9 +278,14 @@ def in_delegate_subpage(eng, img=None):
 
 def _panel_friend_pt(eng, img=None):
     """「社交」面板内「好友」按钮位置; 面板未开则 None。
-    region 限定 + exact, 避免误命中「添加好友」「删除好友」「好友设置」。"""
-    return eng.locate(["好友"], img=img, exact=True,
-                      region_rel=SOCIAL_FRIEND_REGION, min_score=0.4)
+    region 限定 + exact, 避免误命中「添加好友」「删除好友」「好友设置」。
+    2026-10-06: 常规未命中时对该固定 region 做滤色精识兜底(面板底色个别情况下压置信度)。"""
+    pt = eng.locate(["好友"], img=img, exact=True,
+                    region_rel=SOCIAL_FRIEND_REGION, min_score=0.4)
+    if pt is None:
+        pt = eng.locate_fine(["好友"], SOCIAL_FRIEND_REGION,
+                             min_score=0.3, img=img, exact=True)
+    return pt
 
 
 # 右上角关闭区(通用整屏面板关闭钮位置, 用点击兜底; 小花仙里返回键无效, 不得再用 back)
@@ -502,10 +546,13 @@ def open_friend_list(eng):
                     if stop_requested():
                         return False
                     pre = eng.screenshot()
-                    eng.click_text(["社交"])
-                    if wait_screen_change(eng, pre, desc=f"点「社交」(第{i}次)", timeout=5):
+                    pt_btn = click_btn_fine(eng, ["社交"], img=pre)
+                    if pt_btn is not None and wait_screen_change(eng, pre, desc=f"点「社交」(第{i}次)", timeout=5):
                         break
-                    print(f"  [列表] 点「社交」后画面无变化(吞点击/被遮挡), 重试")
+                    if pt_btn is None:
+                        print("  [列表] 「社交」常规+滤色精识均未命中, 未产生点击, 重试")
+                    else:
+                        print("  [列表] 点「社交」后画面无变化(点击被吞), 重试")
                 wait_until(eng, lambda: _panel_friend_pt(eng) is not None, 5, desc="社交面板")
                 pt = _panel_friend_pt(eng)
             else:
@@ -748,14 +795,14 @@ def collect_one(eng, x, y):
     # 模拟器输入延迟/积压可达数十秒, 单次点击常被吞, 故「点-等-重试」而非一次定生死
     opened = False
     for i in range(1, 4):
-        eng.click_text(["快捷操作"])
+        click_btn_fine(eng, ["快捷操作"])
         if wait_until(eng, lambda: has(eng, "采粉"), 5, desc=f"快捷操作菜单(第{i}次)"):
             opened = True
             break
     if not opened:
         return "fail"
 
-    eng.click_text(["采粉"])
+    click_btn_fine(eng, ["采粉"])
     # 有粉: 静默成功(菜单收起); 无粉: 弹「很抱歉, 这人花园里没有花粉可以采哦」+确定。
     # ⚠ 不能用裸「花粉」判定 —— 世界频道聊天常含「花粉」会误判,
     #   故要求「抱歉」与「确定」同时出现才算无花粉弹窗。
@@ -827,14 +874,22 @@ def run_category(eng, cat, max_pages=30):
             return False
         return True
 
+    page_fails = 0   # 连续「无法回到好友列表」页数(2026-10-06: 上限 3, 防整类别空转 ——
+                     # 10-06 日志 10 页 × 每页 3 尝试 ≈ 25 分钟颗粒无收)
     for page in range(1, min(total, max_pages) + 1):
         if stop_requested():
             print(f"  [{cat}] 收到停止请求, 中断")
             break
         if not in_list(eng):                  # 兜底: 不在列表就重开(含从好友花园回来)
             if not open_friend_list(eng):
-                print(f"  [{cat}] 第{page}页 无法回到好友列表, 跳过")
+                page_fails += 1
+                print(f"  [{cat}] 第{page}页 无法回到好友列表, 跳过(连续第{page_fails}次)")
+                if page_fails >= 3:
+                    print(f"  [{cat}] 连续 3 页无法回到好友列表, 如实中止本类别"
+                          f"(防整类别空转, 已采 {collected} 次)")
+                    break
                 continue
+            page_fails = 0
             switch_tab(eng, cat)
         if not goto_page(eng, page):
             break

@@ -674,6 +674,54 @@ class OCREngine:
         except Exception:
             return None
 
+    def locate_fine(self, kws, region_rel, upscale=2, min_score=0.4,
+                    img=None, exact=False, exclude=None) -> "Point | None":
+        """滤色精识: 对 region_rel 小区域「裁剪 → 放大 → 白字滤色 → OCR」定位关键字。
+
+        背景(2026-10-06, 用户方案): 小花仙按钮为统一白字彩底, 部分好友花园的紫/蓝底会把
+        常规 OCR 置信度压到阈值以下造成整词 MISS(当日日志: 好友花园「社交」110 次尝试
+        0 命中, 10 页采粉全部放弃)。滤色 = 提取高亮低饱和像素(白字)转黑字白底, 彩底噪声
+        全部归零, 与按钮「色调统一」的美术规格正好互补。
+        开销约束(用户要求不加重性能/内存): 只在调用方常规定位未命中后对小裁片运行,
+        一次小图推理毫秒级, 不做全图二次扫描; 中间数组为瞬态小裁片; 命中路径零额外开销。
+        返回坐标已映射回全图绝对像素; 未命中返回 None。"""
+        import cv2
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return None
+        H, W = img.shape[:2]
+        x1 = max(0, int(region_rel[0] * W)); y1 = max(0, int(region_rel[1] * H))
+        x2 = min(W, int(region_rel[2] * W)); y2 = min(H, int(region_rel[3] * H))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        crop = img[y1:y2, x1:x2]
+        crop = cv2.resize(crop, None, fx=upscale, fy=upscale, interpolation=cv2.INTER_CUBIC)
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        white = cv2.inRange(hsv, (0, 0, 170), (180, 70, 255))  # 高亮 + 低饱和 → 白字
+        binimg = np.full(crop.shape[:2], 255, np.uint8)
+        binimg[white > 0] = 0                                  # 黑字白底(OCR 友好)
+        kws = kws if isinstance(kws, list) else [kws]
+        exclude = exclude or []
+        best = None
+        for b in ocr_image(cv2.cvtColor(binimg, cv2.COLOR_GRAY2BGR)):
+            if b.get("score", 1) < min_score:
+                continue
+            t = b.get("text", "").strip()
+            if not any(((t == kw) if exact else (kw in t)) for kw in kws):
+                continue
+            if any(e in t for e in exclude):
+                continue
+            bx = b["box"]
+            cx = int((bx[0] + bx[2]) / 2 / upscale) + x1
+            cy = int((bx[1] + bx[3]) / 2 / upscale) + y1
+            if best is None or b["score"] > best[0]:
+                best = (b["score"], Point(cx, cy, W, H))
+        if best:
+            print(f"[精识] {kws} 滤色放大命中 score={best[0]:.2f} "
+                  f"@({best[1].x},{best[1].y}) region={region_rel}")
+            return best[1]
+        return None
+
     def _ocr_frame(self, img) -> tuple[list, list]:
         """对一帧做全图 OCR + 过宽块 2x 重识别拆分, 同一静态帧(指纹一致)直接复用上次结果。
 

@@ -1,9 +1,8 @@
 {
     "name": "每日挂机编排",
-    "description": "顺序调度 8 大模块: 开始启动(登录进游戏, 含可选切换账号)->签到->种植->社交(含闪耀委托挑战)->体力->每日任务->领取奖励->挂机. startup 失败必须终止本轮(见下), 其余模块失败自动跳过.",
+    "description": "顺序调度 7 大模块: 开始启动(登录进游戏+签到, 含可选切换账号; 签到已于 2026-10-06 并入启动)->种植->社交(含闪耀委托挑战)->体力->每日任务->领取奖励->挂机. startup 失败必须终止本轮(见下), 其余模块失败自动跳过.",
     "modules": [
         { "id": "startup", "flow": "flow_startup.json",     "required": false, "on_fail": "stop_round" },
-        { "id": "signin",  "flow": "flow_signin.json",      "required": false, "on_fail": "skip" },
         { "id": "plant",   "flow": "flow_plant.json",       "required": false, "on_fail": "skip" },
         { "id": "social",  "flow": "flow_social.json",      "required": false, "on_fail": "skip" },
         { "id": "energy",  "flow": "flow_energy.json",      "required": false, "on_fail": "skip" },
