@@ -57,8 +57,16 @@ SOCIAL_FRIEND_REGION = [0.25, 0.65, 0.55, 0.80]  # 家园「社交」面板内�
 PAGE_REGION = [0.5125, 0.9333]                   # 列表底部页码 "x/N"(中心)
 PAGE_CROP = [0.44, 0.90, 0.60, 0.97]             # 页码胶囊裁剪框(2026-10-03 加宽: 旧 0.484~0.547 会截断
                                                  # 多位数页码, 实测 1080p「1/105」被裁成「1/1」→ 采粉误判单页)
-ROW_TOP_REL, ROW_STEP_REL = 0.1375, 0.1347        # 好友行结构(实测)
+ROW_TOP_REL, ROW_STEP_REL = 0.1375, 0.1347        # 好友行结构(实测 1280×720; 相对值随分辨率自适应,
+                                                  # 实机验证时重新测定后只需改这两个数)
 MERGE_Y_REL = 0.0764                              # 同一标记的 y 聚类去重阈值
+SAFE_SLOT_MAX = 4                                 # 可点安全区最大槽位(0-4); 槽位5=底行视口裁切死区
+                                                  # (16:35 实锤: 底行标记 2/2 失败, 3次×15s 点击全吞)
+SWIPE_MAX_PER_PAGE = 3                            # 底行补救每页滑动上限(2026-10-06 方案一, 用户定)
+SWIPE_Y_REL = 0.72                                # 补救滑动手势起点 y(列表中下部; 终点=起点-ROW_STEP_REL,
+                                                  # 上滑一行=相对行高, 随实机分辨率自适应)
+SWIPE_MS = 300                                    # 手势时长(ms): 温和拖动, 避免触发惯性 fling
+SWIPE_SETTLE_S = 1.5                              # 滑动后等列表停稳再扫描(动画 ~0.3s, 留裕量防运动模糊帧)
 
 LIST_MARKS = ("删除好友", "好友设置")             # 好友列表存在性判据(2026-10-05 已迁至 scenes.json「好友列表」, 常量保留供参考)
 CATEGORIES = ("密友", "好友")
@@ -736,6 +744,13 @@ def slot_of(eng, y):
     return int(round((y / eng.screen_h - ROW_TOP_REL) / ROW_STEP_REL))
 
 
+def _rescan_skip_failed(eng, failed_y):
+    """底行补救段重扫: 跳过已失败标记附近(按 MERGE_Y_REL 聚类)的候选, 防假标记重试风暴。"""
+    thr = MERGE_Y_REL * eng.screen_h
+    return [m for m in scan_marks(eng)
+            if not any(abs(fy - m[1]) <= thr for fy in failed_y)]
+
+
 # ---------------- 环节: 采集一个好友 ----------------
 
 def collect_one(eng, x, y):
@@ -893,16 +908,22 @@ def run_category(eng, cat, max_pages=30):
             switch_tab(eng, cat)
         if not goto_page(eng, page):
             break
-        marks = scan_marks(eng)               # ← 本页**唯一**一次全页模板扫描
+        marks = scan_marks(eng)               # 页顶扫描(补救段另有重扫, locate_template_all 单次匹配成本低)
         print(f"  [{cat}] 第{page}页 可采粉标记 {len(marks)} 个 {marks}")
-        # 同一槽位可能有多个残留标记(跨尺度/NMS 去重后仍可能重复), 每槽位只取一个
-        cand, seen = [], set()
+        # 同一槽位可能有多个残留标记(跨尺度/NMS 去重后仍可能重复), 每槽位只取一个;
+        # 底行(槽位5)是视口裁切死区, 不进常规采集(点 3 次×15s 必然全吞), 交页尾补救段
+        cand, seen, n_bottom = [], set(), 0
         for x, y in sorted(marks, key=lambda p: p[1]):
             slot = slot_of(eng, y)
             if slot in seen:
                 continue
             seen.add(slot)
+            if slot > SAFE_SLOT_MAX:
+                n_bottom += 1
+                continue
             cand.append((x, y, slot))
+        if n_bottom:
+            print(f"  [{cat}] 第{page}页 底行死区标记 {n_bottom} 个, 常规采集跳过, 交页尾补救")
         failed = set()                        # 本页「进园失败/无粉/未确认」的槽位, 避免死循环
         for i, (x, y, slot) in enumerate(cand):
             if stop_requested():
@@ -923,6 +944,40 @@ def run_category(eng, cat, max_pages=30):
             # 采完**不离开好友花园**: 若本页后面还有候选标记, 就地重开列表并翻回本页;
             # 没有后续候选就不做多余的一次「开列表+翻页」(旧版每轮都做, 白跑一趟)
             if any(s not in failed for _, _, s in cand[i + 1:]):
+                if not back_to_list_page(page):
+                    break
+        # ---- 底行补救(2026-10-06 用户方案一): 常规候选采完后执行 ----
+        # 底行好友在页码跳转视图里被列表视口裁切(角标可见、图标点击落空), 页码跳转无法
+        # 改变其窗口内位置; 上滑一行把它带入安全区后重扫采集。采集后角标消失(已实证),
+        # 重扫天然不重复; 位置一律以「最近一次重扫」为准, 不依赖页码视图模型。
+        if not in_list(eng) and not back_to_list_page(page):
+            continue                          # 回不了列表: 交给下一页顶部的兜底链(计 page_fails)
+        page_swipes = 0
+        remedy_failed_y = []                  # 补救段失败标记的 y(防假标记重试风暴)
+        while not stop_requested() and page_swipes < SWIPE_MAX_PER_PAGE:
+            fresh = _rescan_skip_failed(eng, remedy_failed_y)
+            if not any(slot_of(eng, y) > SAFE_SLOT_MAX for _, y in fresh):
+                break                         # 视口内无底行标记(或已采完/已失败) → 本页收尾
+            page_swipes += 1
+            print(f"  [{cat}] 第{page}页 底行补救 {page_swipes}/{SWIPE_MAX_PER_PAGE}: "
+                  f"上滑一行(相对行高 {ROW_STEP_REL}; 手势参数非点击坐标, 规则6边界见 swipe_rel)")
+            eng.swipe_rel(0.5, SWIPE_Y_REL, 0.5, SWIPE_Y_REL - ROW_STEP_REL, SWIPE_MS)
+            time.sleep(SWIPE_SETTLE_S)
+            fresh = _rescan_skip_failed(eng, remedy_failed_y)
+            for x, y in sorted(fresh, key=lambda p: p[1]):
+                if stop_requested():
+                    break
+                if slot_of(eng, y) > SAFE_SLOT_MAX:
+                    continue                  # 仍在底行的留给下一轮滑动
+                res = collect_one(eng, x, y)
+                print(f"    [{cat}] 第{page}页 补救标记({x},{y}) 结果={res}")
+                if res == "fail":
+                    remedy_failed_y.append(y)
+                elif res == "empty":
+                    remedy_failed_y.append(y)
+                    empty_cnt += 1
+                else:
+                    collected += 1
                 if not back_to_list_page(page):
                     break
     print(f"  [{cat}] 完成: 采到 {collected} 次, 空花粉 {empty_cnt} 次")

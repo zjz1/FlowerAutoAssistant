@@ -143,7 +143,7 @@
   <h1>🌺 <span>FAA</span> 小花仙挂机助手</h1>
   <span id="conn-badge" class="badge off">未连接</span>
   <span id="mode-badge" class="badge off">使用模式</span>
-  <span id="screen-size" class="muted mono"></span>
+  <span id="screen-size" class="muted mono">待读取</span>
   <button id="view-toggle" class="view-link">↔ 切换界面：测试</button>
   <a href="/tpltool" class="view-link" title="模板标注工具：截图标/调框/自由涂刷蒙版生成模板">模板标注</a>
   <button id="shutdown-btn" class="view-link danger" style="margin-left:0">⏻ 关闭服务</button>
@@ -460,7 +460,8 @@ async function refreshStatus(){
     $("conn-badge").className = "badge " + (c?"on":"off");
     $("mode-badge").textContent = s.debug_click ? "测试模式" : "使用模式";
     $("mode-badge").className = "badge " + (s.debug_click?"":"on");
-    if(s.screen) $("screen-size").textContent = s.screen.join("×");
+    $("screen-size").textContent = s.screen ? s.screen.join("×")
+                                            : (c ? "读取中…" : "待读取");
     if(c) $("screen-hint").style.display = "none";
     else $("screen-hint").style.display = "flex";
     $("maa-connect").textContent = c ? "已连接" : "连接";

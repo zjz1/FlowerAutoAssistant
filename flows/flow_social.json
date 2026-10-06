@@ -77,7 +77,11 @@
                           { "type": "wait_text", "text": ["我换好了"], "timeout": 5, "interval": 1.0 },
                           { "type": "click_text", "text": ["推荐", "推荐搭配"], "delay": 1.5 },
                           { "type": "click_text", "text": ["我换好了"], "delay": 1.5 },
-                          { "type": "wait_text", "text": ["确认", "确定"], "timeout": 5, "interval": 1.0 },
+                          { "_note": "消噪(2026-10-06 用户确认, 协作区 zcode-20261006-7): 旧 wait_text[确认/确定] 5s 超时登记软失败 —— 16:35 日志确认弹窗慢于轮询窗约半拍, 紧随的 click_text 立即命中(纯噪声: 业务结果正确却记失败)。改静默等窗: sleep 3 + if_text 命中即放行, else 再 sleep 2.5(覆盖窗口 5.5s ≥ 原 5s), MISS 不登记失败; 随后 click_text 保留仍新鲜定位点击。同链 wait_text[我换好了] 同型暂缓(16:35 未超时, 待开放时段验证后视日志决定, 见 C 类面板 C24)。" },
+                          { "type": "sleep", "seconds": 3.0 },
+                          { "type": "if_text", "text": ["确认", "确定"], "min_score": 0.4,
+                            "then": [],
+                            "else": [ { "type": "sleep", "seconds": 2.5 } ] },
                           { "type": "click_text", "text": ["确认", "确定"], "delay": 1.2 },
                           { "type": "sleep", "seconds": 1.0 }
                           ] }

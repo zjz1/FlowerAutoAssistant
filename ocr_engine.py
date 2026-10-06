@@ -593,6 +593,16 @@ class OCREngine:
         if self.debug_click:
             self.debug_dir = Path(__file__).parent / "data" / "click_debug"
             self.debug_dir.mkdir(parents=True, exist_ok=True)
+        # 连接即读取实机画面尺寸(2026-10-06 用户要求): 尺寸必须实测, 不能沿用旧值 ——
+        # 模拟器分辨率可变(1080×720 / 1280×720 / 1440×960 等), 全项目相对坐标运算与
+        # WebUI 实机参数显示都依赖这两个值。先清零再探一帧, 保证重连/换模拟器后拿到
+        # 的是当前实机; 首帧同时预热截图管线。
+        self.screen_w = 0
+        self.screen_h = 0
+        if self.screenshot() is not None:
+            print(f"[连接] 实机画面尺寸: {self.screen_w}x{self.screen_h}")
+        else:
+            print("[连接] 警告: 连接后首帧截图失败, 实机尺寸留待下次截图时读取")
         return True
 
     def screenshot(self) -> np.ndarray | None:
@@ -646,6 +656,25 @@ class OCREngine:
         y = int(ry * self.screen_h)
         print(f"[点击] 相对({rx:.3f},{ry:.3f}) -> 绝对({x},{y})")
         self.click_abs(x, y)
+
+    def swipe_rel(self, rx1: float, ry1: float, rx2: float, ry2: float,
+                  duration_ms: int = 300) -> None:
+        """按相对坐标执行滑动手势(滚屏/拖动, 2026-10-06 方案一引入, 供好友列表底行补救等)。
+        ⚠ 规则6边界(2026-10-06 用户裁定): 滑动是**手势动作**, 没有「识别目标」可定位 ——
+        起终点是手势参数而非点击坐标, 用相对坐标随分辨率自适应, 不属被禁的『直接坐标点击』;
+        点击类操作仍必须 OCR/template/场景识别实时定位后才进行。
+        屏幕尺寸未知时先截图获取, 避免换算成 (0,0)。
+        """
+        if not self.screen_w or not self.screen_h:
+            self.screenshot()
+        if not self.screen_w or not self.screen_h:
+            print("[滑动] 失败: 屏幕尺寸未知")
+            return
+        x1, y1 = int(rx1 * self.screen_w), int(ry1 * self.screen_h)
+        x2, y2 = int(rx2 * self.screen_w), int(ry2 * self.screen_h)
+        self._ctrl.post_swipe(x1, y1, x2, y2, int(duration_ms)).wait()
+        print(f"[滑动] 相对({rx1:.3f},{ry1:.3f})->({rx2:.3f},{ry2:.3f}) "
+              f"绝对({x1},{y1})->({x2},{y2}) {duration_ms}ms")
 
     def back(self) -> bool:
         """发送 Android 返回键 (adb shell input keyevent 4)。用于关闭弹窗/返回上一级。
@@ -1884,18 +1913,32 @@ class OCREngine:
         elif s_type == "wait_scene":
             # 轮询等待进入指定场景; 超时只登记软失败不中止(与 wait_text 同语义)。
             # 典型用法: 进面板后的载入守卫(如花灵派对 wait_scene 花灵派对界面)。
+            # scene 支持字符串或列表(2026-10-06 用户 A/B 决策, 来自协作区 zcode-20261006-3):
+            # 列表时任一场景命中即成功, 谁先出现走谁 —— 如 startup 等待 ["户外主界面",
+            # "签到中"]: 已签到先见底栏(B 路), 未签到签到窗先弹出(A 路), 签到窗可见即启动
+            # 成功、不再逼底栏判定(16:35 实弹的超时软失败正是底栏被签到窗盖住的形态)。
+            # 一帧截图多场景共用(每场景各一次 OCR, 不逐场景重截屏, 轮询成本与单场景持平)。
             scene = step.get("scene", "")
+            scenes = scene if isinstance(scene, list) else [scene]
             timeout = step.get("timeout", 10)
             interval = step.get("interval", 1.0)
             okflag = False
+            okname = None
             deadline = time.time() + timeout
             while time.time() < deadline:
                 self._check_stop()
-                if self.judge_scene(scene, min_score=step.get("min_score", 0.4)):
-                    okflag = True
+                img = self.screenshot()
+                for nm in scenes:
+                    if self.judge_scene(nm, img=img, min_score=step.get("min_score", 0.4)):
+                        okflag, okname = True, nm
+                        break
+                if okflag:
                     break
                 time.sleep(interval)
-            if not okflag:
+            if okflag:
+                if len(scenes) > 1:
+                    print(f"[等待成功] 场景『{okname}』(多场景任一命中)")
+            else:
                 print(f"[等待超时] 场景『{scene}』({timeout}s)")
                 report_failure(self._module, f"等待场景『{scene}』超时 {timeout}s")
         elif s_type == "if_account_tail":

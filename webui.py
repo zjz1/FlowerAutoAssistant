@@ -67,6 +67,13 @@ _LOGS: list[str] = []
 # 注意: **每次服务启动都会清空**内存缓冲与磁盘文件, 因此备份不跨会话保留 —— 重开 webui
 # 后不会再看到上一次会话的残留日志 (需求 2026-10-01)。
 _LOG_FILE = BASE / "data" / "webui_runtime_log.txt"
+# HTTP 访问日志分流(2026-10-06, 来自协作区 zcode-20261006-2): Handler.log_message 原走 super()
+# 写 sys.stderr, 而运行期 stderr 被 _TeeOut 收进运行日志 —— 16:35 实测一次运行导出 3555 行
+# 里 1993 行(56%)是 "GET /api/*" 噪声, 严重干扰日志分析。访问行改为落本专用文件(每次服务
+# 启动随 _log_reset_history 一并清空, 与运行日志同一「干净状态起步」哲学, 2026-10-01),
+# 控制台与运行日志都不再出现。
+_HTTP_LOG_FILE = BASE / "data" / "webui_http_log.txt"
+_HTTP_LOG_LOCK = threading.Lock()
 
 
 def _log_persist(text: str) -> None:
@@ -100,6 +107,13 @@ def _log_reset_history() -> None:
     try:
         _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(_LOG_FILE, "w", encoding="utf-8"):
+            pass
+    except Exception:
+        pass
+    # HTTP 访问日志同哲学: 每次服务启动一并清空(2026-10-06, 来自协作区 zcode-20261006-2)
+    try:
+        _HTTP_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_HTTP_LOG_FILE, "w", encoding="utf-8"):
             pass
     except Exception:
         pass
@@ -665,13 +679,20 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._send_json({"error": f"daily.json 解析失败: {e}"}, 500)
         all_modules = plan.get("modules", [])
-        # 去掉任何必选标记: 全部 on_fail 统一为 skip, 勾选才跑
+        # on_fail 处置(2026-10-06 用户方案A): 勾选模块统一 skip「跳过继续」, 但
+        # **保留 daily.json 里声明为 stop_round 的模块**(当前即 startup) —— 启动失败
+        # 即真异常(#1 修复后签到窗盖底栏的误报已根治), 按用户 10-03 决策「宁可当天
+        # 不跑, 也不能用错误账号/未登录状态跑完」应整轮停止, 不再被统一 skip 废掉。
+        # 此前无条件改写使该保护在勾选路径从未生效(16:35 实弹: startup 软失败靠
+        # skip 才没中止整轮, 当日属侥幸)。startup 真失败时后续模块只会各自空转,
+        # 白跑 ~10-20 分钟且日志全红 —— 整轮停止正是为这种时刻设计的。
         chosen = []
         for m in all_modules:
             if m.get("id") not in selected:
                 continue
             m = dict(m)
-            m["on_fail"] = "skip"
+            if m.get("on_fail") != "stop_round":
+                m["on_fail"] = "skip"
             chosen.append(m)
         if not chosen:
             return self._send_json({"error": "未勾选任何任务"}, 400)
@@ -848,8 +869,16 @@ class Handler(BaseHTTPRequestHandler):
         # 精简访问日志, 避免刷屏
         if self.path and self.path.startswith("/api/log"):
             return
+        # HTTP 访问行分流到专用文件(2026-10-06, 来自协作区 zcode-20261006-2): 不再走
+        # super() 写 sys.stderr —— 运行期 stderr 被 _TeeOut 收进运行日志, 16:35 实测一次
+        # 运行 56% 行数是 "GET /api/*" 噪声。行格式与 BaseHTTPRequestHandler.log_message
+        # 保持一致, 仅落盘目标不同(data/webui_http_log.txt, 每次服务启动清空)。
         try:
-            super().log_message(fmt, *args)
+            line = "%s - - [%s] %s\n" % (
+                self.address_string(), self.log_date_time_string(), fmt % args)
+            with _HTTP_LOG_LOCK:
+                with open(_HTTP_LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(line)
         except Exception:
             pass
 

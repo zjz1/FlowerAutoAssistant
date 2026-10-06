@@ -44,20 +44,55 @@
                     { "_note": "时间礼包三行重构(2026-10-05, 协作区 zcode-20261005 S7 实机采集): 领取按钮=**礼盒本身**(纯图形, 无任何文字) —— 旧链 click_text[「领取」] 永远 MISS(10-04-3 合规改造误以为按钮有文字, 引入回归: 抽奖正常/领取礼包全灭), count_text[「已领取」]同因失效(永远 0 次) → 双双退役。用户授权代点实测: 可领态=彩色礼盒+右上红!角标+呼吸光效, 已领态=**礼盒灰化**(角标消失); 领取高档自动连领低档(50→30+10, 30→10, 用户口述+10分钟代点验证), 故按 50→30→10 顺序。og_giftXX 模板(紧盒体 130×104→87×69@1280, 中心=盒体=点击点)即判据即点击: 可领 0.998+(跨光效相位稳定, 光效在裁切外) / 已领灰盒 ≤0.970 / 跨档 ≤0.965 → 阈值 0.985, 未命中=不可领如实跳过。行 region 下移包住礼盒(旧区域是标签带, 盒中心 rel y 0.345/0.581/0.815 比标签低)。领取弹窗=标准奖励弹窗(恭喜获得@(0.5,0.237)/点击任意处关闭, 实拍 ~1s 弹出不自动关), 关闭**点标题区**防点击穿透(矿洞页实测: 点弹窗底部文字会穿透到底层 UI)" },
                     { "type": "click_template", "template": "og_gift50.png", "threshold": 0.985,
                       "region_rel": [0.08, 0.74, 0.40, 0.92], "delay": 2.0, "name": "领50分钟礼包(礼盒模板, 自动连领30/10)" },
-                    { "type": "wait_text", "text": ["恭喜获得"], "timeout": 3, "interval": 1.0 },
-                    { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
-                      "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" },
+                    { "_note": "消噪(2026-10-06 用户确认, 协作区 zcode-20261006-7): 旧 wait_text[恭喜获得] 无条件执行 —— 模板未命中(今日不可领)时白等 3s 并登记软失败(16:35 日志 3 项), 把『不可领』这一日常态记成故障。改静默守卫: sleep 2 后 if_text 命中才点标题(弹窗实拍 ~1s 弹出); else 再 sleep 1.5 复查兜迟到弹窗, 覆盖窗口 3.5s ≥ 原 3s。if_text MISS 不登记任何失败(矿洞『诚实跳过』同款语义), 模板未命中事实仍在日志轨迹可见。" },
+                    { "type": "sleep", "seconds": 2.0 },
+                    { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
+                      "then": [
+                          { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
+                            "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
+                      ],
+                      "else": [
+                          { "type": "sleep", "seconds": 1.5 },
+                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
+                            "then": [
+                                { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
+                                  "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
+                            ] }
+                      ] },
                     { "type": "click_template", "template": "og_gift30.png", "threshold": 0.985,
                       "region_rel": [0.08, 0.51, 0.40, 0.69], "delay": 2.0, "name": "领30分钟礼包(礼盒模板, 自动连领10)" },
-                    { "type": "wait_text", "text": ["恭喜获得"], "timeout": 3, "interval": 1.0 },
-                    { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
-                      "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" },
+                    { "_note": "同上消噪手法(2026-10-06 zcode-20261006-7): 静默守卫(sleep 2 + if_text, else 1.5s 复查)替代无条件 wait_text, 不可领零登记" },
+                    { "type": "sleep", "seconds": 2.0 },
+                    { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
+                      "then": [
+                          { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
+                            "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
+                      ],
+                      "else": [
+                          { "type": "sleep", "seconds": 1.5 },
+                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
+                            "then": [
+                                { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
+                                  "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
+                            ] }
+                      ] },
                     { "type": "click_template", "template": "og_gift10.png", "threshold": 0.985,
                       "region_rel": [0.08, 0.26, 0.40, 0.44], "delay": 2.0, "name": "领10分钟礼包(礼盒模板)" },
-                    { "type": "wait_text", "text": ["恭喜获得"], "timeout": 3, "interval": 1.0 },
-                    { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
-                      "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)",
-                      "_note": "三档各自独立判跳: 模板未命中(灰盒=已领/未到在线时长)则该档跳过, 其后 wait_text 最多空等 3s —— 全已领日整段最多多花 ~9s(对比坏链时代 24s+ 且功能全灭)" },
+                    { "_note": "同上消噪手法(2026-10-06 zcode-20261006-7): 静默守卫替代无条件 wait_text。三档各自独立判跳: 模板未命中(灰盒=已领/未到在线时长)则该档静默跳过 —— 全已领日整段最多多花 ~10.5s(旧 wait 9s 但带 3 项失败登记), 零软失败" },
+                    { "type": "sleep", "seconds": 2.0 },
+                    { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
+                      "then": [
+                          { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
+                            "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
+                      ],
+                      "else": [
+                          { "type": "sleep", "seconds": 1.5 },
+                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
+                            "then": [
+                                { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
+                                  "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
+                            ] }
+                      ] },
                     { "type": "close_dialog", "only_types": ["anchor_color"], "delay": 1.0, "name": "关闭在线礼包面板(锚点:在线礼包)",
                       "_note": "改走锚点: 注册表新增「在线礼包」anchor_color 条目(标题@(202,90) 右侧 dx 700~1100 找粉花✕@(1105,97))。不再用通用的 close_online_small.png(仅17×21、各面板同形✕、到处 0.94+ 会误命中)" },
                     { "type": "close_dialog", "only_types": ["anchor_color"], "delay": 1.0, "name": "复核再关一次" }
@@ -110,8 +145,8 @@
                     { "type": "close_dialog", "delay": 1.0,
                       "_note": "阶段二: 关花灵派对主面板(全注册表探测关闭按钮)" },
                     { "type": "sleep", "seconds": 1.0 },
-                    { "type": "if_text", "text": ["菜单", "离开"], "min_score": 0.4,
-                      "_note": "回没回到家园的判据: 家园页面有「菜单」「离开」。不能用「奇妙花宝」判定——花灵派对与奇妙花宝是两个分立功能",
+                    { "type": "if_scene", "scene": "家园界面", "min_score": 0.4,
+                      "_note": "回没回到家园的判据(2026-10-06 B1 整改, 来自协作区 zcode-20261006-5: 由 if_text[菜单/离开] 迁移到场景判断『家园界面』= 锚点(一键种植|菜单)+8钮≥3, 孤「菜单」不再够)。原约束保留: 不能用「奇妙花宝」判定——花灵派对与奇妙花宝是两个分立功能(场景判据本就不依赖奇妙花宝)",
                       "else": [
                           { "type": "click_template",
                             "template": "party_close.png",
@@ -120,8 +155,8 @@
                             "delay": 1.5,
                             "name": "花灵派对主面板右上角关闭(模板, 合规改造 zcode-20261004-4; 旧直坐标 (0.9711,0.0389) 废弃)" },
                           { "type": "sleep", "seconds": 1.0 },
-                          { "type": "if_text", "text": ["菜单", "离开"], "min_score": 0.4,
-                            "_note": "兜底点完再确认一次; 仍未回到家园就如实报出来, 不再假装成功",
+                          { "type": "if_scene", "scene": "家园界面", "min_score": 0.4,
+                            "_note": "兜底点完再确认一次; 仍未回到家园就如实报出来, 不再假装成功(判据已迁移场景判断『家园界面』, 2026-10-06 B1 整改, 来自协作区 zcode-20261006-5)",
                             "else": [
                                 { "type": "close_dialog", "delay": 1.0,
                                   "_note": "最后手段: 交给关闭注册表探测一次" }
