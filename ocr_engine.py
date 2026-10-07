@@ -190,6 +190,11 @@ class OCREngine:
         self._frame_sig: bytes | None = None
         self._frame_cache: tuple | None = None
         self._frame_lock = threading.Lock()
+        # 过宽块拆分结果缓存(2026-10-07 性能批 zcode-20261007-15): 裁片像素指纹 → 拆分子块。
+        # 实测拆分环节 7.5~9.6s/帧(占单轮 OCR 60~85%), 而过宽块多为静态 UI 碎片(顶栏簇/花园名/
+        # 横幅)逐帧原样重现 —— 内容没变直接复用拆分结果, 行为与逐帧拆分完全一致(等价幂等)。
+        self._split_cache: dict = {}
+        self._split_lock = threading.Lock()
         # 最近一帧缓存: WebUI 预览在流程运行期直接复用引擎刚截的帧, 免去预览自己截图与引擎争抢 ADB
         self.last_frame: np.ndarray | None = None
         self.last_frame_ts: float = 0.0
@@ -799,7 +804,30 @@ class OCREngine:
                 crop = img[max(0, y1 - 10):y2 + 10, max(0, x1 - 10):x2 + 10]
                 if crop.size:
                     import cv2
+                    # 拆分缓存(2026-10-07 性能批 zcode-20261007-15): 拆分环节实测 7.5~9.6s/帧
+                    # (占单轮 OCR 60~85%), 而过宽块多为静态 UI 碎片逐帧原样重现却帧帧重拆。
+                    # 按裁片像素指纹缓存拆分结果: 内容没变直接复用(等价幂等), 变了(跑马灯/滚动)
+                    # 自动重拆 —— 行为与逐帧拆分完全一致。命中重插=简单 LRU 续期, 上限 400 条。
+                    origin = (max(0, x1 - 10), max(0, y1 - 10))
+                    # ⚠ 键必须含**裁片位置**（主 agent 修订, 里程碑 83）：缓存值存的是**全帧绝对坐标**
+                    # (/2 + origin)，若同一像素内容出现在不同位置（重复 UI 元素 / 移动中的横幅，
+                    # 且 10px 边距也恰好一致），纯像素键会把上一位置的**陈旧坐标**当结果复用 →
+                    # 定位错误（正是本项目反复警惕的"陈旧坐标"类风险）。加入 origin 后只有
+                    # 「同一位置 + 同内容」才复用：静态 UI 碎片照旧全命中（速收益不变），
+                    # 移动/重复内容自动重拆（安全优先）。
+                    key = (origin[0], origin[1],
+                           hashlib.blake2b(np.ascontiguousarray(crop).tobytes(),
+                                           digest_size=16).digest())
+                    with self._split_lock:
+                        cached = self._split_cache.get(key)
+                        if cached is not None:
+                            self._split_cache.pop(key)
+                            self._split_cache[key] = cached
+                    if cached is not None:
+                        sub_blocks.extend(dict(nb) for nb in cached)
+                        continue
                     big = cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+                    newly: list = []
                     for nb in ocr_image(big):
                         ox = int(nb["center"][0] / 2) + max(0, x1 - 10)
                         oy = int(nb["center"][1] / 2) + max(0, y1 - 10)
@@ -809,7 +837,12 @@ class OCREngine:
                                       int(nb["box"][1] / 2) + max(0, y1 - 10),
                                       int(nb["box"][2] / 2) + max(0, x1 - 10),
                                       int(nb["box"][3] / 2) + max(0, y1 - 10)]
-                        sub_blocks.append(nb2)
+                        newly.append(nb2)
+                    with self._split_lock:
+                        if len(self._split_cache) >= 400:
+                            self._split_cache.pop(next(iter(self._split_cache)))
+                        self._split_cache[key] = newly
+                    sub_blocks.extend(dict(nb) for nb in newly)
         if sig is not None:
             with self._frame_lock:
                 self._frame_cache = (blocks, sub_blocks)
