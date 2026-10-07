@@ -188,9 +188,14 @@ def _is_connected(eng) -> bool:
 
 def _status() -> dict:
     eng = get_engine()
+    # screen=实机分辨率(adb 直读, 2026-10-07 用户反馈修正); 读取失败回退引擎工作区
+    # (MAA 截图长边 1280 缩放, 与实机可能不同)。work=引擎工作区, 前端悬停提示用。
+    disp = getattr(eng, "display_w", 0)
     return {
         "connected": _is_connected(eng),
-        "screen": [eng.screen_w, eng.screen_h] if eng.screen_w else None,
+        "screen": ([eng.display_w, eng.display_h] if disp
+                   else ([eng.screen_w, eng.screen_h] if eng.screen_w else None)),
+        "work": [eng.screen_w, eng.screen_h] if eng.screen_w else None,
         "flow_dir": str(BASE / "flows"),
         "debug_click": bool(getattr(eng, "debug_click", False)),
         "running": _running(),

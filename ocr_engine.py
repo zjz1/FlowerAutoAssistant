@@ -165,6 +165,13 @@ class OCREngine:
         self.last_rel: dict[str, tuple[float, float]] = {}  # 文字关键字 -> 相对坐标缓存
         self.screen_w = 0
         self.screen_h = 0
+        # 实机显示分辨率(2026-10-07 用户反馈): MAA 截图管道有**长边 1280 缩放上限**
+        # (set_screenshot_target_long_side), 故 screen_w/h 是**引擎工作区**尺寸而非实机
+        # 分辨率 —— MuMu 配 1920×1080 时 MAA 实测仍返回 1280×720(同画面等比 0.667,
+        # 灰度差 2.1)。引擎 OCR/点击全部自洽地工作在工作区内(相对坐标不受影响),
+        # 但 WebUI 应展示**实机分辨率**: adb 原生截图直读(不经 MAA 缩放)。
+        self.display_w = 0
+        self.display_h = 0
         self.click_log_scenes: dict[str, dict[str, dict]] = self._load_click_log()
         # 扁平索引 按钮名 -> 记录 (跨场景同名取最新), 供既有查找回退链零改动使用
         self.click_log: dict[str, dict] = self._build_flat_index(self.click_log_scenes)
@@ -593,16 +600,34 @@ class OCREngine:
         if self.debug_click:
             self.debug_dir = Path(__file__).parent / "data" / "click_debug"
             self.debug_dir.mkdir(parents=True, exist_ok=True)
-        # 连接即读取实机画面尺寸(2026-10-06 用户要求): 尺寸必须实测, 不能沿用旧值 ——
-        # 模拟器分辨率可变(1080×720 / 1280×720 / 1440×960 等), 全项目相对坐标运算与
-        # WebUI 实机参数显示都依赖这两个值。先清零再探一帧, 保证重连/换模拟器后拿到
-        # 的是当前实机; 首帧同时预热截图管线。
+        # 连接即读取画面尺寸(2026-10-06 用户要求, 2026-10-07 细化为两套):
+        # ① 工作区(screen_w/h): MAA 首帧, 先清零再探, 重连/换模拟器必拿当前值, 供
+        #    全部相对坐标运算使用(与 MAA 点击同空间, 自洽);
+        # ② 实机分辨率(display_w/h): adb 原生截图直读(不经 MAA 长边缩放), 供 WebUI
+        #    展示与用户多分辨率适配决策; 读取失败时置 0, WebUI 回退显示工作区。
         self.screen_w = 0
         self.screen_h = 0
         if self.screenshot() is not None:
-            print(f"[连接] 实机画面尺寸: {self.screen_w}x{self.screen_h}")
+            print(f"[连接] 引擎工作区: {self.screen_w}x{self.screen_h}")
         else:
-            print("[连接] 警告: 连接后首帧截图失败, 实机尺寸留待下次截图时读取")
+            print("[连接] 警告: 连接后首帧截图失败, 工作区尺寸留待下次截图时读取")
+        self.display_w, self.display_h = 0, 0
+        try:
+            import subprocess
+            raw = subprocess.run(
+                [self.adb_path, "-s", self.address, "exec-out", "screencap", "-p"],
+                capture_output=True, timeout=15).stdout
+            import cv2 as _cv2
+            dimg = _cv2.imdecode(np.frombuffer(raw, np.uint8), _cv2.IMREAD_COLOR)
+            if dimg is not None:
+                self.display_h, self.display_w = dimg.shape[:2]
+        except Exception as e:
+            print(f"[连接] 实机分辨率直读失败(仅影响显示, 不影响运行): {e}")
+        if self.display_w:
+            tag = " (MAA 长边缩放)" if self.display_w != self.screen_w or self.display_h != self.screen_h else ""
+            print(f"[连接] 实机分辨率: {self.display_w}x{self.display_h} / 引擎工作区: {self.screen_w}x{self.screen_h}{tag}")
+        else:
+            print(f"[连接] 实机分辨率未读到, 显示回退引擎工作区 {self.screen_w}x{self.screen_h}")
         return True
 
     def screenshot(self) -> np.ndarray | None:

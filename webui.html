@@ -462,6 +462,11 @@ async function refreshStatus(){
     $("mode-badge").className = "badge " + (s.debug_click?"":"on");
     $("screen-size").textContent = s.screen ? s.screen.join("×")
                                             : (c ? "读取中…" : "待读取");
+    if(s.screen && s.work && s.screen.join("×") !== s.work.join("×"))
+        $("screen-size").title = "引擎工作区 " + s.work.join("×") +
+                                 "（MAA 截图长边缩放, 相对坐标不受影响）";
+    else
+        $("screen-size").removeAttribute("title");
     if(c) $("screen-hint").style.display = "none";
     else $("screen-hint").style.display = "flex";
     $("maa-connect").textContent = c ? "已连接" : "连接";
