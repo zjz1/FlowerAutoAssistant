@@ -648,6 +648,23 @@ class Handler(BaseHTTPRequestHandler):
                     {"key": "target_tail", "type": "text", "label": "目标账号尾部",
                      "desc": "匹配 abc****de 的末尾数字", "value": eng.config.get("target_tail", "")},
                 ]
+            if mid == "social":
+                # 2026-10-07 用户反馈: ⚙ 只有 startup/claim 可点, 其余模块被 disabled —— 补齐
+                # social 的 5 个真实 if_config 开关(与 flow_social.json §4.1.2/4.1.3/4.1.4/4.2/4.3
+                # 一一对应, 默认值与 data/config.example.json 一致)。plant/energy/daily/idle
+                # 四个流程无任何 if_config, 返回 [] → ⚙ 可点开面板显示「暂无独立子功能」说明。
+                return [
+                    {"key": "enable_shine", "type": "switch", "label": "闪耀委托挑战",
+                     "desc": "家族活动 4.1.2 · 每日 10-21 时开放时段内执行", "value": bool(eng.config.get("enable_shine", False))},
+                    {"key": "enable_mine", "type": "switch", "label": "矿洞探险",
+                     "desc": "家族活动 4.1.3 · 每日礼包领取/次日「明日再来」跳过", "value": bool(eng.config.get("enable_mine", False))},
+                    {"key": "enable_rabbit", "type": "switch", "label": "守望兔子",
+                     "desc": "家族活动 4.1.4 · 占位待开发, 开启暂无实际动作", "value": bool(eng.config.get("enable_rabbit", False))},
+                    {"key": "enable_pollin", "type": "switch", "label": "好友采粉",
+                     "desc": "4.2 · 密友+好友逐页采集花粉, 无可采则回自己家园", "value": bool(eng.config.get("enable_pollin", True))},
+                    {"key": "enable_like", "type": "switch", "label": "社区点赞",
+                     "desc": "4.3 · 种草社区随机点赞(每期上限 20 次)", "value": bool(eng.config.get("enable_like", False))},
+                ]
             return []
         if plan and plan.get("modules"):
             for m in plan["modules"]:

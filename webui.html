@@ -652,7 +652,7 @@ function renderMaaTasks(){
       `<div class="task-row" data-id="${esc(t.id)}">
         <input type="checkbox" data-id="${esc(t.id)}" ${t.checked?"checked":""}>
         <span class="name">${esc(t.name)}</span>
-        <button class="gear" data-gear="${esc(t.id)}" title="${hasSettings ? t.flow + " · 设置" : t.flow + "（无独立设置）"}" ${hasSettings ? "" : 'style="opacity:.35" disabled'}>⚙</button>
+        <button class="gear" data-gear="${esc(t.id)}" title="${hasSettings ? t.flow + " · 设置" : t.flow + " · 无独立设置(点击查看说明)"}" ${hasSettings ? "" : 'style="opacity:.55"'}>⚙</button>
       </div>`;
   }
   box.innerHTML = html;

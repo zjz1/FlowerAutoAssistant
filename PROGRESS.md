@@ -2407,3 +2407,43 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 - 文档同步：FLOWS §4.1.1（模板重裁 + 安全论证 + 1280 工作区口径）、§10（connect 双读 + 工作区 vs 实机）；
   PROJECT_GUIDE §3.1（工作区口径警示 + 模板表 tree_close 行更新）、§5 待实机项 ⑩。
 - 待实机：C32（重启 webui 即验即销）、C25 销项（下次浇水）、C29 完整流，其余同里程碑 80 清单。
+
+
+## 2026-10-07 · 合并协作区 zcode-20261006-12/-13/-14（WebUI ⚙ 全量可点 + startup on_fail 改 skip + 等待「纯等待时钟」）（里程碑 82）
+
+**来源**：`_collab/inbox/` 三批（-12/-13/-14），均源自 10-07 用户报障与 22:49 运行日志分析；
+其中 -13/-14 是用户拍板的两个决策（C 方案 / 甲方案）。主 agent 独立复验 **23/23 全过**；
+闸门全绿（JSON 15/15、步骤 27 种/249 处/0 未知、语法 8/8）。
+
+- **-12 WebUI「使用界面」模块 ⚙ 全量可点（用户报障）**：根因 = 后端 `_module_settings(mid)` 只给
+  claim/startup 定义了面板元数据，其余返回 `[]` → 前端 `hasSettings=false` → 齿轮渲染 `disabled`
+  （disabled 按钮不可点，而齿轮 onclick 本身早已支持无设置情形）。修：补 `social` 分支（5 个真实
+  if_config 开关，默认值与 config.example 一致）+ 齿轮移除 `disabled`、无设置时 title 提示可点、
+  opacity .55。plant/energy/daily/idle 经 grep 核实**无任何 if_config**，如实返回 `[]`（不造假设置）。
+  主 agent 复验：调 `Handler._daily` 实测 social 5 键齐全且 pollin=true/shine=true（按注入 config 回显）、
+  四模块 `[]`、startup 2/claim 3 不变；5 键与 flow_social.json 的 if_config **一一对应**。
+- **-13 startup `on_fail` stop_round→skip（用户决策 C）**：22:49 实弹 —— 冷加载 >10s 撞 wait_scene 10s 窗口
+  → 软失败 → 整轮终止，而行 34 `if_scene 户外主界面 HIT` 证明**其实已进入游戏**（同号直登、账号正确）。
+  等待超时属「慢加载」类失败；**错误账号风险已由切号链 `abort_on_fail` 结构性兜底**（认不出入口/账号
+  即在点「登录」前中止），与是否超时无关 → 用户拍板改 skip。daily.json 一处 + 决策链 `_note` + description 同步。
+  主 agent 复验：7 模块全 skip、`_note` 含 abort_on_fail 依据、description 已更新。
+  ⚠ 与 10-03「宁可当天不跑」决策的**关系已在文档中写明**（风险覆盖面变化：从"账号风险"到"仅慢加载"）。
+- **-14 等待「纯等待时钟」（用户决策 甲）**：`wait_text`/`wait_text_gone`/`wait_scene` 三处循环骨架
+  统一改为 `timeout` **只累计纯等待**（每轮探测后的 sleep），截图/OCR 耗时不计入 → 探测数与机器快慢解耦，
+  恒定 ≈ `ceil(timeout/interval)`（10s/1.5s → 7 次；3s/1s → 3 次）；日志携带探测计数
+  （`[等待超时] … (纯等待10s, 探测7次)` / `[等待成功] … (第N次探测)`）。改因：22:49 实测登录页轮播动画
+  打死帧缓存 → 单轮全图 OCR 5.6s → 旧墙钟语义下 10s 窗口被 OCR 吃掉 83%（仅 2 次探测），冷加载即误报。
+  主 agent 复验（mock 实测）：探测数=ceil 语义 4 例、OCR 耗时不计入（墙钟 3.31s > 纯等待 1.0s 而探测 11 次）、
+  命中早退、失败文案、wait_scene 单/多场景、`deadline` 全文件清零。
+  > **主 agent 备注（非缺陷）**：`waited += interval` 为浮点累加，interval 取 0.1 这类二进制不可精确
+  > 表示的值时可能多 1 次探测（实测 11 而非 10）—— 良性（只会多探测、不会少），项目实际只用 1.0/1.5（精确）。
+- **主 agent 补齐入仓模板**：`data/config.example.json` 补登 **`enable_rabbit`** 键及其说明
+  （flow_social.json §4.1.4 早已用 if_config 读取，-12 将其曝光到 WebUI 却无模板登记 → 按项目约定补齐）。
+- **性能优化路线图归档**：-14 REPORT §4 的 4 项优化（`ocr_threads` 配置 / 相邻同词步骤定位复用 /
+  区域化 OCR / 挂机时段 720p）连同实测基线（全图 OCR 5.6s/轮、动画帧缓存永 miss）归档为
+  B8（四要素齐备，逐项待用户点头后出批）—— 回应用户「优化性能与提升速度是始终的要求」。
+- **归档**：-12/-13/-14 → `merged/`；C 类新增 C33（WebUI ⚙）/C34（纯等待时钟 + startup skip），
+  C31 预期随之修订（原「制造启动失败应立即停轮」作废 → 新预期「失败跳过、汇总如实」）。
+- 文档同步：FLOWS §0（7 模块一律 skip + startup 修订历程）、§1 §10（纯等待时钟语义 + 日志新格式 + 步骤表）、
+  PROJECT_GUIDE §3 步骤表、§5（⑨ C31 修订 + ⑪ 里程碑 82）。
+- 待实机：C33（重启 webui + F5 即验）、C34（下次计划运行观察慢加载与探测计数）。

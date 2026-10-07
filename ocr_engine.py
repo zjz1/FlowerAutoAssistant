@@ -1769,34 +1769,45 @@ class OCREngine:
             raise StopRequested("收到停止请求, 中断流程")
 
     def wait_text(self, keywords, timeout=30, interval=1.0):
-        """轮询等待某文字出现, 返回 Point; 超时返回 None。"""
+        """轮询等待某文字出现, 返回 Point; 超时返回 None。
+
+        超时语义(2026-10-07 用户决策「等待时间不计 OCR」): timeout 只累计**纯等待**
+        (每轮探测后的 sleep), 截图/OCR 耗时不计入 —— 识别再慢也不压缩探测次数。
+        背景: 10-07 22:49 实测登录页轮播动画打死帧缓存, 单轮全图 OCR 5.6s,
+        旧墙钟语义下 startup 10s 窗口被 OCR 吃掉 83%(仅 2 次探测), 冷加载误报即此。
+        wait_text / wait_text_gone / wait_scene 三处循环骨架同步此语义。
+        """
         kws = keywords if isinstance(keywords, list) else [keywords]
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        waited, probes = 0.0, 0
+        while waited < timeout:
             self._check_stop()
             img = self.screenshot()
+            probes += 1
             pt = self.locate(kws, img=img)
             if pt is not None:
-                print(f"[等待成功] {kws} @ {pt.x},{pt.y}")
+                print(f"[等待成功] {kws} @ {pt.x},{pt.y} (第{probes}次探测)")
                 return pt
             time.sleep(interval)
-        print(f"[等待超时] {kws} ({timeout}s)")
-        report_failure(self._module, f"等待文本 {kws} 超时 {timeout}s")
+            waited += interval
+        print(f"[等待超时] {kws} (纯等待{timeout}s, 探测{probes}次)")
+        report_failure(self._module, f"等待文本 {kws} 超时 纯等待{timeout}s/{probes}次探测")
         return None
 
     def wait_text_gone(self, keywords, timeout=30, interval=1.0):
-        """轮询等待某文字消失, 返回 True; 超时返回 False。"""
+        """轮询等待某文字消失, 返回 True; 超时返回 False。超时语义同 wait_text(纯等待时钟)。"""
         kws = keywords if isinstance(keywords, list) else [keywords]
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        waited, probes = 0.0, 0
+        while waited < timeout:
             self._check_stop()
             img = self.screenshot()
+            probes += 1
             if self.locate(kws, img=img, min_score=0.3) is None:
-                print(f"[消失成功] {kws}")
+                print(f"[消失成功] {kws} (第{probes}次探测)")
                 return True
             time.sleep(interval)
-        print(f"[消失超时] {kws} ({timeout}s)")
-        report_failure(self._module, f"等待文本 {kws} 消失超时 {timeout}s")
+            waited += interval
+        print(f"[消失超时] {kws} (纯等待{timeout}s, 探测{probes}次)")
+        report_failure(self._module, f"等待文本 {kws} 消失超时 纯等待{timeout}s/{probes}次探测")
         return False
 
     def detect_scene(self, timeouts: dict) -> str:
@@ -1936,7 +1947,10 @@ class OCREngine:
             if branch:
                 self.run_steps(branch, indent=indent + 1)
         elif s_type == "wait_scene":
-            # 轮询等待进入指定场景; 超时只登记软失败不中止(与 wait_text 同语义)。
+            # 轮询超时语义(2026-10-07 用户决策「等待时间不计 OCR」, 与 wait_text/wait_text_gone
+            # 同批同步): timeout 只累计纯等待(每轮探测后的 sleep), 截图/OCR 耗时不计入 ——
+            # 10-07 22:49 实弹: 单轮 OCR 5.6s 把 startup 10s 墙钟窗口吃掉 83%(仅 2 次探测),
+            # 冷加载 >10s 即误报; 纯等待时钟下探测次数恒定, 与机器快慢解耦。
             # 典型用法: 进面板后的载入守卫(如花灵派对 wait_scene 花灵派对界面)。
             # scene 支持字符串或列表(2026-10-06 用户 A/B 决策, 来自协作区 zcode-20261006-3):
             # 列表时任一场景命中即成功, 谁先出现走谁 —— 如 startup 等待 ["户外主界面",
@@ -1949,10 +1963,11 @@ class OCREngine:
             interval = step.get("interval", 1.0)
             okflag = False
             okname = None
-            deadline = time.time() + timeout
-            while time.time() < deadline:
+            waited, probes = 0.0, 0
+            while waited < timeout:
                 self._check_stop()
                 img = self.screenshot()
+                probes += 1
                 for nm in scenes:
                     if self.judge_scene(nm, img=img, min_score=step.get("min_score", 0.4)):
                         okflag, okname = True, nm
@@ -1960,12 +1975,13 @@ class OCREngine:
                 if okflag:
                     break
                 time.sleep(interval)
+                waited += interval
             if okflag:
                 if len(scenes) > 1:
-                    print(f"[等待成功] 场景『{okname}』(多场景任一命中)")
+                    print(f"[等待成功] 场景『{okname}』(多场景任一命中, 第{probes}次探测)")
             else:
-                print(f"[等待超时] 场景『{scene}』({timeout}s)")
-                report_failure(self._module, f"等待场景『{scene}』超时 {timeout}s")
+                print(f"[等待超时] 场景『{scene}』(纯等待{timeout}s, 探测{probes}次)")
+                report_failure(self._module, f"等待场景『{scene}』超时 纯等待{timeout}s/{probes}次探测")
         elif s_type == "if_account_tail":
             # 条件分支(登录页): 画面中含 **** 的脱敏账号块的尾部数字 == tail 时执行 then, 否则 else。
             # 用于「当前选中账号已是目标 → 跳过切号直接登录」(2026-10-03 用户决策:

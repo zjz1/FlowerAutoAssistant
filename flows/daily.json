@@ -1,8 +1,9 @@
 {
     "name": "每日挂机编排",
-    "description": "顺序调度 7 大模块: 开始启动(登录进游戏+签到, 含可选切换账号; 签到已于 2026-10-06 并入启动)->种植->社交(含闪耀委托挑战)->体力->每日任务->领取奖励->挂机. startup 失败必须终止本轮(见下), 其余模块失败自动跳过.",
+    "description": "顺序调度 7 大模块: 开始启动(登录进游戏+签到, 含可选切换账号; 签到已于 2026-10-06 并入启动)->种植->社交(含闪耀委托挑战)->体力->每日任务->领取奖励->挂机. 各模块失败自动跳过(含 startup, 2026-10-07 用户决策修订, 见下).",
     "modules": [
-        { "id": "startup", "flow": "flow_startup.json",     "required": false, "on_fail": "stop_round" },
+        { "id": "startup", "flow": "flow_startup.json",     "required": false, "on_fail": "skip",
+          "_note": "on_fail 修订历程: 10-03 定 stop_round(当时语境=错误账号风险,『宁可当天不跑, 也不能用错误账号跑完』)。10-07 22:49 实弹(冷加载 >10s 撞 wait_scene 10s 窗口软失败, 主界面行 34 复核 HIT 证明其实进去了)暴露: 等待超时属『慢加载』类失败, 与账号风险不同类, 却同受 stop_round 株连终止整轮; 而**错误账号风险已由切号链 abort_on_fail 结构性兜底**(认不出入口/账号即在点「登录」前中止, 绝不带错账号登录), 与等待是否超时无关。用户 10-07 拍板改 skip: startup 失败(含慢加载误报)不再株连整轮, 其余模块各自带归位链如实失败; 真异常由失败清单与编排汇总如实呈现。" },
         { "id": "plant",   "flow": "flow_plant.json",       "required": false, "on_fail": "skip" },
         { "id": "social",  "flow": "flow_social.json",      "required": false, "on_fail": "skip" },
         { "id": "energy",  "flow": "flow_energy.json",      "required": false, "on_fail": "skip" },
