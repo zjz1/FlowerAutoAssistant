@@ -201,6 +201,11 @@ class OCREngine:
         # 「同画面未命中折叠」状态(见 _log_ocr_miss): 帧指纹+exact+区域 相同的连续未命中只打首条
         self._miss_sig: tuple | None = None
         self._miss_count = 0
+        # 相邻定位复用 (性能批 zcode-20261007-16 批B): 上一步(if_text/wait_text)刚 OCR 命中的
+        # 点位, 供**紧邻的下一步** click_text 在查询兼容时直接复用, 免去二次截图 + 全图 OCR。
+        # _step_seq: run_step 单调递增的步骤序号, 保证"仅紧邻下一步"可复用(中间隔了任何步骤即失效)。
+        self._guard_hit: dict | None = None
+        self._step_seq: int = 0
 
     # ---- 公共导航注册表 (flows/common/entries.json) ----
     def _load_navigation(self) -> dict:
@@ -981,8 +986,10 @@ class OCREngine:
             for kw in (keywords if isinstance(keywords, list) else [keywords]):
                 self.last_rel[kw] = pt.rel
             self._last_match_text = b["text"].strip()
+            self._last_match_block = b  # 命中块(含 score/text/center), 供相邻定位复用的严谨校验(批B)
             return pt
         self._last_match_text = None
+        self._last_match_block = None
         return None
 
     def locate_color(self, color_cfg: dict, img=None) -> "Point | None":
@@ -1485,6 +1492,19 @@ class OCREngine:
         # ——既不做「均值复核」(拿历史均值去 veto 本次 OCR 命中), 也不走缓存回退(不查 mean_rel/last_rel/
         # 知识库 rel)。步骤里显式手写的 fallback_rel 属人工兜底, 不受此开关影响(见 docstring)。
         use_cache = bool(self.config.get("use_cache_pos", False))
+        # 批B 相邻定位复用: 上一步(if_text/wait_text)刚命中的同一点位, 若本次 click_text 的查询
+        # 参数兼容(关键字子集/区域子集/阈值不更松/exact 兼容/未传 img/不在均值复核路径)且该点位
+        # 自身满足本次判据, 则直接复用 —— 免去二次截图 + 全图 OCR。不兼容返回 None 走原路径。
+        guard_pt = self._take_guard_point(keywords, img, min_score, exact,
+                                          region_rel, exclude, use_cache)
+        if guard_pt is not None:
+            self._last_locate_source = "ocr"
+            mt = getattr(self, "_last_match_text", None)
+            tag = f" 命中块文字'{mt}'" if mt and mt != kw0 else ""
+            print(f"[OCR命中] {keywords} -> {guard_pt.x},{guard_pt.y}{tag} (复用上一步守卫定位, 免重扫)")
+            self.click_abs(guard_pt.x, guard_pt.y)
+            self._log_click(kw0, keywords, guard_pt, "ocr", category=self._step_category)
+            return True
         pt = self.locate(keywords, img=img, min_score=min_score, exact=exact,
                          region_rel=region_rel, exclude=exclude)
         dropped_by_review = False   # 是否被复核判为误命中而弃用(用于日志如实描述, 不能与"未OCR到"混淆)
@@ -1595,6 +1615,94 @@ class OCREngine:
         self._last_locate_source = "none"
         print(f"[未命中] {keywords}")
         return False
+
+    # ---- 相邻定位复用 (性能批 zcode-20261007-16 批B) ----
+    @staticmethod
+    def _region_within(c, g) -> bool:
+        """相对区域 c 是否被 g 包含(None=全图)。坐标均为 [x1,y1,x2,y2] (0~1), 归一化同帧可比。"""
+        if g is None:
+            return True          # 守卫全图 -> 任何区域都在其内
+        if c is None:
+            return False         # 本次全图 ⊄ 守卫子区域
+        return c[0] >= g[0] and c[1] >= g[1] and c[2] <= g[2] and c[3] <= g[3]
+
+    def _remember_guard(self, kws, pt, exact, region_rel, min_score,
+                        exclude=None) -> None:
+        """记录一次定位守卫(if_text/wait_text)的**真实 OCR 命中**, 供**紧邻的下一步**
+        click_text 复用同一命中点位。仅在真实命中处调用(缓存回退不在此列)。
+
+        关键: 记下命中块 b 的 score/text 与守卫查询参数 —— click_text 复用时必须逐条校验
+        (见 _take_guard_point): 复用点必须自身满足 click 的全部判据, 且 click 判据是守卫判据的
+        "子集"(关键字/区域/阈值/exclude), 以保证收窄后 click 的首个命中仍是同一个块。
+        """
+        if not self.config.get("guard_reuse", True):
+            return
+        b = getattr(self, "_last_match_block", None) or {}
+        kws = list(kws) if isinstance(kws, list) else [kws]
+        self._guard_hit = {
+            "seq": self._step_seq + 1,               # 仅紧邻的下一次 run_step 可复用
+            "kws": frozenset(kws),
+            "exact": bool(exact),
+            "region": tuple(region_rel) if region_rel else None,
+            "min_score": min_score,
+            "exclude": frozenset(exclude or ()),
+            "pt": pt,
+            "text": (b.get("text") or "").strip(),
+            "score": b.get("score", 1.0),
+        }
+
+    def _take_guard_point(self, keywords, img, min_score, exact, region_rel,
+                          exclude, use_cache):
+        """若存在**紧邻、兼容**的定位守卫, 复用其命中点位并返回 Point; 否则返回 None。
+
+        安全规则(须全部满足; 任一不满足即返回 None, 走原 locate 路径):
+          1) 仅紧邻下一步: 守卫的 seq == 当前步骤 seq(中间隔了任何步骤即失效);
+          2) 未显式传 img: 复用点与守卫取自同一帧截图;
+          3) 守卫 exact=False(if_text/wait_text 恒为子串匹配) 且 本次关键字 ⊆ 守卫关键字;
+          4) 本次区域 ⊆ 守卫区域;  本次 min_score >= 守卫 min_score;  守卫 exclude ⊆ 本次 exclude;
+          5) 不在 use_cache 的均值复核路径(region 为空且 use_cache 时, 正常路径会拿均值复核,
+             复用会改变该行为, 故不复用);
+          6) 复用点自身满足本次全部判据: score 达标 / 命中文字满足关键字语义 / 不含本次 exclude /
+             落在本次区域内。
+        全局开关 guard_reuse(data/config.json, 默认 true) 置 false 时, _remember_guard 不再记录,
+        本方法恒返回 None —— 一键关闭该优化(无需改代码)。
+        """
+        if not self.config.get("guard_reuse", True):
+            return None
+        g = self._guard_hit
+        if g is None or g["seq"] != self._step_seq or img is not None:
+            return None
+        if use_cache and region_rel is None:
+            return None
+        kws = list(keywords) if isinstance(keywords, list) else [keywords]
+        if not (frozenset(kws) <= g["kws"]) or g["exact"]:
+            return None
+        if not self._region_within(region_rel, g["region"]):
+            return None
+        if min_score < g["min_score"]:
+            return None
+        ex = set(exclude or ())
+        if not (g["exclude"] <= ex):
+            return None
+        pt, text, score = g["pt"], g["text"], g["score"]
+        if score < min_score:
+            return None
+        if ex and any(e in text for e in ex):
+            return None
+        if region_rel is not None:
+            w, h = self.screen_w, self.screen_h
+            rx1, ry1 = int(region_rel[0] * w), int(region_rel[1] * h)
+            rx2, ry2 = int(region_rel[2] * w), int(region_rel[3] * h)
+            if not (rx1 <= pt.x <= rx2 and ry1 <= pt.y <= ry2):
+                return None
+        if not any((text == k) if exact else (k in text) for k in kws):
+            return None
+        # 通过全部校验: 一次性消费, 并补齐与正常命中一致的副作用(last_rel / _last_match_text)
+        self._guard_hit = None
+        for k in kws:
+            self.last_rel[k] = pt.rel
+        self._last_match_text = text or None
+        return pt
 
     # ---- 模板匹配识别(纯图形/无文字按钮, 借鉴 MAA TemplateMatch) ----
     @staticmethod
@@ -1818,6 +1926,8 @@ class OCREngine:
             probes += 1
             pt = self.locate(kws, img=img)
             if pt is not None:
+                # 批B: 登记守卫, 供紧邻下一步 click_text 复用该命中点位(免二次截图+全图 OCR)。
+                self._remember_guard(kws, pt, False, None, 0.5)
                 print(f"[等待成功] {kws} @ {pt.x},{pt.y} (第{probes}次探测)")
                 return pt
             time.sleep(interval)
@@ -1879,6 +1989,9 @@ class OCREngine:
             # 纯文档节点(如 {"_note": "..."}): 不是可执行步骤。
             # 此前会一路落到末尾的 [未知步骤] None, 每遇到一个就在日志里刷一行噪音。
             return
+        # 批B: 每个可执行步骤递增序号 —— 相邻定位守卫只在"紧邻的下一步"可复用(见 _take_guard_point)。
+        # 放在文档节点之后: 注释节点无副作用, 不消耗序号, 不至于平白让紧邻守卫过期。
+        self._step_seq += 1
         kws = step.get("text", step.get("keywords"))
         # 步骤可声明当前界面场景(如 "scene": "家园主界面"), 之后的点击默认记入该场景
         if step.get("scene"):
@@ -1966,10 +2079,15 @@ class OCREngine:
         elif s_type == "if_text":
             # 条件分支: 检测到任意关键字才执行 then, 否则执行 else(可选)
             # 支持 region_rel=[x1,y1,x2,y2] (0~1) 限定时只在指定区域做文本判断
-            hit = self.locate(kws, min_score=step.get("min_score", 0.5),
-                              region_rel=step.get("region_rel")) is not None
+            region_rel = step.get("region_rel")
+            min_score = step.get("min_score", 0.5)
+            pt = self.locate(kws, min_score=min_score, region_rel=region_rel)
+            hit = pt is not None
+            if hit:
+                # 批B: 命中后登记守卫, 供紧邻下一步 click_text 复用该点位(免二次截图+全图 OCR)。
+                self._remember_guard(kws, pt, False, region_rel, min_score)
             branch = step.get("then") if hit else step.get("else")
-            print(f"{pad}[if_text] {kws} {'区域'+str(step.get('region_rel'))+' ' if step.get('region_rel') else ''}-> {'HIT' if hit else 'MISS'}")
+            print(f"{pad}[if_text] {kws} {'区域'+str(region_rel)+' ' if region_rel else ''}-> {'HIT' if hit else 'MISS'}")
             if branch:
                 self.run_steps(branch, indent=indent + 1)
         elif s_type == "if_scene":

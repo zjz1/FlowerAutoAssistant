@@ -2478,3 +2478,39 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 - 文档同步：FLOWS §10（第 4 条：拆分结果缓存 + 键含位置的修订说明）、PROJECT_GUIDE §11.4 更正 +
   新增 §11.5（里程碑 83 拆分缓存）。
 - 待实机：C35（下次计划运行核对整轮耗时/CPU 与定位正确性）。
+
+
+## 2026-10-10 · 合并协作区 zcode-20261007-16（性能批B：相邻同词步骤定位复用）（里程碑 84）
+
+**来源**：`_collab/inbox/zcode-20261007-16`（B8 路线图批B，用户已批准动工）。主 agent 复验：
+提交方离线验收 26/26（**重定向到主仓库合并版执行**，修正其 sys.path 指向交付副本的陷阱）+ 主 agent
+独立补充 8 项全过；闸门全绿（JSON 15/15、步骤 27 种/249 处/0 未知、语法 8/8）。
+**提交中夹带 `__pycache__/*.pyc` 构建产物，已按硬性规则剔除不入库。**
+
+- **改动（ocr_engine.py 6 处，+119/−3 + config.example 1 键）**：挂机流程高频存在「if_text/wait_text
+  刚判到某文字 → 紧邻 click_text 点同一文字」的相邻对，同一帧上却各自截图+全图 OCR。本批让紧邻的
+  `click_text` 在**查询兼容**时直接复用上一步 OCR 真实命中点位，免二次截图 + 免全图 OCR。
+  机制：`_step_seq`（run_step 单调序号，纯文档节点不消耗）+ `_guard_hit`（if_text/wait_text 命中时登记
+  关键字/区域/阈值/exclude/命中块 score+text）；`_take_guard_point` 六重守卫全过才复用（**一次性消费**）：
+  ①仅紧邻下一步 ②未显式传 img ③关键字 ⊆ 守卫且守卫 exact=False ④区域 ⊆ /阈值 ≥ /exclude ⊇
+  ⑤use_cache 均值复核路径不复用 ⑥复用点自证（score 达标/文字满足语义/不含 exclude/落在区域内）。
+  全局开关 `guard_reuse`（默认 true）一键退化为旧行为。
+- **主 agent 静态核查**：复用路径 `_log_click(kw0, keywords, pt, "ocr", category=_step_category)` 与
+  原命中路径签名逐字一致（真实 OCR 命中入 KB 合规）；`_last_locate_source="ocr"` 一致；`kw0` 在插入点
+  前已定义；`loop_text`/`loop_times` 内部**不直调 click_text**（do 子块经 run_steps 消耗序号）→
+  循环前守卫不会泄漏进循环体；`mark` 语义保持（复用=真实命中，retry_loop 判回成正确）；
+  `no_fallback` 不受阻（复用是本次运行的实时命中，非历史坐标回退）；批A 拆分缓存 origin 键修正保留（累计性 ✓）。
+- **时序局部性反而改善（主 agent 论证）**：旧路径 click 在截图后 ~5.6s（OCR 耗时）才点；复用路径
+  点击距截图仅毫秒级 —— 按钮位移窗口更小，点击时准性不降反升。跳过的 12 处相邻对（关键字/区域非子集、
+  阈值更严等）保守不动，照旧各自识别。
+- **复验结果**：①端到端真实 flow_startup `if_text(登录)→click_text(登录)` 对：locate 仅 1 次、
+  点击坐标=守卫点、零隐藏截图；②中间隔步不复用（locate 2 次）；③`guard_reuse=false` 完全退回旧版；
+  ④批A 拆分缓存回归（位置键坐标正确）；⑤config.example `guard_reuse` + `enable_rabbit` 两键齐。
+  提交方 26 项（等价 A1-A6 / 守卫链回归 B1-B11 / 区域真值表与 seq 单测 C1-C6）在合并版上全过。
+- **相邻对审计（提交方只读扫描）**：26 对中可复用 14（claim 9 / energy 1 / social 1 / startup 3，
+  均为每轮必跑热点）、保守跳过 12（行为不变）。
+- **归档**：-16 → `merged/`（剔除 pyc）；B8 批B 标 ✅（离线验收级，实机冒烟建议见 C36）；
+  批C（区域化 OCR + 模块级计时）仍待用户点头。
+- 文档同步：FLOWS §10（第 5 条：相邻定位复用 + 六重守卫）、PROJECT_GUIDE §11.5（路线图状态）。
+- 待实机：C36（非阻塞冒烟：跑一轮 startup/claim，日志应现 `(复用上一步守卫定位, 免重扫)` 且后续点击
+  与旧版一致；异常时 `data/config.json` 置 `guard_reuse: false` 一键回退）。
