@@ -2559,6 +2559,45 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 仍会在项目根重建脚手架。
 
 
+## 2026-10-11 · 合并非 zcode 3 批（codearts 日志分析 + officeAce-logfix 代码修复 + officeAce 交接文档）（里程碑 86）
+
+**来源**：`_collab/inbox/` 三批非 zcode 提交。唯一代码改动 = officeAce-logfix 的 `pollin.py`
+（+16/−7 单 hunk）；另两批为纯文档（分析报告出仓留档，交接文档不入主项目）。
+
+### 86.1 officeAce-20261010-logfix：`open_friend_list()` 判据修正（唯一代码批）
+
+- **缺陷实锤**（依据 codearts 分析的 10-10 18:10 运行日志 L183-196）：`wait_screen_change` 用**整屏**
+  帧差（96×54 灰度阈值 0.05）判定「社交」**小面板**是否弹出，原理上不敏感 —— 3 连报「点击被吞」后
+  `[等待] 社交面板 命中(3s)`，面板其实早已弹出；危害=每轮误报空等 5s + 多余重点可能把刚弹出的面板又关掉。
+- **修法**：帧差之外追加一次**正向复核** `_panel_friend_pt(eng) is not None`（面板内「好友」钮出现即视为
+  点击生效）break；删除循环末尾多余 `wait_until(_panel_friend_pt, 5)`；`pt_btn is None` 改 `continue`
+  区分文案。**重试预算不变**（3 点击 × 3 attempt）；`wait_screen_change` 其它调用点
+  （ensure_home/leave_garden/leave_friend_list 等整屏切换）刻意未动。
+- **主 agent 独立复验**：①diff 仅 1 处 hunk +16/−7；②累计性保留（locate_fine×3/BTN_REGION_CACHE×3/
+  click_btn_fine×4/SAFE_SLOT_MAX×4/_rescan_skip_failed×3）；③UTF-8 无 BOM、LF（`\r`=0）；
+  ④桩测三场景全过（主 agent 自建，复验目标重定向主仓库）：ⓐ帧差 0+面板已现 → 正向复核生效只点 1 次
+  （旧版会误报重点 3 次）→ ok=True；ⓑ真被吞 → 9 次点击（3×3 预算）后如实失败，不死循环；ⓒ社交不可读
+  → 0 次点击（continue 不产生点击）。日志文案与代码逐行比对一致。
+- **边界如实声明**：本修只消除误报与多余点击，**不解决**「社交不可读」残留（见 86.3 D1）。
+- 闸门全绿（退出码 0）。
+
+### 86.2 codearts-20261010-log-analysis（纯分析批）与 officeAce-20261010-handoff（交接批）
+
+- codearts 六项缺陷清单（B1/C1/E1/S2/T1/N1）+ officeAce 逐项回复，**并入 zcode-developing 面板新
+  D 类**（`D类_日志分诊缺陷清单_20261010.md`，D1-D8 + 待用户裁决 5 项）；**B2 已与 logfix 修正对齐**
+  （注明误报已修、B1-残留与 B2 同源由 zcode 统一出批，勿重复实现兜底绕路）。
+- 基线声明采纳：该日志生成于批B 合并（b983d98，18:26）之前，凡涉及守卫复用失效的推断不得当新 bug 重复修。
+- handoff 交接文档不入主项目（出仓留档）；**5 项待用户裁决已列给用户**（B1 失败兜底 vs 2026-10-05
+  裁定冲突 / 是否修订 10-05 裁定 / S2 是否现在改 / T1 实机采样 / N1 转交）。
+
+### 86.3 归档与待办
+
+- 3 批已归档 `_collab/merged/`；闸门全绿；本批同提交含 2026-10-10 治理条目（见上节）。
+- **待用户**：①handoff §6 五项裁决（见上）；②B8 批C 区域化 OCR 待点头；③各 agent 框架工作区根
+  配置改指向 `_coagent/<项目>-<agent>/`。
+- **待实机**：D1 定罪实验（复跑采粉至点「社交」处截图跑 `ocr_engine.py --ocr-screen`，10 分钟定方向）。
+
+
 ## 2026-10-11 · 合并协作区 zcode-20261011（WebUI 子模块设置二合一：删底部 `.mod-panels`，保留 ⚙ 弹出式 `#mod-settings`）（里程碑 85）
 
 **来源**：`_collab/inbox/zcode-20261011`，响应用户任务「webui 有两种子模块设置且内容不一致……倾向于

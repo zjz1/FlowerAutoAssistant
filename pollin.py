@@ -546,8 +546,15 @@ def open_friend_list(eng):
         if pt is None:
             if in_home(eng, img) or in_garden(eng, img):
                 # 自己家园/好友花园按钮一致(用户 2026-10-05), 统一处理:
-                # 点-验-重试(2026-10-04 引入): 「社交」点击常被吞/被气泡遮挡 —— 点击后画面
-                # 5s 内必须变化, 无变化立即重点(至多 3 次); 面板等待 15s→5s(定值规则)。
+                # 点-验-重试(2026-10-04 引入): 「社交」点击常被吞/被气泡遮挡 —— 点击后必须在
+                # 5s 内确认**社交面板出现**, 未出现立即重点(至多 3 次); 面板等待 15s→5s(定值规则)。
+                # ⚠ 2026-10-10 判据修正(officeAce, 依据 codeart 10-10 18:10 运行日志):
+                #   原判据只有 `wait_screen_change` = **整屏**帧差(96×54 灰度, 阈值 0.05); 而「社交」
+                #   弹出的是**小面板**, 整屏帧差天然测不到它 —— 日志实证: 连报 3 次「点击被吞」之后
+                #   `[等待] 社交面板 命中 (3s)` 面板其实早已弹出, 随后成功点「好友」(422,518) 进列表。
+                #   危害: ①每次误报都让 wait_screen_change 空等满 5s; ②多余的再点击可能把刚弹出的
+                #   面板又关掉。故在帧差之外**追加一次正向复核**(面板内「好友」按钮出现即视为生效),
+                #   并把循环末尾那次 5s 面板等待去掉(每轮点击已自带确认, 避免重复空等)。
                 where = "好友花园" if in_garden(eng, img) else "自己家园"
                 print(f"  [列表] 第{attempt}次 在{where} 点「社交」")
                 for i in range(1, 4):
@@ -555,13 +562,15 @@ def open_friend_list(eng):
                         return False
                     pre = eng.screenshot()
                     pt_btn = click_btn_fine(eng, ["社交"], img=pre)
-                    if pt_btn is not None and wait_screen_change(eng, pre, desc=f"点「社交」(第{i}次)", timeout=5):
-                        break
                     if pt_btn is None:
                         print("  [列表] 「社交」常规+滤色精识均未命中, 未产生点击, 重试")
-                    else:
-                        print("  [列表] 点「社交」后画面无变化(点击被吞), 重试")
-                wait_until(eng, lambda: _panel_friend_pt(eng) is not None, 5, desc="社交面板")
+                        continue
+                    if wait_screen_change(eng, pre, desc=f"点「社交」(第{i}次)", timeout=5):
+                        break
+                    if _panel_friend_pt(eng) is not None:
+                        print("  [列表] 点「社交」后整屏帧差未达阈值, 但社交面板(「好友」钮)已出现 -> 视为点击生效")
+                        break
+                    print("  [列表] 点「社交」后未见社交面板(点击被吞), 重试")
                 pt = _panel_friend_pt(eng)
             else:
                 print(f"  [列表] 第{attempt}次: 场景未知, 先回自己家园")
