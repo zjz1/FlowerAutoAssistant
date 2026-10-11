@@ -199,6 +199,10 @@ def _status() -> dict:
         "flow_dir": str(BASE / "flows"),
         "debug_click": bool(getattr(eng, "debug_click", False)),
         "running": _running(),
+        # 运行中模块(run_daily 维护): 前端据此锁定该模块的 ⚙ 与设置面板(2026-10-11 用户需求)
+        "current_module": getattr(eng, "current_module", None),
+        # 关闭页面确认开关(纯 WebUI 偏好, 引擎不读); 流程运行中前端仍强制确认
+        "confirm_page_close": bool(eng.config.get("confirm_page_close", True)),
     }
 
 
@@ -306,6 +310,16 @@ class Handler(BaseHTTPRequestHandler):
                 eng.update_config(log_click_pos=bool(data["log_click_pos"]))
             if "use_cache_pos" in data:
                 eng.update_config(use_cache_pos=bool(data["use_cache_pos"]))
+            # 2026-10-11 补: 里程碑 82 给 ⚙ 面板加 enable_mine/enable_rabbit 时漏了本处理器,
+            # 勾选被静默丢弃(config.json 无键, if_config 读 None) —— 用户实测矿洞勾选无效即此因。
+            if "enable_mine" in data:
+                eng.update_config(enable_mine=bool(data["enable_mine"]))
+            if "enable_rabbit" in data:
+                eng.update_config(enable_rabbit=bool(data["enable_rabbit"]))
+            if "enable_water" in data:
+                eng.update_config(enable_water=bool(data["enable_water"]))
+            if "confirm_page_close" in data:
+                eng.update_config(confirm_page_close=bool(data["confirm_page_close"]))
             now = bool(eng.config.get("enable_switch", False))
             log_append(f"[config] 切换账号功能 {'启用' if now else '关闭'}"
                        + (f", 目标尾部={eng.config.get('target_tail')}" if now else ""))
@@ -313,6 +327,9 @@ class Handler(BaseHTTPRequestHandler):
                        f", 功能2花灵派对={'开' if eng.config.get('claim_party') else '关'}"
                        f", 功能3奇妙花宝={'开' if eng.config.get('claim_hb') else '关'}"
                        f", 闪耀委托挑战={'开' if eng.config.get('enable_shine') else '关'}"
+                       f", 摇钱树浇水={'开' if eng.config.get('enable_water', True) else '关'}"
+                       f", 矿洞探险={'开' if eng.config.get('enable_mine', False) else '关'}"
+                       f", 守望兔子={'开' if eng.config.get('enable_rabbit', False) else '关'}"
                        f", 好友采粉={'开' if eng.config.get('enable_pollin', True) else '关'}"
                        f", 社区点赞={'开' if eng.config.get('enable_like', False) else '关'}")
             log_append(f"[config] 记录按钮位置={'开' if eng.config.get('log_click_pos', False) else '关'}"
@@ -650,10 +667,14 @@ class Handler(BaseHTTPRequestHandler):
                 ]
             if mid == "social":
                 # 2026-10-07 用户反馈: ⚙ 只有 startup/claim 可点, 其余模块被 disabled —— 补齐
-                # social 的 5 个真实 if_config 开关(与 flow_social.json §4.1.2/4.1.3/4.1.4/4.2/4.3
+                # social 的真实 if_config 开关(与 flow_social.json §4.1.1~4.1.4/4.2/4.3
                 # 一一对应, 默认值与 data/config.example.json 一致)。plant/energy/daily/idle
                 # 四个流程无任何 if_config, 返回 [] → ⚙ 可点开面板显示「暂无独立子功能」说明。
+                # 2026-10-11: 新增浇水开关 enable_water(4.1.1, 默认 true); 同批修 set_config
+                # 白名单缺 enable_mine/enable_rabbit 导致勾选被静默丢弃的缺陷(见上)。
                 return [
+                    {"key": "enable_water", "type": "switch", "label": "摇钱树浇水",
+                     "desc": "家族活动 4.1.1 · 每日浇水 X/3(含生效复核: 点击被吞自动重试 1 次)", "value": bool(eng.config.get("enable_water", True))},
                     {"key": "enable_shine", "type": "switch", "label": "闪耀委托挑战",
                      "desc": "家族活动 4.1.2 · 每日 10-21 时开放时段内执行", "value": bool(eng.config.get("enable_shine", False))},
                     {"key": "enable_mine", "type": "switch", "label": "矿洞探险",

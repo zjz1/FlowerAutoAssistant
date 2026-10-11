@@ -223,6 +223,15 @@
       </div>
 
       <div class="maa-panel">
+        <h2>界面设置</h2>
+        <div class="cfg-row">
+          <span class="lbl">关闭页面时弹出确认</span>
+          <label class="cfg-hint"><input type="checkbox" id="ui-close-confirm-chk"> 启用</label>
+        </div>
+        <p class="maa-note">开启后, 关闭本页标签会弹浏览器确认, 防误触关闭; 关掉后不再提醒。<b>流程运行中即使设了不再提醒仍会确认</b>(防误关丢失实时监控)。改动即时保存。弹窗文案由浏览器固定, 无法自定义。</p>
+      </div>
+
+      <div class="maa-panel">
         <h2>今日小提示</h2>
         <div class="muted" style="line-height:1.8">
           · 种植箱「一键种植」入库量基准<br>
@@ -347,9 +356,12 @@ if(location.protocol === "file:"){
 }else{
 // ---- 运行时关闭页面确认: 有流程在跑时关闭浏览器标签会弹窗提醒 (2026-09-30) ----
 window.addEventListener("beforeunload", (e)=>{
-  if(runningFlag){
+  // 关闭页面确认(2026-10-11 用户需求): 默认每次关闭标签页都确认; confirm_page_close=false 不再提醒;
+  // 流程运行中即使设了不再提醒仍确认(防误关丢失实时监控)。
+  // ⚠ 浏览器限制: 该弹窗文案与按钮由浏览器固定(returnValue 文案多数浏览器不展示), 无法自定义。
+  if(runningFlag || confirmPageClose){
     e.preventDefault();
-    e.returnValue = "任务正在运行中, 关闭页面将失去实时监控。确定要离开吗?";
+    e.returnValue = runningFlag ? "流程正在运行中, 关闭页面将失去实时监控。" : "确定要离开 FAA WebUI 吗?";
     return e.returnValue;
   }
 });
@@ -384,6 +396,10 @@ async function refreshStatus(){
   try{
     const s = await api("/api/status");
     runningFlag = !!s.running;
+    currentRunningModule = s.current_module || null;
+    confirmPageClose = (s.confirm_page_close !== false);
+    if(currentRunningModule !== _prevRunMod){ _prevRunMod = currentRunningModule; renderMaaTasks(); if(maaActiveMod) showModuleSettings(maaActiveMod); }
+    if(confirmPageClose !== _prevConfirm){ _prevConfirm = confirmPageClose; const c=$("ui-close-confirm-chk"); if(c) c.checked = confirmPageClose; }
     try{
       $("run-btn").disabled = runningFlag;
       $("maa-start").disabled = runningFlag;
@@ -565,6 +581,9 @@ function esc(s){ const d=document.createElement("div"); d.textContent=String(s??
 
 // ---- 使用界面: 任务列表 ----
 let maaTasks = [];  // [{id,name,flow,settings,checked}]
+let currentRunningModule = null;   // 引擎 run_daily 维护, /api/status 暴露: 运行中模块设置锁定用(2026-10-11)
+let confirmPageClose = true;       // 关闭页面确认(配置键 confirm_page_close, 默认开; 流程运行中始终确认)
+let _prevRunMod = null, _prevConfirm = null;
 async function refreshMaa(){
   try{
     const d = await api("/api/daily");
@@ -581,11 +600,13 @@ function renderMaaTasks(){
   let html = "";
   for(const t of maaTasks){
     const hasSettings = t.settings.length > 0;
+    const isRunning = t.id === currentRunningModule;
+    const gearStyle = isRunning ? 'style="opacity:.35;cursor:not-allowed"' : (hasSettings ? "" : 'style="opacity:.55"');
     html +=
       `<div class="task-row" data-id="${esc(t.id)}">
-        <input type="checkbox" data-id="${esc(t.id)}" ${t.checked?"checked":""}>
+        <input type="checkbox" data-id="${esc(t.id)}" ${t.checked?"checked":""} ${isRunning?'disabled title="流程运行中, 暂不可修改"':''}>
         <span class="name">${esc(t.name)}</span>
-        <button class="gear" data-gear="${esc(t.id)}" title="${hasSettings ? t.flow + " · 设置" : t.flow + " · 无独立设置(点击查看说明)"}" ${hasSettings ? "" : 'style="opacity:.55"'}>⚙</button>
+        <button class="gear" data-gear="${esc(t.id)}" title="${isRunning ? t.flow + " · 运行中, 设置已锁定" : (hasSettings ? t.flow + " · 设置" : t.flow + " · 无独立设置(点击查看说明)")}" ${gearStyle} ${isRunning?'disabled':''}>⚙</button>
       </div>`;
   }
   box.innerHTML = html;
@@ -612,39 +633,40 @@ function showModuleSettings(mid){
   for(const s of t.settings){
     if(s.type === "switch"){
       html += `<div class="cfg-row"><span class="lbl"><span style="display:block;font-weight:600;color:var(--fg)">${esc(s.label)}</span><span class="muted" style="font-size:11px">${esc(s.desc)}</span></span>
-        <label class="cfg-hint"><input type="checkbox" data-key="${esc(s.key)}" ${s.value?"checked":""}> ${s.value?"开":"关"}</label></div>`;
+        <label class="cfg-hint"><input type="checkbox" data-key="${esc(s.key)}" ${s.value?"checked":""}> <span class="cfg-sw-txt">${s.value?"开":"关"}</span></label></div>`;
     } else if(s.type === "text"){
       html += `<div class="cfg-row"><span class="lbl"><span style="display:block;font-weight:600;color:var(--fg)">${esc(s.label)}</span><span class="muted" style="font-size:11px">${esc(s.desc)}</span></span>
         <span class="cfg-hint"><input type="text" data-key="${esc(s.key)}" value="${esc(s.value)}" style="width:80px"></span></div>`;
     }
   }
+  // 运行中锁定(2026-10-11 用户需求): 当前模块正在运行时, 设置面板整体只读 + 顶部提示
+  const locked = (maaActiveMod === currentRunningModule);
+  if(locked){
+    html = `<div class="maa-note" style="color:var(--warn);border:1px dashed var(--warn);border-radius:6px;padding:6px 10px;margin-bottom:6px">🔒 模块「${esc(t.name)}」正在运行, 设置已锁定 —— 本次运行按启动时配置执行, 结束后自动解锁。</div>` + html;
+  }
   html += `<div class="maa-actions" style="border:none;padding-top:6px;margin-top:2px">
-    <button id="mod-settings-save" class="primary">保存设置</button>
-    <span class="muted" id="mod-settings-status"></span></div>`;
+    <span class="muted" id="mod-settings-status"></span><span class="muted" style="font-size:11px">改动即时保存, 无需手动确认</span></div>`;
   body.innerHTML = html;
   panel.classList.remove("hidden");
-  // 开关即时刷新文案(只更新开关旁的 span, 保留 checkbox)
+  if(locked) body.querySelectorAll("input[data-key]").forEach(el=>{ el.disabled = true; });
+  // 开关即时刷新文案(cfg-sw-txt span)
   body.querySelectorAll("input[type=checkbox][data-key]").forEach(cb=>{
     cb.onchange = ()=>{ const txt = cb.parentElement.querySelector(".cfg-sw-txt"); if(txt) txt.textContent = cb.checked ? "开" : "关"; };
   });
-  $("mod-settings-save").onclick = async ()=>{
-    const cfg = {};
-    body.querySelectorAll("[data-key]").forEach(el=>{
-      if(el.type === "checkbox") cfg[el.dataset.key] = el.checked;
-      else cfg[el.dataset.key] = el.value;
+  // 改动即时保存(2026-10-11 用户需求): 每个控件 change 即 POST 该键;
+  // 服务端 update_config 为内存+落盘双写 → 排队未跑的模块本次运行当场生效。
+  body.querySelectorAll("input[data-key]").forEach(el=>{
+    el.addEventListener("change", async ()=>{
+      if(el.disabled) return;
+      const cfg = {}; cfg[el.dataset.key] = el.type === "checkbox" ? el.checked : el.value;
+      try{
+        const d = await api("/api/set_config", {method:"POST", body:JSON.stringify(cfg)});
+        $("mod-settings-status").textContent = d.ok ? "已保存 ✓" : "保存失败";
+        if(d.ok && t && t.settings){ const s = t.settings.find(x=>x.key===el.dataset.key); if(s) s.value = cfg[el.dataset.key]; }
+        setTimeout(()=>{ const st=$("mod-settings-status"); if(st) st.textContent=""; }, 2000);
+      }catch(e){ $("mod-settings-status").textContent = "失败: " + e.message; }
     });
-    try{
-      const d = await api("/api/set_config", {method:"POST", body:JSON.stringify(cfg)});
-      $("mod-settings-status").textContent = d.ok ? "已保存 ✓" : "保存失败";
-      // 保存成功后把新值回写内存, 下次点 ⚙ 显示最新值
-      if(d.ok && t && t.settings){
-        for(const s of t.settings){
-          if(s.key in cfg) s.value = cfg[s.key];
-        }
-      }
-      setTimeout(()=>{ $("mod-settings-status").textContent = ""; }, 2000);
-    }catch(e){ $("mod-settings-status").textContent = "失败: " + e.message; }
-  };
+  });
 }
 $("maa-all").onclick = ()=>{ maaTasks.forEach(t=>t.checked=true); renderMaaTasks(); };
 $("maa-clear").onclick = ()=>{ maaTasks.forEach(t=>t.checked=false); renderMaaTasks(); };
@@ -674,6 +696,13 @@ $("maa-logpos-chk").onchange = async (ev)=>{
 $("maa-cachepos-chk").onchange = async (ev)=>{
   await api("/api/set_config", {method:"POST", body:JSON.stringify({
     use_cache_pos: ev.target.checked
+  })});
+};
+// 使用界面: 界面设置(关闭页面确认), 即时持久化
+$("ui-close-confirm-chk").onchange = async (ev)=>{
+  confirmPageClose = ev.target.checked;
+  await api("/api/set_config", {method:"POST", body:JSON.stringify({
+    confirm_page_close: ev.target.checked
   })});
 };
 

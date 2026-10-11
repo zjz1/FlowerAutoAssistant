@@ -2479,13 +2479,16 @@ class OCREngine:
                     with open(str(fp), encoding="utf-8") as f:
                         registry[fname] = json.load(f)
         result = {"ok": [], "skip": [], "fail": []}
+        self.current_module = None   # 当前运行模块(WebUI /api/status 读取, 用于锁定运行中模块的设置)
         print(f"\n[{_ts()}] ########## 编排: {name} ##########")
         try:
             for m in plan.get("modules", []):
                 self._check_stop()
                 mid = m.get("id")
+                self.current_module = mid
                 print(f"[{_ts()}] >>> 进入模块: {mid}")
                 res = self.run_module(m, registry)
+                self.current_module = None
                 result[res if res in result else "fail"].append(mid)
                 if res == "fail" and m.get("on_fail", "stop_round") == "stop_round":
                     print(f"[编排] 模块 {m.get('id')} 失败且 on_fail=stop_round, 终止本轮")
@@ -2493,6 +2496,8 @@ class OCREngine:
         except StopRequested:
             print(f"[{_ts()}] ########## 编排已由停止请求中断 ({len(result['ok'])} ok) ##########")
             return result
+        finally:
+            self.current_module = None
         print(f"[{_ts()}] ########## 编排结束: ok={len(result['ok'])} skip={len(result['skip'])} fail={len(result['fail'])} ##########")
         return result
 
