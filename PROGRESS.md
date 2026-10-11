@@ -2559,6 +2559,80 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 仍会在项目根重建脚手架。
 
 
+## 2026-10-11 · 合并协作区 zcode-20261011-4（性能批C：区域化 OCR + 模块级 OCR 计时汇总）（里程碑 88）
+
+**来源**：`_collab/inbox/zcode-20261011-4`（用户已批准批C 开工；**外扩 pad 用纯比例，region 宽/高各 5%**，
+不用固定像素）。**2 个文件**：`ocr_engine.py`（+212/−54，21 处 hunk）、`data/config.example.json`（+`region_ocr`）。
+**纯引擎批**，flows/webui 零改动；**合并后需重启 webui**。
+
+### 88.1 批C-① 区域化 OCR（`region_ocr` 开关，默认 true）
+
+- 判定入口新增 `_ocr_candidates(img, region_rel)`：带 `region_rel` 且**区域面积 ≤40% 全图**时走
+  `_ocr_frame_region`（只 OCR 裁片，**外扩 region 宽/高各 5%**，`max(1, int(rw*0.05))`，clamp 图界）→
+  坐标按**当次 origin** 映射回全图；否则回落全图 `_ocr_frame`。
+- 调用方接线 4 处：`find_text`（覆盖 locate/click_text/wait_text 等全部文本定位）、`count_text`、
+  `parse_fraction_at`/`parse_count_at`（点+tol → 半径 `tol*1.25` 小方框，浇水计数/抽奖次数读取受益）。
+- **区域内未命中自动回退一次全图**（`if hits or not used_region: break` 的二次尝试），
+  结果照常入全图单槽帧缓存 —— **只省命中路径耗时，不制造新 MISS**。
+- 裁片走**独立 LRU（200 条）**，键=裁片像素指纹，值=**裁片相对坐标**块 → 同内容不同位置不会错位
+  （与批A 不同：批A 值存全帧绝对坐标故键必须含 origin；此处键无需含位置，映射时用当次 origin），
+  不占用全图单槽帧缓存（避免全图/区域交替互相顶掉）。`_split_wide` 自 `_ocr_frame` **原样抽出**，
+  全图/区域两路径共用，其缓存键含裁片内 origin（批A 修订语义不变）。
+- `region_ocr: false` 一键回退全图路径（旧行为）。
+
+### 88.2 批C-② OCR 计时统计（纯观测，零行为变化）
+
+- `_timed_ocr(img, kind)` 封装（kind: full/region/split），模块级 `_ocr_stat` + 整轮 `_ocr_stat_total`；
+  `run_module` **四类出口各打一行** `[OCR统计] 模块 X: 全图 N 次 T s · 区域 … · 拆分 … · 缓存命中 …`；
+  `run_daily` 的 `finally` 打整轮汇总（停止请求中断也如实打到中断点）。
+
+### 88.3 主 agent 独立复验
+
+- **落位保真**：2 文件与交付副本**字节级一致**；独立逐行 diff（ocr_engine 21 hunk +212/−54、
+  config.example 2 hunk +2/−1）；UTF-8 无 BOM、LF（`\r`=0）；批内无杂物。
+- **提交方测试重定向主仓库后复跑**：`evidence/test_region_ocr.py` 原为 import `_coagent` 草稿引擎，
+  主 agent 改为 import **主仓库已落位** `ocr_engine` → **11/11 PASS**（区域命中+坐标映射 T1、
+  缓存命中 T2、pad=5% 比例 T3 裁片 140×77、面积门槛 T4、回退 T5、开关关闭 T6、count_text T7、
+  `parse_fraction_at` T8、统计行 T9、miss 如实 T10）。
+- **语义等价性核对（读码）**：区域路径返回块后，调用方**照常执行原有区域过滤**（`find_text` 按 center
+  过滤、`count_text` 按 box 包含过滤），映射回全图坐标系后过滤语义与全图路径一致；`parse_fraction_at`
+  的区域框半径 `tol*1.25 > tol`，故任何「中心距目标 ≤tol」的块必在框内 —— 命中集与全图路径一致。
+- **缓存正确性**：`_frame_hash` 是**全字节 blake2b（16 字节摘要，无降采样）** → 不同裁片碰撞概率可忽略；
+  命中路径**返回副本与存储副本分离**（`dict(b)` 浅拷贝），不会叠加两次偏移（提交方 T2 已抓出并修复该缺陷）。
+- **统计无重复累计**：`_print_ocr_stat` 在 `run_module` 的软失败/完成/FlowFailed/异常**四条路径各调一次**，
+  无双重打印；`run_module` 入口清零 `_ocr_stat`。
+- **三方开关一致性**：`region_ocr` 走 Python `config.get(..., True)`（**非 flow `if_config`**），
+  缺键即默认开 —— 不重演里程碑 87 的「if_config 缺键 → 静默跳过」类缺陷（已实测确认现网 config 无此键仍生效）。
+- **⚠ 主 agent 修订（1 处，已在文件内注明）**：`run_daily` 开头原写
+  `self._ocr_stat_total = dict(self._ocr_stat)`，但 `_ocr_stat` 只在 `run_module` **入口**清零、出口不清 →
+  **同一进程连跑第 2 轮时，整轮汇总把上一轮末模块的残留当本轮初值**。主 agent 用**真实 `run_daily`**
+  驱动实测复现（伪造 10 次/轮：第 1 轮 10、第 2 轮 **20**），改为 `dict.fromkeys(self._ocr_stat, 0)`
+  后两轮输出一致。该行正是 C39「整轮耗时对照」的度量依据，故必须准确。
+- **闸门**：`tools/check_project.py` 全绿退出码 0（JSON 15/15、步骤 252 处/未知 0、语法 8/8）；
+  `py_compile` ocr_engine.py 通过。
+
+### 88.4 文档同步与路线图
+
+- `docs/PROJECT_GUIDE.md` §11.5 路线图：**批C ✅ 结项**（离线验收 11/11，实机度量见 C39）+ 批C 要点小节。
+  （注：`PROJECT_GUIDE.md`/`DEV_PROMPT.md` 在 `.gitignore` 中属**本地文档**，该同步不入库；`docs/FLOWS.md` 才是入库文档，本批无需改。）
+- `zcode-developing/B类` B8：批C 行由「0%（待点头）」改为 ✅ 已完成并合并（里程碑 88）；统一依赖收窄为④。
+- `zcode-developing/C类`：新增 **C39**（区域化 OCR 实机度量：无新 MISS / 区域单次 < 全图 / 整轮对照
+  10-11 基线 / 连跑两轮统计独立 / `region_ocr:false` 回退演练）。
+  > 基数值 **31m02s** 源自提交方对 10-11 21:53 轮日志的推算（见其工作空间方案/HANDOFF，**主 agent 未独立复核
+  > 该数值**）；C39 验收时以当轮实测 `[OCR统计] 整轮` 行为准。
+- 归档：-4 → `_collab/merged/`。
+
+### 88.5 生效方式 / 边界（提交方诚实声明，主 agent 确认）
+
+- **必须重启 webui**（引擎改动）；`region_ocr` 默认 true，异常时 `data/config.json` 置 false 即回退（下轮生效）。
+- **离线合成帧不能证明真实加速比**：测试帧文字稀疏（全图 0.83s vs 区域 0.87s 接近）—— 收益与画面文字
+  密度成正比，真实游戏帧须靠 `[OCR统计]` 度量（这正是 ② 先行的意义）。
+- 小图 det 上下文差异理论上可造成「区域与全图块形态不同」→ 由**未命中回退全图**兜底；
+  「区域命中而全图会 miss」的镜像差异概率极低但无法离线排除，随实机对照观察（C39①）。
+- `locate_fine`（滤色精识）内部 `ocr_image` **未计入统计**（独立小图路径，使用频率低）；统计覆盖=
+  `_ocr_frame` 主/拆分/区域化三类。
+
+
 ## 2026-10-11 · 合并协作区 zcode-20261011-3（WebUI 设置链路修复 + UX 重构 + 浇水可靠性；含 -2 的委托时段门修复）（里程碑 87）
 
 **来源**：`_collab/inbox/zcode-20261011-2`（委托时段门边界，单文件 JSON）+
