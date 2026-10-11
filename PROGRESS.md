@@ -2559,6 +2559,71 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 仍会在项目根重建脚手架。
 
 
+## 2026-10-12 · 合并协作区 zcode-20261012-1（ui_build 版本戳 + 页面过期横幅 + 关服后豁免关闭确认）（里程碑 89）
+
+**来源**：`_collab/inbox/zcode-20261012-1`。响应两个用户反馈：①「关闭页面确认」在使用界面不弹；
+②「关闭服务」确认成功后关标签页仍弹确认（重复提醒）。**2 个文件**：`webui.py`（+18/−0）、`webui.html`（+34/−2）。
+**纯前端+WebUI 后端批**，引擎/flows 零改动；合并后**需重启 webui**。
+
+### 89.1 问题①：根因是「页面代际差异」，本批根治其载体
+
+- **诊断结论（提交方，主 agent 认可）**：`beforeunload` 是 window 级唯一监听（与使用/测试视图无关），
+  `confirmPageClose` 初始 true、服务端缺省 true、现网 config 顶层亦 true → **当前代码本身无缺陷**。
+  不弹的那次关闭发生在**「webui 重启前就已打开、未刷新」的旧标签页**上（旧版语义=仅流程运行中才确认，
+  不弹的时刻恰是流程结束后的空闲态）。用户能点到「关闭页面时弹出确认」开关，说明操作时页面已是新代码
+  ——「切开关才恢复」是页面代际差异的表观。
+- **载体根治**：webui.html 的 **mtime_ns 即版本戳**（单次 stat，无需人工维护版本号）。
+  - `webui.py`：新增 `_ui_build()`（异常容忍→`""`）；`/api/status` 增 `ui_build`；
+    `_serve_page()` 用 `body.replace(b"__UI_BUILD__", …)` 注入页面「出生版本」。
+  - `webui.html`：`<head>` 注入 `<meta name="ui-build" content="__UI_BUILD__">`；顶层 `MY_UI_BUILD`；
+    `refreshStatus()` 比对 `s.ui_build !== MY_UI_BUILD` → 顶部琥珀色横幅 + **[立即刷新]** 按钮。
+    **只提示不强刷**（流程运行中用户可能正盯实时画面/日志）；横幅出现后不消失。
+- 效果：无论「升级后重启」还是「html 被原地修改」，旧页面都在一个轮询周期（1.5s）内自查并提示；
+  后台标签页因 visibilitychange 暂停轮询，回前台即出现。
+
+### 89.2 问题②：关服后豁免关闭确认
+
+- `beforeunload` 条件改为 `if(!shutdownDone && (runningFlag || confirmPageClose))`；
+  `shutdownDone` **只在 `/api/shutdown` 请求成功返回后**置位（try 内、alert 之前）——请求失败（catch）
+  不置位，服务可能仍在运行，照常确认，**不牺牲稳健性**；置位后页面已被整页替换为「服务已关闭」终态页，
+  无可丢失信息，豁免安全；刷新/重开后自动复位（页面实例级）。
+
+### 89.3 主 agent 独立复验（HTTP 沙箱 + 真实浏览器双轨）
+
+- **落位保真**：2 文件与交付副本**字节级一致**；独立逐行 diff（webui.py 3 hunk +18/−0；webui.html 9 hunk +34/−2）；
+  UTF-8 无 BOM、LF（`\r`=0）。
+- **关键点读码核查**：①`_serve_page` 的 `Content-Length` 在 **replace 之后**按 `len(body)` 计算
+  （版本戳比占位符长约 7 字节，顺序错会截断整页 —— 此处正确）；②`__UI_BUILD__` 在 html 中**仅出现 1 次**；
+  ③`_serve_page` 只服务 `/`，`/tpltool` 走 `_serve_tpl_page` **未被改动**；
+  ④`_ui_build()` 缺文件返回 `""` 且前端有 `MY_UI_BUILD &&` 守卫 → **不会误弹横幅**（file:// 直开也不误报）；
+  ⑤`shutdownDone = true` 位于 `await api(...)` 成功之后、catch 之外 ✓。
+- **主 agent 自建 HTTP 沙箱断言（9/9 通过）**：GET / 整页可读（Content-Length 与替换后长度一致）、
+  占位符零残留、meta 为 ≥16 位数字、`/api/status.ui_build == meta`、同页重复请求版本戳稳定、
+  **变更 mtime 后 `/api/status.ui_build` 变化（旧页面据此检出）**、刷新后新页 meta 为新戳、
+  `confirm_page_close`/`current_module` 字段仍在（**里程碑 87 未回归**）。
+- **真实浏览器端到端（主 agent 用 browser 子代理实跑，最强制证据）**：
+  沙箱服务 + 「首次加载后 12s 自动变更 mtime」→ **加载瞬间无横幅 → 页面不刷新、等待后横幅自动出现**
+  （文字「⚠ 服务端页面已更新，当前页面是旧版本 …」+「立即刷新」按钮，样式琥珀色）→ **点击后横幅消失、
+  页面确认重载（navigation type=reload）、各分区正常渲染**。→ 本批核心用户可见行为**已独立实证**。
+- **⚠ 主 agent 修订（1 处，仅注释、零行为影响）**：`shutdownDone` 旁注释写「beforeunload 监听先于本声明注册」，
+  实为**声明在前、注册在后**（无论哪种都无 TDZ 问题）→ 已更正注释，避免未来读者据此误判。
+- **闸门**：`tools/check_project.py` 全绿退出码 0；`py_compile webui.py` 通过。
+
+### 89.4 生效方式 / 边界（提交方诚实声明，主 agent 确认）
+
+- **需重启 webui**（webui.py 改动）；**合并前就已打开的旧页面没有检测代码**（它不认识版本戳）——
+  重启后请**手动 F5 一次**，之后打开的所有页面才被版本戳机制接管（一次性过渡动作）。
+- 原生 `beforeunload` 弹窗观感/文案无法自动化验证（浏览器固定文案，与 -3 同一限制）→ 人工验收（C40）。
+- 仅 `webui.py` 更新而 html 未变时版本戳不变 → 不弹横幅（页面 JS 本就没变，属设计取舍）；
+  `tpltool.html` 未加版本戳（模板标注工具，改动面另算）。
+
+### 89.5 台账与归档
+
+- 归档：-20261012-1 → `_collab/merged/`。
+- `zcode-developing/C类` 新增 **C40**（本批人工验收 4 步：旧页横幅 / 关闭确认 / 关服豁免 / 开关不干扰）。
+- `docs/FLOWS.md` 无需改（无流程改动）；WebUI 相关文档惯例记于 PROGRESS。
+
+
 ## 2026-10-11 · 合并协作区 zcode-20261011-4（性能批C：区域化 OCR + 模块级 OCR 计时汇总）（里程碑 88）
 
 **来源**：`_collab/inbox/zcode-20261011-4`（用户已批准批C 开工；**外扩 pad 用纯比例，region 宽/高各 5%**，

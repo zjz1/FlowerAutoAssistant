@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- ui-build 版本戳: 服务端响应本页时会把下方 content 的占位符替换为 webui.html 的版本戳(mtime_ns);
+     页面与 /api/status 的 ui_build 比对, 不一致说明本页是旧版, 顶部横幅提示刷新 (2026-10-12) -->
+<meta name="ui-build" content="__UI_BUILD__">
 <title>FAA Web UI - 小花仙挂机助手</title>
 <style>
   :root{
@@ -24,6 +27,13 @@
   .view-link.danger{color:var(--err);border-color:var(--err)}
   .view-link.danger:hover{background:var(--err);color:#fff}
   .hidden{display:none!important}
+
+  /* 服务端页面版本过期横幅 (2026-10-12): 只提示不强刷, 刷新动作交给用户 */
+  .ui-stale{position:fixed;top:0;left:0;right:0;z-index:9998;display:none;align-items:center;
+    justify-content:center;gap:12px;background:#5a4a12;color:#ffe9a8;padding:8px 16px;
+    font-size:13px;border-bottom:1px solid var(--warn)}
+  .ui-stale button{cursor:pointer;background:var(--warn);color:#14161c;border:none;
+    border-radius:6px;padding:4px 12px;font-weight:600}
 
   /* ---------- MAA 风格 (使用界面) ---------- */
   .maa-top{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--accent);margin:0 0 12px}
@@ -127,6 +137,11 @@
 </style>
 </head>
 <body>
+<!-- 服务端页面版本过期横幅: /api/status 的 ui_build 与本页 meta 不一致时显示 (2026-10-12) -->
+<div id="ui-stale-banner" class="ui-stale">
+  <span>⚠ 服务端页面已更新，当前页面是旧版本 —— 请刷新页面获取新版（不影响服务端运行中的流程，仅本页显示可能过期）。</span>
+  <button id="ui-stale-reload">立即刷新</button>
+</div>
 <header>
   <h1>🌺 <span>FAA</span> 小花仙挂机助手</h1>
   <span id="conn-badge" class="badge off">未连接</span>
@@ -228,7 +243,7 @@
           <span class="lbl">关闭页面时弹出确认</span>
           <label class="cfg-hint"><input type="checkbox" id="ui-close-confirm-chk"> 启用</label>
         </div>
-        <p class="maa-note">开启后, 关闭本页标签会弹浏览器确认, 防误触关闭; 关掉后不再提醒。<b>流程运行中即使设了不再提醒仍会确认</b>(防误关丢失实时监控)。改动即时保存。弹窗文案由浏览器固定, 无法自定义。</p>
+        <p class="maa-note">开启后, 关闭本页标签会弹浏览器确认, 防误触关闭; 关掉后不再提醒。<b>流程运行中即使设了不再提醒仍会确认</b>(防误关丢失实时监控)。改动即时保存。弹窗文案由浏览器固定, 无法自定义。「关闭服务」成功后本页已失效, 关闭标签页不再重复确认; 服务端页面更新后, 旧页面会自动在顶部横幅提示刷新。</p>
       </div>
 
       <div class="maa-panel">
@@ -327,6 +342,13 @@ const logChunks = [];     // 服务端返回的**原始分片**(与 _LOGS 元素
                           // 离线导出必须用它 join("") 才能与服务端 "".join(_LOGS) 等价:
                           // print("abc\n") 会产生 2 个分片, 按 div 拼行会多出空行/断行错位。
 let runningFlag = false;  // 服务端是否有流程在跑(用于运行时关页面确认弹窗, 2026-09-30)
+// 服务端页面版本戳(2026-10-12): 加载时由服务端注入 <meta name="ui-build">;
+// 与 /api/status 返回的 ui_build 不一致 = 本页落后于服务端(webui 升级重启后的旧标签页)。
+const MY_UI_BUILD = (document.querySelector('meta[name="ui-build"]')||{}).content || "";
+let staleBannerShown = false;   // 横幅只弹一次, 出现后不消失(刷新页面是唯一出路)
+let shutdownDone = false;   // 服务确认关闭后置 true: 关闭标签页不再重复弹确认(页面已失效, 无可丢信息)。
+// 注: 本声明在前、beforeunload 监听注册在后; 且监听体在事件触发时才求值(届时初始化已完成), 无 TDZ 问题。
+// (主 agent 里程碑 89 更正: 原注释写反了注册先后 —— 事实是声明在前。)
 
 async function api(path, opts={}){
   const r = await fetch(path, {
@@ -359,12 +381,15 @@ window.addEventListener("beforeunload", (e)=>{
   // 关闭页面确认(2026-10-11 用户需求): 默认每次关闭标签页都确认; confirm_page_close=false 不再提醒;
   // 流程运行中即使设了不再提醒仍确认(防误关丢失实时监控)。
   // ⚠ 浏览器限制: 该弹窗文案与按钮由浏览器固定(returnValue 文案多数浏览器不展示), 无法自定义。
-  if(runningFlag || confirmPageClose){
+  if(!shutdownDone && (runningFlag || confirmPageClose)){
     e.preventDefault();
     e.returnValue = runningFlag ? "流程正在运行中, 关闭页面将失去实时监控。" : "确定要离开 FAA WebUI 吗?";
     return e.returnValue;
   }
 });
+
+// ---- 页面版本过期横幅按钮 (2026-10-12): 一键刷新取新版页面 ----
+$("ui-stale-reload").onclick = ()=> location.reload();
 
 // ---- 界面切换 ----
 let currentView = "use";
@@ -382,6 +407,7 @@ $("shutdown-btn").onclick = async ()=>{
   if(!confirm("确定要关闭 Web UI 服务吗？关闭后将无法通过网页操作，需重新启动服务。")) return;
   try{
     const d = await api("/api/shutdown", {method:"POST", body:"{}"});
+    shutdownDone = true;   // 仅在服务端确认成功后豁免; 请求失败仍照常确认(服务可能还在运行)
     logPolling = false;         // 服务即将退出, 停掉日志轮询(否则每 800ms 对死服务空转)
     clearInterval(autoTimer);   // 停掉截屏/状态自动刷新
     alert((d.message || "服务已关闭") + "。此页面将失效。");
@@ -398,6 +424,13 @@ async function refreshStatus(){
     runningFlag = !!s.running;
     currentRunningModule = s.current_module || null;
     confirmPageClose = (s.confirm_page_close !== false);
+    // 页面版本过期检测(2026-10-12): 服务端 webui.html 已更新而本页是旧版 → 顶部横幅提示刷新。
+    // 只提示不强刷: 流程运行中用户可能正在盯实时画面/日志, 强刷会打断监控。
+    if(!staleBannerShown && MY_UI_BUILD && s.ui_build && s.ui_build !== MY_UI_BUILD){
+      staleBannerShown = true;
+      const b = $("ui-stale-banner");
+      if(b) b.style.display = "flex";
+    }
     if(currentRunningModule !== _prevRunMod){ _prevRunMod = currentRunningModule; renderMaaTasks(); if(maaActiveMod) showModuleSettings(maaActiveMod); }
     if(confirmPageClose !== _prevConfirm){ _prevConfirm = confirmPageClose; const c=$("ui-close-confirm-chk"); if(c) c.checked = confirmPageClose; }
     try{

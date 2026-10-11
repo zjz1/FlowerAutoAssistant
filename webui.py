@@ -186,6 +186,20 @@ def _is_connected(eng) -> bool:
     return bool(getattr(eng, "_ctrl", None) and eng._ctrl.connected)
 
 
+def _ui_build() -> str:
+    """webui.html 版本戳(文件 mtime_ns)。
+
+    响应「/」时注入页面 <meta name="ui-build">, /api/status 同步返回 ui_build;
+    前端比对两者, 不一致 = 浏览器里的页面落后于服务端(webui 升级重启后未刷新的
+    旧标签页), 前端顶部横幅提示刷新 (2026-10-12 用户确认方案, 根治
+    「重启 webui 服务后旧页面静默运行」—— 关闭确认不弹问题即此因)。
+    """
+    try:
+        return str((BASE / "webui.html").stat().st_mtime_ns)
+    except OSError:
+        return ""
+
+
 def _status() -> dict:
     eng = get_engine()
     # screen=实机分辨率(adb 直读, 2026-10-07 用户反馈修正); 读取失败回退引擎工作区
@@ -203,6 +217,8 @@ def _status() -> dict:
         "current_module": getattr(eng, "current_module", None),
         # 关闭页面确认开关(纯 WebUI 偏好, 引擎不读); 流程运行中前端仍强制确认
         "confirm_page_close": bool(eng.config.get("confirm_page_close", True)),
+        # webui.html 版本戳: 前端与自身 meta 比对判断页面是否落后于服务端 (2026-10-12)
+        "ui_build": _ui_build(),
     }
 
 
@@ -395,6 +411,8 @@ class Handler(BaseHTTPRequestHandler):
         if not html.exists():
             return self._send_json({"error": "webui.html missing"}, 500)
         body = html.read_bytes()
+        # 版本戳注入: 页面据此与 /api/status 的 ui_build 比对, 旧页面顶部横幅提示刷新 (2026-10-12)
+        body = body.replace(b"__UI_BUILD__", _ui_build().encode("ascii"))
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
