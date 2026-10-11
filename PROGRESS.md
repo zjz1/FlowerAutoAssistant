@@ -2514,3 +2514,72 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 - 文档同步：FLOWS §10（第 5 条：相邻定位复用 + 六重守卫）、PROJECT_GUIDE §11.5（路线图状态）。
 - 待实机：C36（非阻塞冒烟：跑一轮 startup/claim，日志应现 `(复用上一步守卫定位, 免重扫)` 且后续点击
   与旧版一致；异常时 `data/config.json` 置 `guard_reuse: false` 一键回退）。
+
+
+## 2026-10-10 · 协作架构整改：三层隔离 + 新增 `_coagent` 工作空间（治理项，非功能里程碑）
+
+**背景**：用户指出协作架构缺陷 —— `FAA_basis` 根目录被同时当作"其他 agent 的工作空间"，
+导致根目录文件混杂（`AGENT.md`/`docs/`/`memory/`/`agents/`/`todo/`/`.zcode/` 等散落）。
+
+**勘察结论（根因，非"乱放文件"）**：两个协作 agent 框架把 `FAA_basis` 当成了自己的**根**：
+- **office-claw 治理包**：`.office-claw/governance-bootstrap-report.json` 内 `"projectPath"` 写死
+  `E:\my_project\trae project\FAA_basis`（packVersion 2.0.0）→ 在根生成 `BACKLOG.md`、`docs/SOP.md`、
+  `docs/{features,decisions,discussions}/`。
+- **DeepAgents 风格 agent home**：`AGENT.md` 首句「This folder is home.」，引用
+  `SOUL.md`/`IDENTITY.md`/`skills/`/`agents/`/`todo/` → 在根生成 `AGENT.md` `SOUL.md` `IDENTITY.md`
+  `USER.md` `HEARTBEAT.md` + `agents/` `skills/` `todo/` `memory/` `context/` `messages/`
+  `prompt_attachment/` `coding_memory/` `.agent_history/`。
+- **zcode**：`.zcode/plans/`、`.zcodeignore`。
+> ⚠ **关键判断**：只新建 `_coagent/` 目录**不能收口** —— 必须把各框架的 workspace/project 根
+> 指向 `_coagent/<agent>/`，否则下次运行仍在根目录重建脚手架。
+
+**本次落地（非破坏性）**：
+1. 新增工作空间区 **`_coagent/`**（含 `README.md` 规则 + `zcode/`、`officeclaw/` 两个子目录）。
+   层级 = `FAA_basis` 下仅允许 `FlowerAutoAssistant/`（代码区 git）`_collab/`（正式提交区）
+   `_coagent/`（草稿工作空间）`_dev/ _test/ _backup/ .trae/`（既有）；**其余一律不得落在根**。
+   本区位于 git 仓库之外 → 天然出仓，无需改 `.gitignore`。
+2. 更新协作协议 `_collab/README.md`：§1 增硬性规则 7（工作空间在 `_coagent/`）、§2 目录树补注、
+   新增 **§7 三层隔离**（代码区／工作空间／正式提交区，含"谁写/入 git/参与合并"三列对照表）。
+3. 更新 `docs/PROJECT_GUIDE.md` §0「30 秒上手」：工作区根说明改为只列允许的固定区域 + 三层警示。
+
+**迁移执行（2026-10-11 用户手动完成，主 agent 复核通过）**：
+- 项目根已收敛为白名单 7 项：`FlowerAutoAssistant/` `_coagent/` `_collab/` `_dev/` `_test/` `_backup/` `.trae/`；
+  全盘搜索确认**无残留**。
+- `_coagent/` 实际落位（用户命名规范 = `<项目名>-<agent>`）：
+  - `FAA_basis-officecAce/` —— office-claw 治理包 + DeepAgents home，**39 项已迁入**；
+  - `FAA_basis-zcode/` —— `.zcode/`、`.zcodeignore`，**4 项已迁入**；
+  - `FAA_basis-codeart/` —— 空置待用（第三个协作 agent codeart 的工作空间）。
+- 按判定结论**删除 4 项**：`.agent_history/`、根 `config/maa_option.json`、根 `debug/maafw.log`
+  （agent 以根为 CWD 跑 MAA 的产物）、根 `.gitignore`（根非 git 仓库，本就不生效）。
+- 新增跨项目参照文本：`_coagent/多agent协作架构_经验与模板.md`（问题/根因 → 三层架构 → 目录模板 →
+  两份 README 必备章节 → 配套机制 → 迁移 SOP → 8 条坑 → 复核清单 → 本项目实例 → 新项目 5 步落地）。
+
+**仍待用户完成（只有人能改）**：各 agent 框架的工作区/项目根配置必须指向 `_coagent/<项目>-<agent>/`
+（office-claw 的 `projectPath`、DeepAgents 的 home、zcode 的工作目录）；未改配置前，框架下次运行
+仍会在项目根重建脚手架。
+
+
+## 2026-10-11 · 合并协作区 zcode-20261011（WebUI 子模块设置二合一：删底部 `.mod-panels`，保留 ⚙ 弹出式 `#mod-settings`）（里程碑 85）
+
+**来源**：`_collab/inbox/zcode-20261011`，响应用户任务「webui 有两种子模块设置且内容不一致……倾向于
+保留 `#mod-settings`」。**纯前端删除批**：webui.html 单文件 **+0/−100**，引擎/flows/webui.py 零改动。
+
+- **背景**：使用界面左栏长期并存两套模块设置 UI —— 旧 `.mod-panels`（底部 8 个 `<details>` 堆砌，
+  social 仅 3 开关、其余模块「待补充」死占位）与新 `#mod-settings`（里程碑 82 动态渲染，social 5 开关
+  与 flow_social if_config 一一对应）。
+- **功能并集核对（主 agent 独立实锤）**：webui.py `_module_settings()` 实际声明 **10 键**
+  （enable_switch/target_tail/claim_online/claim_party/claim_hb/enable_shine/enable_mine/enable_rabbit/
+  enable_pollin/enable_like）**⊇ 旧面板全部 8 键** → 删除旧面板零功能损失，顺带修复 social 3↔5 不一致。
+- **主 agent 独立复验**：①numstat +0/−101（含 diff 头；净删 100）全落在 CSS(−11)/HTML(−55)/JS(−33)/init(−1)
+  四块，与 REPORT 完全一致；②交付版残留引用 8 类（`mod-panels|mod-panel|mod-body|mod-desc|MP_FIELDS|
+  loadModulePanels|data-save|data-status`）**全 0**；③保留系统完整：`#mod-settings` ×1、
+  `showModuleSettings` ×2（定义+齿轮调用）、保存链 `set_config` ×5、`data-gear` ×2；④`<div>` 71/71
+  平衡、`<details>` 归零；⑤F5 生效依据实锤（webui.py:377-384 每请求读盘 + `Cache-Control: no-store`，
+  合并后浏览器刷新即生效，无需重启）。
+- **提交方验证**：mock 服务冒烟（桩 /api/daily、/api/set_config）——底部面板消失、social ⚙ 5 开关
+  保存「已保存 ✓」、startup ⚙ 回显正确、无设置模块如实提示、页面脚本零报错；evidence 含删除 diff
+  与 2 张冒烟截图。诚实声明：⚙ 物理点击未在 mock 完成（14px 小按钮 actionability 超时，改 DOM click
+  验证同一处理器），但该按钮本批未动一行且 C33 已实机验证过。
+- **归档**：-20261011 → `merged/`；无新增 TODO（C33 验收面即本批保留的新系统，不受影响）。
+- **生效方式**：浏览器 F5 即生效（webui.html no-store 直读）。
+- 本批同提交包含 2026-10-10 治理条目（三层隔离 + `_coagent` 工作空间，见上一节）。
