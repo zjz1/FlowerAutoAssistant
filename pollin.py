@@ -338,6 +338,77 @@ def click_top_right_close(eng):
     return True
 
 
+# ---------------- 环节: 奖励弹窗关闭守卫 (2026-10-14) ----------------
+# 背景: 好友采粉后会弹「点击任意处关闭」型**半透明**奖励弹窗, 该弹层未被正确关闭。
+#   因半透明, 底层按钮仍可见 -> in_garden() 判据仍 HIT -> open_friend_list() 走「花园分支」
+#   去点底栏「社交」, 而「社交」被弹层遮挡, OCR 整词 MISS -> 「打开好友列表失败」-> 归类中止。
+#   (2026-10-14 实机日志实证: 采到 1 次即连续 3 页「无法回到好友列表」中止;
+#    L250/265/284/289 `['好友'] exact=True 区域=[0.25,0.65,0.55,0.8]` 区域内实读「白色夹竹桃花粉…」
+#    @(424,496) —— 即弹层内容压住了「好友」按钮区; 区域外更直接读到弹层页脚
+#    「好希望点击任意处关闭」@0.89(661,675)(L290), 弹层确实在屏且从未被关闭。)
+# 合规: 弹窗是游戏既有控件, 关键字与弹窗本体定位均走实时 OCR, 不写死任何坐标(规则 6)。
+BOTTOM_BAR_REGION = [0.28, 0.86, 0.95, 1.0]        # 家园/好友花园底栏按钮带
+REWARD_POPUP_KWS = ("恭喜获得", "点击任意处关闭")   # 奖励弹窗族(与浇水/矿洞/在线礼包同款)
+
+
+def dismiss_reward_popup(eng, img=None, tries=2):
+    """关闭半透明奖励弹窗(点弹窗 = 点任意处关闭)。True=确认已不在屏 / 本就无弹窗。
+
+    ! 优先级: 先点**标题「恭喜获得」**(落在弹窗面板内部, 无穿透风险); 标题读不到时才退而
+      点页脚「点击任意处关闭」—— 页脚贴近底栏, 弹窗若已消失则该点会**点击穿透**到底层 UI
+      (flow_social.json §4.1.3 notes, 2026-10-05 实测曾误点开「我的背包」)。两段式而非一次
+      locate([标题, 页脚]): locate 只返回**第一个**命中块, 命中顺序取决于底层 ocr_find 的块序,
+      不保证按关键字先后 —— 显式分段才能确定「标题优先」。
+    """
+    for i in range(1, tries + 1):
+        if stop_requested():
+            return False
+        img = img if img is not None else eng.screenshot()
+        pt = eng.locate([REWARD_POPUP_KWS[0]], img=img, min_score=0.4)   # ① 标题
+        if pt is None:
+            pt = eng.locate(list(REWARD_POPUP_KWS), img=img, min_score=0.4)  # ② 页脚兜底
+        if pt is None:
+            return True
+        print(f"  [弹窗] 命中奖励弹窗 ({pt.x},{pt.y}), 第{i}次点击关闭")
+        eng.click_abs(pt.x, pt.y)
+        if wait_screen_change(eng, img, desc=f"奖励弹窗关闭(第{i}次)", timeout=5):
+            continue
+        time.sleep(1.0)
+    gone = eng.locate(list(REWARD_POPUP_KWS), min_score=0.4) is None
+    if not gone:
+        print("  [弹窗] 奖励弹窗两次点击后仍在屏, 如实报出")
+    return gone
+
+
+def escape_overlay(eng, tries=2):
+    """兜底: 花园判据 HIT 但底栏「社交」不可读 -> 判为有**半透明弹层**遮挡, 清掉弹层后重试。
+
+    返回 True=底栏「社交」已可读。
+
+    ⚠ 主 agent 修订(里程碑 91): 原实现为 `eng.click_abs(0.5*w, 0.22*h)` —— 即**写死相对坐标盲点
+      画面空白处**, 违反用户 2026-10-04 硬规则 6(任何点击必须先经 OCR/模板匹配取得**实时**坐标;
+      该规则原文明确涵盖相对坐标), 且与原 REPORT §8「未硬编码任何游戏坐标」的自我声明不符。
+      现改为**合规原语链**(全部为既有机制, 本函数不再自带任何坐标):
+        ① `dismiss_reward_popup` —— OCR 定位弹窗文字(标题优先/页脚兜底)后点**该文字自身**的实时坐标;
+        ② 仍不可读时退 `eng.close_dialog()` —— 引擎既有机制(模板/锚点/corner 定位), 非本函数写死。
+      语义与原意一致(清掉遮挡再重试), 但不再有盲点击。
+    """
+    for i in range(1, tries + 1):
+        if stop_requested():
+            return False
+        if has(eng, "社交", min_score=0.5):
+            return True
+        print(f"  [弹窗] 花园底栏「社交」不可读, 判为半透明弹层遮挡 -> 清弹层(第{i}次)")
+        dismiss_reward_popup(eng)          # ① OCR 定位弹窗文字后点其自身坐标(合规)
+        if not has(eng, "社交", min_score=0.5):
+            eng.close_dialog()             # ② 引擎既有兜底机制(模板/锚点定位)
+        time.sleep(1.0)
+    ok = has(eng, "社交", min_score=0.5)
+    if not ok:
+        print("  [弹窗] 底栏「社交」仍不可读, 如实报出(交上层 leave_friend_list/ensure_home 兜底)")
+    return ok
+
+
 # ---------------- 环节: 回主界面 / 开列表 / 切页签 ----------------
 
 def ensure_home(eng):
@@ -538,6 +609,11 @@ def open_friend_list(eng):
         if stop_requested():
             return False
         img = eng.screenshot()
+        # 2026-10-14 防御: 上一环节(采粉/浇水/矿洞…)可能残留半透明奖励弹窗 —— 它会遮住底栏
+        # 「社交」与店内的「好友」按钮区, 先清掉再判场景, 避免「点社交」整词 MISS 空转。
+        if in_garden(eng, img) and not has(eng, "社交", img=img, min_score=0.5):
+            escape_overlay(eng)
+            img = eng.screenshot()
         if in_list(eng, img):
             print("  [列表] 已在好友列表")
             eng.set_scene("好友列表")
@@ -853,10 +929,23 @@ def collect_one(eng, x, y):
     else:
         print("    [采集] 静默成功(有花粉)")
 
+    # 收「快捷操作」菜单(否则挡住底栏「社交」): 改「底栏区域限定 + exact」定位 ——
+    # 旧 click_text(["快捷操作"]) 会命中 OCR 合并块(如「快捷操作种植箱」)并取其中心, 该点可能
+    # **越出屏幕**(2026-10-14 日志实测 (883,773), 屏高仅 720) -> 菜单没真正收起。
     img = eng.screenshot()
-    if has(eng, "采粉", img=img):            # 菜单必须收起, 否则挡住底部的「社交」
-        eng.click_text(["快捷操作"])
-        time.sleep(1.5)
+    if has(eng, "采粉", img=img):
+        pt = eng.locate(["快捷操作"], img=img, exact=True,
+                        region_rel=BOTTOM_BAR_REGION, min_score=0.5)
+        if pt is not None:
+            print(f"    [采集] 收「快捷操作」菜单 ({pt.x},{pt.y})")
+            eng.click_abs(pt.x, pt.y)
+            time.sleep(1.5)
+    # 2026-10-14 修复: 采粉后会弹「点击任意处关闭」型半透明奖励弹窗, 必须在此关掉 ——
+    # 该弹层半透明, 底层按钮仍可见 -> in_garden() 仍 HIT; 随后开列表走花园分支时
+    # 「社交」被弹层遮挡, OCR 整词 MISS -> 归类中止(本轮日志: 采 1 次即中止)。
+    dismiss_reward_popup(eng)
+    if not has(eng, "社交", img=eng.screenshot(), min_score=0.5):
+        escape_overlay(eng)
     return "empty" if empty else "ok"
 
 

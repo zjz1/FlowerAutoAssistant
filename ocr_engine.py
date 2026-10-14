@@ -219,6 +219,12 @@ class OCREngine:
         # _step_seq: run_step 单调递增的步骤序号, 保证"仅紧邻下一步"可复用(中间隔了任何步骤即失效)。
         self._guard_hit: dict | None = None
         self._step_seq: int = 0
+        # 故障现场全量存证 (2026-10-14 用户要求): 离散错误点做一次全量 OCR + 截图留档;
+        # 预算上限 + (tag, 帧指纹) 去重, 防日志/磁盘膨胀。纯观测, 不改判定行为。
+        # 注: 预算为**引擎实例级**(webui 常驻单例 → 实际跨轮次累计, 非每轮重置);
+        #     如需每轮重置可在 run_daily 追加一行 —— 主 agent 里程碑 91 记, 当前维持进程级(上限 20)。
+        self._dump_left = int(self.config.get("fail_dump_budget", 20))
+        self._dump_sig = None
 
     # ---- 公共导航注册表 (flows/common/entries.json) ----
     def _load_navigation(self) -> dict:
@@ -1300,6 +1306,48 @@ class OCREngine:
             lines.append("  ⚠ 区域外含同字块(疑似区域坐标不对): " + brief(outside_same))
         print("\n".join(lines))
 
+    def dump_full_frame(self, tag: str, img=None) -> None:
+        """故障现场存证: 全量 OCR(不截断) + 当前帧截图落盘 (2026-10-14 用户要求)。
+
+        常规未命中日志(_log_ocr_miss)只列前 10 块, 卡死/报错时无法判断画面到底有什么
+        (弹窗遮挡? 动画中间帧? 艺术字被读错?) —— 故在**离散错误点**(等待超时/点击未命中)
+        额外做一次**全量** OCR 并保存当帧 PNG, 供离线复核与模板/区域校准。
+
+        防膨胀: ①每轮预算 fail_dump_budget(默认 20) 上限; ②(tag, 帧指纹) 去重 ——
+        同一帧同一原因只存一次(同帧重试场景天然收敛)。异常一律吞掉, 不影响流程。
+        只读观测: 不改任何判定行为; data/ 为运行期产物目录(.gitignore data/*)。
+        """
+        try:
+            if self._dump_left <= 0:
+                return
+            if img is None:
+                img = self.last_frame if self.last_frame is not None else self.screenshot()
+            if img is None:
+                print(f"[故障存证] {tag}: 取帧失败, 跳过")
+                return
+            sig = self._frame_hash(img)
+            key = (tag, sig)
+            if sig is not None and key == self._dump_sig:
+                return
+            self._dump_sig = key
+            self._dump_left -= 1
+            blocks, _sub = self._ocr_frame(img)
+            print(f"[故障存证] {tag}: 全量 OCR {len(blocks)} 块 (本轮预算余 {self._dump_left})")
+            for b in blocks:
+                c = b.get("center") or (0, 0)
+                print(f"    · {str(b.get('text',''))[:24]} @{float(b.get('score',1.0)):.2f} ({c[0]},{c[1]})")
+            import cv2
+            out = Path(__file__).parent / "data" / "collect"
+            out.mkdir(parents=True, exist_ok=True)
+            safe = "".join(ch if (ch.isalnum() or ch in "_-") else "_" for ch in str(tag))
+            fn = out / f"fail_{safe}_{time.strftime('%H%M%S')}.png"
+            if cv2.imwrite(str(fn), img):
+                print(f"[故障存证] {tag}: 画面已保存 -> data/collect/{fn.name}")
+            else:
+                print(f"[故障存证] {tag}: 画面写盘失败(路径/权限)")
+        except Exception as e:
+            print(f"[故障存证] {tag}: 存证异常(不影响流程): {e}")
+
     @staticmethod
     def _narrow_merged(b: dict, kws: list[str]) -> dict:
         """合并块纠偏: OCR 常把相邻按钮并成一块(实测「快捷操作种植箱」[1275..1480]),
@@ -1958,6 +2006,7 @@ class OCREngine:
             #  该点此时已是「登录」-> 误登录, 公告/进入游戏/收尾守卫全部空转)。
             self._last_locate_source = "none"
             print(f"[未命中] {keywords} (no_fallback=True: 禁用一切缓存/回退坐标, 交调用方处置)")
+            self.dump_full_frame(f"未命中:{kw0}")
             return False
         # OCR+锚点+颜色均未命中: 尝试回退缓存 (方案②: 均值点补齐优先于进程缓存/最新坐标; 再无知识库坐标)
         if fallback_rel is None:
@@ -1967,6 +2016,7 @@ class OCREngine:
                 # 注意: 只挡"自动缓存"; 上面 no_fallback 分支已放行步骤里显式手写的 fallback_rel。
                 self._last_locate_source = "none"
                 print(f"[未命中] {keywords} (use_cache_pos=false: 不用自动缓存的历史坐标, 交调用方处置)")
+                self.dump_full_frame(f"未命中:{kw0}")
                 return False
             for kw in kws:
                 e = self._entry_for(kw)
@@ -2319,6 +2369,7 @@ class OCREngine:
             time.sleep(interval)
             waited += interval
         print(f"[等待超时] {kws} (纯等待{timeout}s, 探测{probes}次)")
+        self.dump_full_frame(f"等待超时:{kws}")
         report_failure(self._module, f"等待文本 {kws} 超时 纯等待{timeout}s/{probes}次探测")
         return None
 
@@ -2336,6 +2387,7 @@ class OCREngine:
             time.sleep(interval)
             waited += interval
         print(f"[消失超时] {kws} (纯等待{timeout}s, 探测{probes}次)")
+        self.dump_full_frame(f"消失超时:{kws}")
         report_failure(self._module, f"等待文本 {kws} 消失超时 纯等待{timeout}s/{probes}次探测")
         return False
 
