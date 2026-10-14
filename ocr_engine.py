@@ -200,6 +200,8 @@ class OCREngine:
         # 含位置」的教训在此天然规避; 独立 LRU 不占用全图单槽帧缓存(避免全图/区域交替查询
         # 互相顶掉造成反复重扫)。
         self._region_cache: dict = {}
+        # v2(2026-10-12): 行分组采集内存 (label -> rows), 供 if_collected 查询; claim_scroll 同步写入
+        self._last_dump: dict = {}
         self._region_lock = threading.Lock()
         # 过宽块拆分结果缓存(2026-10-07 性能批 zcode-20261007-15): 裁片像素指纹 → 拆分子块。
         # 实测拆分环节 7.5~9.6s/帧(占单轮 OCR 60~85%), 而过宽块多为静态 UI 碎片(顶栏簇/花园名/
@@ -954,6 +956,244 @@ class OCREngine:
         print(f"[OCR统计] 模块 {mid}: 全图 {st['full_n']} 次 {st['full_t']:.2f}s · "
               f"区域 {st['region_n']} 次 {st['region_t']:.2f}s · 拆分 {st['split_n']} 次 {st['split_t']:.2f}s · "
               f"缓存命中 {st['hit_n']} 次")
+
+    # ---- 采集: dump_text (2026-10-12 每日任务/手账采集, 用户确认方案; 实机原型见协作区 v7/v8) ----
+    def _group_task_rows(self, blocks):
+        """行分组: 每个含 (a/b) 进度的块, 向上 Δy∈[0.01,0.09](屏高比) 找最近描述块配对。
+        返回 [(desc_core, 'a/b', center_abs), ...] 按屏幕 y 排序; desc 去装饰前缀
+        (·+*★?？!！~空白——实测这些符号 OCR 乱跳, 不可进指纹)。
+        无进度的块不参与配对。2026-10-12 每日任务采集实机原型(协作区 v7/v8 两轮验证)。"""
+        if not self.screen_w or not self.screen_h or not blocks:
+            return []
+        prog_re = re.compile(r"(\d+)\s*/\s*(\d+)")
+        desc_re = re.compile(r"[\u4e00-\u9fff]")
+        strip_re = re.compile(r"[·+*★?？!！~\s]")
+        items = []
+        for b in blocks:
+            c = b.get("center")
+            if not c and b.get("box"):
+                box = b["box"]
+                c = [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2]
+            if not c:
+                continue
+            items.append((b.get("text", ""), c[0] / self.screen_w, c[1] / self.screen_h, b, c))
+        rows = []
+        for text, rx, ry, b, c in items:
+            m = prog_re.search(text)
+            if not m:
+                continue
+            best = None
+            for t2, rx2, ry2, b2, c2 in items:
+                if b2 is b or not desc_re.search(t2) or prog_re.search(t2):
+                    continue
+                dy = ry - ry2
+                if 0.01 <= dy <= 0.09 and 0.45 <= rx2 <= 0.85:
+                    if best is None or dy < best[0]:
+                        best = (dy, t2)
+            core = strip_re.sub("", best[1]) if best else "?"
+            rows.append((core, f"{int(m.group(1))}/{int(m.group(2))}", (c[0], c[1])))
+        rows.sort(key=lambda r: r[2][1])
+        return rows
+
+    def _dump_text(self, step: dict) -> None:
+        """dump_text 采集步骤: 区域 OCR → (可选)行分组 → [采集] 日志 + data/collect/<save>.jsonl。
+        可选 scroll 滚动采集: 内部手势滑动(规则6边界: 手势参数非点击坐标, 2026-10-06 用户
+        裁定沿用; 700ms 慢滑——400ms 实测被游戏/输入链吞掉致假冻结), 以「行分组指纹」连续
+        两屏一致判列表到底(内容锚定, 免疫滚动位移/装饰噪声/动画闪烁)。
+        页签守卫在 tab_region_rel 小区域独立检测——页签通常在采集区域外, 守卫不可复用采集区
+        文本(2026-10-12 实机踩坑)。只读采集: 本步骤不点击任何业务按钮。参数:
+          region_rel=[x1,y1,x2,y2] 采集区; label 日志标签; save jsonl 文件名(可省);
+          row_pair=true 启用行分组; tab_region_rel+tab_variants 页签守卫;
+          scroll={swipe:[x1,y1,x2,y2], duration_ms=700, settle=1.8, max_rounds=18}。"""
+        region_rel = step.get("region_rel")
+        label = step.get("label", "dump")
+        save = step.get("save")
+        use_pair = bool(step.get("row_pair"))
+        tab_region = step.get("tab_region_rel")
+        tab_vars = step.get("tab_variants") or []
+        scroll = step.get("scroll") or {}
+        max_rounds = max(1, int(scroll.get("max_rounds", 1)))
+        settle = float(scroll.get("settle", 1.8))
+        swipe = scroll.get("swipe")
+        dur = int(scroll.get("duration_ms", 700))
+        prev_fp = None
+        for round_no in range(1, max_rounds + 1):
+            self._check_stop()
+            img = self.screenshot()
+            if img is None:
+                print(f"[采集] {label}: 第{round_no}轮截图失败, 如实停止")
+                return
+            if tab_region and tab_vars:
+                tb, _sub, _used = self._ocr_candidates(img, tab_region)
+                if not any(v in b.get("text", "") for b in tb for v in tab_vars):
+                    print(f"[采集] {label}: 第{round_no}轮页签守卫 MISS(变体={tab_vars}), 如实停止")
+                    return
+            blocks, _sub, _used = self._ocr_candidates(img, region_rel)
+            rows = self._group_task_rows(blocks) if use_pair else []
+            fp = frozenset((d, p) for d, p, _c in rows) if use_pair else None
+            print(f"[采集] {label} 第{round_no}轮: 块{len(blocks)} 行{len(rows)}"
+                  + (" " + "; ".join(f"{d}={p}" for d, p, _c in rows) if rows else ""))
+            self._last_dump[label] = rows      # v2: 供同模块 if_collected 查询(如点赞任务门槛)
+            if save:
+                self._write_collect(save, label, round_no, rows, blocks)
+            if not swipe:
+                return                       # 单发模式: 一轮即止
+            if prev_fp is not None and fp == prev_fp:
+                print(f"[采集] {label}: 连续两屏行分组指纹一致 -> 列表到底(共 {round_no} 轮)")
+                return
+            prev_fp = fp
+            self.swipe_rel(*swipe, duration_ms=dur)
+            time.sleep(settle)
+        print(f"[采集] {label}: 达到 max_rounds={max_rounds} 上限仍未稳定, 如实登记")
+
+    def _write_collect(self, save, label, round_no, rows, blocks):
+        """采集留档: 追加 data/collect/<save>.jsonl(ts/label/round/rows/blocks 全量)。
+        dump_text 与 claim_scroll 共用(2026-10-12 v2 抽取)。"""
+        try:
+            out_dir = Path(__file__).parent / "data" / "collect"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            rec = {
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "label": label, "round": round_no,
+                "screen": [self.screen_w, self.screen_h],
+                "rows": [{"desc": d, "progress": p,
+                          "rel": [round(c[0] / self.screen_w, 4),
+                                  round(c[1] / self.screen_h, 4)]}
+                         for d, p, c in rows],
+                "blocks": [{"text": b.get("text", ""),
+                            "score": round(float(b.get("score", 1.0)), 3),
+                            "rel": [round(b["center"][0] / self.screen_w, 4),
+                                    round(b["center"][1] / self.screen_h, 4)]}
+                           for b in blocks if b.get("center")],
+            }
+            with open(out_dir / f"{save}.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError as e:
+            print(f"[采集] {label}: jsonl 写入失败(不影响流程): {e}")
+
+    def _claim_scroll(self, step: dict) -> None:
+        """领取循环(2026-10-12 v2, 每日任务四步闭环①④): 每屏点尽「领取」-> 关奖励弹窗 -> 上滑;
+        行分组指纹连续两屏一致判到底。可选 save/row_pair 顺带按屏留档(同屏采集+领取一趟完成,
+        同时写 _last_dump 供 if_collected)。只点 claim_keywords(默认「领取」)与弹窗关闭词,
+        不点其它任何按钮。参数: region_rel; claim_keywords; close_keywords; tab_region_rel+
+        tab_variants 页签守卫; max_claim_per_screen(默认8, 防单屏死循环); save/label/row_pair;
+        scroll={swipe,duration_ms,settle,max_rounds}。"""
+        region_rel = step.get("region_rel")
+        label = step.get("label", "claim")
+        save = step.get("save")
+        use_pair = bool(step.get("row_pair"))
+        claim_kws = step.get("claim_keywords", ["领取"])
+        close_kws = step.get("close_keywords", ["点击任意处关闭", "恭喜获得"])
+        tab_region = step.get("tab_region_rel")
+        tab_vars = step.get("tab_variants") or []
+        scroll = step.get("scroll") or {}
+        max_rounds = max(1, int(scroll.get("max_rounds", 12)))
+        settle = float(scroll.get("settle", 1.5))
+        swipe = scroll.get("swipe")
+        dur = int(scroll.get("duration_ms", 700))
+        max_per_screen = int(step.get("max_claim_per_screen", 8))
+        prev_fp = None
+        for round_no in range(1, max_rounds + 1):
+            self._check_stop()
+            img = self.screenshot()
+            if img is None:
+                print(f"[领取] {label}: 第{round_no}轮截图失败, 如实停止")
+                return
+            if tab_region and tab_vars:
+                tb, _s, _u = self._ocr_candidates(img, tab_region)
+                if not any(v in b.get("text", "") for b in tb for v in tab_vars):
+                    print(f"[领取] {label}: 第{round_no}轮页签守卫 MISS(变体={tab_vars}), 如实停止")
+                    return
+            # 1) 本屏点尽「领取」(每次点击后重截图; 奖励弹窗即时关闭)
+            claimed = 0
+            for _ in range(max_per_screen):
+                self._check_stop()
+                img = self.screenshot()
+                blocks, _s, _u = self._ocr_candidates(img, region_rel)
+                claims = [b for b in blocks if any(k in b.get("text", "") for k in claim_kws)]
+                if not claims:
+                    break
+                c = max(claims, key=lambda b: float(b.get("score", 1.0)))
+                cc = c.get("center")
+                if not cc and c.get("box"):
+                    cc = [(c["box"][0] + c["box"][2]) / 2, (c["box"][1] + c["box"][3]) / 2]
+                if not cc:
+                    break
+                print(f"[领取] {label} 第{round_no}轮 点「{c.get('text', '')}」"
+                      f"@rel({cc[0] / self.screen_w:.3f},{cc[1] / self.screen_h:.3f})")
+                self.click_abs(int(cc[0]), int(cc[1]))
+                time.sleep(1.5)
+                # 2) 奖励弹窗关闭(最多两轮探测; 全图 OCR——弹窗可覆盖采集区域外)
+                for _try in range(2):
+                    img2 = self.screenshot()
+                    if img2 is None:
+                        break
+                    b2, _s2, _u2 = self._ocr_candidates(img2, None)
+                    closers = [b for b in b2 if any(k in b.get("text", "") for k in close_kws)]
+                    if not closers:
+                        break
+                    prefer = [b for b in closers if "点击任意处关闭" in b.get("text", "")] or closers
+                    t = max(prefer, key=lambda b: float(b.get("score", 1.0)))
+                    tc = t.get("center")
+                    if not tc and t.get("box"):
+                        tc = [(t["box"][0] + t["box"][2]) / 2, (t["box"][1] + t["box"][3]) / 2]
+                    if not tc:
+                        break
+                    print(f"[领取] 关奖励弹窗「{t.get('text', '')}」")
+                    self.click_abs(int(tc[0]), int(tc[1]))
+                    time.sleep(1.2)
+                claimed += 1
+            if claimed == 0:
+                print(f"[领取] {label} 第{round_no}轮: 本屏无「{'/'.join(claim_kws)}」")
+            # 3) 留档 + 内存(供 if_collected)
+            img3 = self.screenshot()
+            if img3 is None:
+                return
+            blocks3, _s, _u = self._ocr_candidates(img3, region_rel)
+            rows = self._group_task_rows(blocks3) if use_pair else []
+            self._last_dump[label] = rows
+            if save:
+                self._write_collect(save, label, round_no, rows, blocks3)
+            fp = frozenset((d, p) for d, p, _c in rows) if use_pair else None
+            print(f"[领取] {label} 第{round_no}轮小结: 领取 {claimed} 个, 行 {len(rows)}")
+            # 4) 到底判定 / 滑动
+            if not swipe:
+                return
+            if prev_fp is not None and fp == prev_fp:
+                print(f"[领取] {label}: 连续两屏一致 -> 到底(共 {round_no} 轮)")
+                return
+            prev_fp = fp
+            self.swipe_rel(*swipe, duration_ms=dur)
+            time.sleep(settle)
+        print(f"[领取] {label}: 达到 max_rounds={max_rounds} 上限, 如实登记")
+
+    def _if_collected(self, step: dict, indent: int) -> None:
+        """条件分支(2026-10-12 v2): 查询最近一次采集(label)的行分组结果, 按 desc 关键字找行,
+        对进度 (a/b) 求条件; 命中且条件为真走 then, 否则(含行缺失/无进度)走 else。
+        参数: label; keywords(子串列表); cond(默认 "a<b", 支持 a<b/a<=b/a==b/a>b/a>=b/a!=b); then/else。
+        用途: 每日任务点赞门槛——「献上点赞」行 a<b 才执行社区点赞; 行缺失=当日无此任务要求 -> else。"""
+        label = step.get("label", "")
+        kws = step.get("keywords") or []
+        cond = (step.get("cond") or "a<b").replace(" ", "")
+        rows = self._last_dump.get(label) or []
+        hit = None
+        for d, p, _c in rows:
+            if any(k in d for k in kws):
+                hit = p
+                break
+        ok = False
+        if hit and "/" in hit:
+            try:
+                a, b = (int(x) for x in hit.split("/")[:2])
+                ok = bool({"a<b": a < b, "a<=b": a <= b, "a==b": a == b,
+                           "a>b": a > b, "a>=b": a >= b, "a!=b": a != b}.get(cond, a < b))
+            except (ValueError, TypeError):
+                ok = False
+        print(f"{'  ' * indent}[if_collected] {label} 关键词{kws} 命中行={hit} 条件'{cond}' "
+              f"-> {'TRUE' if ok else 'FALSE'}" + ("" if hit else " (未找到该行, 走 else)"))
+        branch = step.get("then") if ok else step.get("else")
+        if branch:
+            self.run_steps(branch, indent=indent + 1)
 
     def find_text(self, keywords, img=None, top_k=3, exact=False, region_rel=None, exclude=None):
         """在截图(或给定图)中按关键字找文字块。返回 OCR 块列表 (含坐标)。
@@ -2222,6 +2462,15 @@ class OCREngine:
                 only_types=step.get("only_types"),
             )
             time.sleep(step.get("delay", 1.0))
+        elif s_type == "dump_text":
+            # 采集步骤(2026-10-12 每日任务/手账): 区域OCR+行分组+可选滚动采集, 只读不点业务按钮。
+            self._dump_text(step)
+        elif s_type == "claim_scroll":
+            # 领取循环(2026-10-12 v2): 每屏点尽「领取」+关奖励弹窗+上滑, 行分组指纹判到底。
+            self._claim_scroll(step)
+        elif s_type == "if_collected":
+            # 条件分支(2026-10-12 v2): 按最近采集(label)的行分组进度求条件(如点赞任务 a<b)。
+            self._if_collected(step, indent)
         elif s_type == "if_text":
             # 条件分支: 检测到任意关键字才执行 then, 否则执行 else(可选)
             # 支持 region_rel=[x1,y1,x2,y2] (0~1) 限定时只在指定区域做文本判断

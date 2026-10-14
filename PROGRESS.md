@@ -2559,6 +2559,76 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 仍会在项目根重建脚手架。
 
 
+## 2026-10-14 · 合并协作区 zcode-20261012-2/-3（每日任务/手账 v1 采集 + v2 四步闭环 + 社区点赞迁移）（里程碑 90）
+
+**来源**：`_collab/inbox/zcode-20261012-2`（v1：`dump_text` 步骤 + 采集流程 + 2 模板）与
+`zcode-20261012-3`（累积版：v2 四步闭环 + 点赞迁移，含 -2 全部引擎内容）。**合并 = -3 全部 7 文件 +
+-2 独有 2 模板 PNG**（-3 的引擎/流程覆盖 -2，但 -3 流程引用 -2 交付的 `handbook_close.png`，须一并落位）。
+基于 2026-10-12 实机侦察 v1-v12（用户全程协作勘误：任务总数 14、滑动 700ms/0.25-0.30、坑#1-#6 逐条确认）。
+
+### 90.1 引擎新增（+249/−0，3 hunk 纯插入；含 -2 的 +108 与 -3 增量）
+
+- `dump_text`（v1）：区域 OCR 采集 → 行分组 `_group_task_rows`（`(a/b)` 进度块向上 Δy∈[0.01,0.09] 配对
+  最近描述块，desc 去装饰前缀）→ `[采集]` 日志 + 追加 `data/collect/<save>.jsonl`；可选滚动采集
+  （页签守卫在 `tab_region_rel` 小区域独立检测；行分组指纹连续两屏一致=到底）；`max_rounds` 如实登记。
+- `claim_scroll`（v2）：每屏点尽「领取」（OCR 实时定位，`max_claim_per_screen=8`）→ 关奖励弹窗
+  （「点击任意处关闭」优先，全图 OCR）→ 上滑；同屏采集+领取一趟完成，写 `_last_dump` 供 `if_collected`。
+- `if_collected`（v2）：按 label 查 `_last_dump` 行分组，desc 关键字找行、进度 `(a/b)` 求条件
+  （**白名单映射，无 eval**）；行缺失/无进度 → else。
+- `_write_collect`：dump_text/claim_scroll 共用留档抽取。滑动 700ms/0.25 为用户裁定（规则 6 手势边界沿用）。
+
+### 90.2 流程/编排/资源（用户三项决策落地）
+
+- **flow_daily_task.json**：v2 四步闭环（①开手账 claim_scroll 领+采 → ②`if_collected` 判断 →
+  ③`community_like` 完成剩余 → ④二次 claim_scroll 留档 daily_tasks_after）；**范围红线：只点「领取」
+  与弹窗关闭词**，不点「前往/交付」，神秘订单不展开。
+- **flow_social.json**：4.3 社区点赞段移除（description 同步「已迁移」；if_config 键余 5 个）。
+- **daily.json**：`claim` 与 `daily` **交换**（每日任务倒数第二；用户裁定：其它模块顺带完成任务减小判断量）。
+- **scenes.json**：新增「手账界面」（锚点 `我的秘密手账|MIMISHOUZHANG` 且任一特征
+  `神秘订单|月活跃度奖励|每日任务|每B任务`——艺术字「日」常被读成「B」）。
+- **webui.py**：⚙ 开关 `enable_like` 自 social 迁至 **daily 面板**（键名不变；`set_config` 白名单不受影响）。
+- **community_like.py**：`ENTER_WAIT` 5→10（见 90.4 追认项）。
+- **2 新模板**：`handbook_close.png`（44×44 ✕，region+0.95 双防线）；`done_stamp.png`（64×44 已完成斜章，
+  有章 0.9992-1.0/无章地板 0.9940，阈值 0.998 零误报；**备用未接线**——门槛判据定为 `(n/m)` 进度，
+  与斜章 OCR 漏读解耦）。
+
+### 90.3 主 agent 独立复验
+
+- **落位保真**：9 文件与交付副本字节级一致（-2 模板 2 + -3 全部 7）；独立逐行 diff（engine 3 hunk +249/−0、
+  webui 2 hunk +7/−1、community_like 1 hunk +3/−1、daily_task 重写、social −10、daily 换序、scenes +7）；
+  UTF-8 无 BOM、LF（`\r`=0）；批内无杂物。
+- **累计性**：-3 引擎含 `_group_task_rows`/`_dump_text`/`dump_text` 分派（-2 全部）**且含里程碑 88 的
+  `dict.fromkeys` 修订**（基线正确，无覆盖回退）；-2→-3 增量 diff 与 REPORT 逐项吻合（`_last_dump` +
+  `_write_collect` 抽取 + `_claim_scroll` + `_if_collected` + 2 分派，无外溢）。
+- **提交方测试重定向主仓库后复跑**：`test_dump_text.py` **6/6 PASS**、`test_v2_daily.py` **4/4 PASS**
+  （T4 结构断言改为**直接读主仓库已落位 flows** —— 比读交付副本更强的断言）；测试 jsonl 落临时沙箱，
+  不污染主仓库 `data/`。
+- **结构核对**：v2 步骤序列 18 步（两段 claim_scroll 夹 if_collected/community_like）；flow_social 已无
+  `community_like` 步骤、if_config 键=5；daily 顺序 `…claim→daily→idle`；webui social 面板无
+  `enable_like`、daily 面板有、白名单仍在；`enable_like` 用 `value:true`——现网 config **含该键**（false），
+  无里程碑 87 类缺键风险（缺键→FALSE=跳过，亦符合「默认关」语义，无修订必要）。
+- **闸门**：全绿（JSON 15/15、**步骤类型 30 种 / 266 处 / 未知 0**——新增 dump_text/claim_scroll/if_collected
+  均被白名单识别、语法 8/8）；3 py 编译通过；`data/collect` 运行期产物已被 `.gitignore data/*` 覆盖。
+
+### 90.4 提请用户追认 / 已知边界
+
+- **`ENTER_WAIT` 5→10s**：修订了 2026-10-05 用户定值（15s→5s）。实机证据：v10 首次真机 5s 时社区页未
+  渲染完→超时误判未进入→逃回重试循环；v11 改 10s 后全流程通过（entered=True liked=2）。10s 与
+  startup/进花园档位一致。**提交方提请追认，主 agent 认可证据、代为合并**——如不同意请指出，回退只需改一个常量。
+- **`_last_dump` 跨轮残留边界**：引擎内存不随模块结束清空——若第①步 claim_scroll 首轮即被页签守卫拦截
+  （未写入），第②步 `if_collected` 会读到上一轮旧行（最坏多跑/少跑一次点赞判定）。已登记 C42 观察，
+  如实机复现再评估「模块入口清空」。
+- `done_stamp.png` 备用未接线；神秘订单/活跃度轨道未展开（日志如实可见）。
+
+### 90.5 文档同步与台账
+
+- FLOWS.md：§0 编排顺序 + 交换理由；§4.3 迁移通告；**§6 每日任务整节重写**（v2 闭环/新步骤/新场景/新模板/
+  边界登记）。
+- `zcode-developing/C类` 新增 **C41**（每日任务 v2 冒烟）与 **C42**（`_last_dump` 残留观察）。
+- 归档：-20261012-2 / -20261012-3 → `_collab/merged/`。
+- 生效：**需重启 webui**（引擎/webui 改动）；新 `dump_text`/`claim_scroll`/`if_collected` 步骤类型随引擎生效。
+
+
 ## 2026-10-12 · 合并协作区 zcode-20261012-1（ui_build 版本戳 + 页面过期横幅 + 关服后豁免关闭确认）（里程碑 89）
 
 **来源**：`_collab/inbox/zcode-20261012-1`。响应两个用户反馈：①「关闭页面确认」在使用界面不弹；

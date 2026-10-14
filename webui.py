@@ -701,8 +701,14 @@ class Handler(BaseHTTPRequestHandler):
                      "desc": "家族活动 4.1.4 · 占位待开发, 开启暂无实际动作", "value": bool(eng.config.get("enable_rabbit", False))},
                     {"key": "enable_pollin", "type": "switch", "label": "好友采粉",
                      "desc": "4.2 · 密友+好友逐页采集花粉, 无可采则回自己家园", "value": bool(eng.config.get("enable_pollin", True))},
+                ]
+            if mid == "daily":
+                # 2026-10-12 用户决策: 社区点赞自社交模块迁入每日任务(点赞唯一价值=完成每日任务;
+                # daily 按手账「献上点赞」行进度 a<b 门控执行, 已完成/行缺失跳过)。
+                return [
                     {"key": "enable_like", "type": "switch", "label": "社区点赞",
-                     "desc": "4.3 · 种草社区随机点赞(每期上限 20 次)", "value": bool(eng.config.get("enable_like", False))},
+                     "desc": "完成手账「为精美搭配献上点赞吧」任务(每期上限 20 次; 任务已完成则跳过)",
+                     "value": bool(eng.config.get("enable_like", False))},
                 ]
             return []
         if plan and plan.get("modules"):
