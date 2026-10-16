@@ -201,6 +201,7 @@ class OCREngine:
         # 互相顶掉造成反复重扫)。
         self._region_cache: dict = {}
         # v2(2026-10-12): 行分组采集内存 (label -> rows), 供 if_collected 查询; claim_scroll 同步写入
+        # v2.1(2026-10-17): rows=该次调用的**跨屏累计**行(调用开始重置, 轮间 _merge_rows 并入各屏行)
         self._last_dump: dict = {}
         self._region_lock = threading.Lock()
         # 过宽块拆分结果缓存(2026-10-07 性能批 zcode-20261007-15): 裁片像素指纹 → 拆分子块。
@@ -1001,6 +1002,27 @@ class OCREngine:
         rows.sort(key=lambda r: r[2][1])
         return rows
 
+    @staticmethod
+    def _merge_rows(acc: list, rows: list) -> None:
+        """把本屏行分组并入「本次采集」的累计列表 (按 (desc, progress) 去重, 先见先留, 保持上→下顺序)。
+
+        v2.1(2026-10-17): 修复 _last_dump 曾**每轮覆盖**的丢行缺陷 —— 每日任务点赞门槛
+        (if_collected 查「献上点赞」) 因内存只剩**末屏**行而查不到中段行, 点赞被误跳过
+        (2026-10-16 日志实锤: 第 4 轮屏幕采到「为精美搭配献上点赞吧=0/2」, 8 轮扫到底后
+        if_collected 判「命中行=None」走 else)。
+        作用域(须与文档一致): acc 与 _last_dump[label] 均为**单次采集调用**的跨屏累计,
+        调用开始时重置(防同进程重复调用残留旧行, 如循环跑第二次时把已完成任务误判为未完成);
+        _write_collect 留档仍按**每屏**原样写入, 不受本合并影响。
+        已知限制(观察项 O1, 暂不处理): OCR 对同一任务文字的轻微变体(尾标点/近形字)会使
+        (desc, progress) 不完全相等而各留一条 -> 同一任务可能重复入列; 查询按先见序取第一条,
+        对现有点赞门槛无影响; 若后续有按行计数用途再定模糊归并方案(见本批 REPORT 观察列表)。
+        """
+        seen = {(d, p) for d, p, _c in acc}
+        for d, p, c in rows:
+            if (d, p) not in seen:
+                seen.add((d, p))
+                acc.append((d, p, c))
+
     def _dump_text(self, step: dict) -> None:
         """dump_text 采集步骤: 区域 OCR → (可选)行分组 → [采集] 日志 + data/collect/<save>.jsonl。
         可选 scroll 滚动采集: 内部手势滑动(规则6边界: 手势参数非点击坐标, 2026-10-06 用户
@@ -1022,6 +1044,8 @@ class OCREngine:
         settle = float(scroll.get("settle", 1.8))
         swipe = scroll.get("swipe")
         dur = int(scroll.get("duration_ms", 700))
+        acc_rows: list = []                     # v2.1: 本次调用的跨屏累计行(供 _last_dump/if_collected)
+        self._last_dump[label] = acc_rows       # 重置: 本 label 以本次采集为准(防跨次调用残留)
         prev_fp = None
         for round_no in range(1, max_rounds + 1):
             self._check_stop()
@@ -1036,10 +1060,11 @@ class OCREngine:
                     return
             blocks, _sub, _used = self._ocr_candidates(img, region_rel)
             rows = self._group_task_rows(blocks) if use_pair else []
+            self._merge_rows(acc_rows, rows)    # v2.1: 跨屏累计(供 if_collected; 修复曾只留末屏)
             fp = frozenset((d, p) for d, p, _c in rows) if use_pair else None
             print(f"[采集] {label} 第{round_no}轮: 块{len(blocks)} 行{len(rows)}"
+                  + (f" (累计 {len(acc_rows)})" if use_pair else "")
                   + (" " + "; ".join(f"{d}={p}" for d, p, _c in rows) if rows else ""))
-            self._last_dump[label] = rows      # v2: 供同模块 if_collected 查询(如点赞任务门槛)
             if save:
                 self._write_collect(save, label, round_no, rows, blocks)
             if not swipe:
@@ -1080,7 +1105,7 @@ class OCREngine:
     def _claim_scroll(self, step: dict) -> None:
         """领取循环(2026-10-12 v2, 每日任务四步闭环①④): 每屏点尽「领取」-> 关奖励弹窗 -> 上滑;
         行分组指纹连续两屏一致判到底。可选 save/row_pair 顺带按屏留档(同屏采集+领取一趟完成,
-        同时写 _last_dump 供 if_collected)。只点 claim_keywords(默认「领取」)与弹窗关闭词,
+        同时写 _last_dump(跨屏累计, 见 _merge_rows) 供 if_collected)。只点 claim_keywords(默认「领取」)与弹窗关闭词,
         不点其它任何按钮。参数: region_rel; claim_keywords; close_keywords; tab_region_rel+
         tab_variants 页签守卫; max_claim_per_screen(默认8, 防单屏死循环); save/label/row_pair;
         scroll={swipe,duration_ms,settle,max_rounds}。"""
@@ -1098,6 +1123,8 @@ class OCREngine:
         swipe = scroll.get("swipe")
         dur = int(scroll.get("duration_ms", 700))
         max_per_screen = int(step.get("max_claim_per_screen", 8))
+        acc_rows: list = []                     # v2.1: 本次调用的跨屏累计行(供 _last_dump/if_collected)
+        self._last_dump[label] = acc_rows       # 重置: 本 label 以本次采集为准(防跨次调用残留)
         prev_fp = None
         for round_no in range(1, max_rounds + 1):
             self._check_stop()
@@ -1157,11 +1184,12 @@ class OCREngine:
                 return
             blocks3, _s, _u = self._ocr_candidates(img3, region_rel)
             rows = self._group_task_rows(blocks3) if use_pair else []
-            self._last_dump[label] = rows
+            self._merge_rows(acc_rows, rows)    # v2.1: 跨屏累计(修复曾只留末屏行)
             if save:
                 self._write_collect(save, label, round_no, rows, blocks3)
             fp = frozenset((d, p) for d, p, _c in rows) if use_pair else None
-            print(f"[领取] {label} 第{round_no}轮小结: 领取 {claimed} 个, 行 {len(rows)}")
+            print(f"[领取] {label} 第{round_no}轮小结: 领取 {claimed} 个, 行 {len(rows)}"
+                  + (f" (累计 {len(acc_rows)})" if use_pair else ""))
             # 4) 到底判定 / 滑动
             if not swipe:
                 return
@@ -1174,7 +1202,7 @@ class OCREngine:
         print(f"[领取] {label}: 达到 max_rounds={max_rounds} 上限, 如实登记")
 
     def _if_collected(self, step: dict, indent: int) -> None:
-        """条件分支(2026-10-12 v2): 查询最近一次采集(label)的行分组结果, 按 desc 关键字找行,
+        """条件分支(2026-10-12 v2): 查询最近一次采集(label)的**跨屏累计**行分组结果, 按 desc 关键字找行,
         对进度 (a/b) 求条件; 命中且条件为真走 then, 否则(含行缺失/无进度)走 else。
         参数: label; keywords(子串列表); cond(默认 "a<b", 支持 a<b/a<=b/a==b/a>b/a>=b/a!=b); then/else。
         用途: 每日任务点赞门槛——「献上点赞」行 a<b 才执行社区点赞; 行缺失=当日无此任务要求 -> else。"""
