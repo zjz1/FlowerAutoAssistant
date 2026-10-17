@@ -392,6 +392,16 @@ def escape_overlay(eng, tries=2):
         ① `dismiss_reward_popup` —— OCR 定位弹窗文字(标题优先/页脚兜底)后点**该文字自身**的实时坐标;
         ② 仍不可读时退 `eng.close_dialog()` —— 引擎既有机制(模板/锚点/corner 定位), 非本函数写死。
       语义与原意一致(清掉遮挡再重试), 但不再有盲点击。
+
+    ⚠ 主 agent 修复 Bug②(里程碑 93): 第②步原为**全类型** `eng.close_dialog()`, 会遍历整个注册表,
+      其中条目 7 `corner_pink_small`(专为「在线礼包界面」设计, 模板 `close_online_small.png` 仅 17×21)
+      在**好友花园画面**上误命中 (1097,111)(2026-10-16 日志 L1184/L1196 `选中 …(corner_pink_small)`),
+      该点落在花园横幅上 -> **把「在线礼包」面板误打开**, 进而触发 ensure_home 未识别场景分支 12 次空转
+      ≈4.5min 直至采粉类别中止(Bug③)。改为 `only_types=["anchor_color"]`:
+      **锚点档必须 OCR 读到面板标题才动作** —— 花园画面无「跳转页签/提示/在线礼包」标题时**零动作**
+      (注册表条目 3 的 `_note` 有 2026-09-30 实测: 该锚点在 家园/户外主界面/好友列表 全部 miss),
+      有面板时则能真关(同轮 energy 一次锚点关闭即关掉 (1105,97), 实证有效)。
+      读不到标题 -> 不做任何点击, **如实返回 False** 交上层(诚实失败, 不伪装成功)。
     """
     for i in range(1, tries + 1):
         if stop_requested():
@@ -401,7 +411,7 @@ def escape_overlay(eng, tries=2):
         print(f"  [弹窗] 花园底栏「社交」不可读, 判为半透明弹层遮挡 -> 清弹层(第{i}次)")
         dismiss_reward_popup(eng)          # ① OCR 定位弹窗文字后点其自身坐标(合规)
         if not has(eng, "社交", min_score=0.5):
-            eng.close_dialog()             # ② 引擎既有兜底机制(模板/锚点定位)
+            eng.close_dialog(only_types=["anchor_color"])   # ② 仅锚点档(须读到面板标题才动作) —— 防跨场景误点
         time.sleep(1.0)
     ok = has(eng, "社交", min_score=0.5)
     if not ok:
@@ -492,6 +502,20 @@ def ensure_home(eng):
                 save_escape_evidence(eng, "family_panel")
                 return False
             continue
+        # ⚠ 主 agent 修复 Bug③(里程碑 93): 未识别场景分支原先**只有角区档**(click_top_right_close:
+        #   角区模板 — 本事故里 close_family 0.705<0.92 / close_corner_pink 0.647<0.65 全 MISS —
+        #   然后盲点角区中心 (1216,57)), 对「真钮在角区外且需标题锚点」的面板(如 在线礼包 真钮 (1105,97),
+        #   注册表条目 3 anchor_color dx_range=[700,1100])**完全无能** -> 12 次空转 ≈4.5min 直至类别中止。
+        #   同轮 energy 用一次锚点关闭即关掉该面板 => 是**选型**缺口, 非引擎能力缺失。
+        #   修法: 在角区档**之前**插入锚点档(only_types=["anchor_color"], 须 OCR 读到面板标题才动作
+        #   —— 花园/横幅画面无标题, 天然零动作; 注册表条目 3 的 _note 有 2026-09-30 实测佐证)。
+        #   锚点档只有**画面真的变了**才算成功; 不动作/无变化则落回存量角区档(放弃阈值「连续 2 次」不变)。
+        print("  [主界面] 未识别场景, 先试锚点关闭档(须读到面板标题才动作)")
+        if eng.close_dialog(only_types=["anchor_color"]):
+            if wait_screen_change(eng, img, desc="锚点关闭未识别面板"):
+                stale = 0
+                continue
+            print("  [主界面] 锚点关闭已动作但画面无变化, 落回右上角角区档")
         print("  [主界面] 未识别场景, 点右上角关闭区")
         click_top_right_close(eng)
         if wait_screen_change(eng, img, desc="右上角兜底"):
