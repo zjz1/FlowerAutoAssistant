@@ -142,11 +142,31 @@
   <span>⚠ 服务端页面已更新，当前页面是旧版本 —— 请刷新页面获取新版（不影响服务端运行中的流程，仅本页显示可能过期）。</span>
   <button id="ui-stale-reload">立即刷新</button>
 </div>
+<!-- 截图缓存提醒弹窗 (里程碑 94): 只在**页面首次加载**且缓存 ≥ 阈值时弹一次; 清理选项由用户决定 -->
+<div id="fc-modal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:9999">
+  <div style="background:#fff;border-radius:10px;padding:18px 20px;max-width:560px;box-shadow:0 8px 30px rgba(0,0,0,.3)">
+    <h2 style="margin:0 0 8px;border:none;padding:0">截图缓存已达提醒阈值</h2>
+    <p class="muted" id="fc-modal-info" style="line-height:1.7;margin:6px 0 12px"></p>
+    <p class="muted" style="font-size:12px;line-height:1.6;margin:0 0 12px">
+      缓存目录: <span class="mono">data/fail_cache/</span>（出错现场的全量 OCR + 截图; 跨重启保留）<br>
+      清理**只删图片像素**, 存证记录（时间/tag/全量 OCR 文本）**永久保留**在 <span class="mono">index.jsonl</span>;
+      清理动作会写入运行日志（不静默）。
+    </p>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <button data-fc-mode="all" class="danger">全部清理</button>
+      <button data-fc-mode="days" data-fc-days="30">清理 30 天前</button>
+      <button data-fc-mode="days" data-fc-days="7">清理 7 天前</button>
+      <button data-fc-mode="days" data-fc-days="1">清理 1 天前</button>
+      <button data-fc-mode="none">暂不清理</button>
+    </div>
+  </div>
+</div>
 <header>
   <h1>🌺 <span>FAA</span> 小花仙挂机助手</h1>
   <span id="conn-badge" class="badge off">未连接</span>
   <span id="mode-badge" class="badge off">使用模式</span>
   <span id="screen-size" class="muted mono">待读取</span>
+  <span id="fail-cache-badge" class="muted mono" title="故障存证截图缓存(出错时的全量OCR+截图, 供离线复核)">截图缓存 —</span>
   <button id="view-toggle" class="view-link">↔ 切换界面：测试</button>
   <a href="/tpltool" class="view-link" title="模板标注工具：截图标/调框/自由涂刷蒙版生成模板">模板标注</a>
   <button id="shutdown-btn" class="view-link danger" style="margin-left:0">⏻ 关闭服务</button>
@@ -244,6 +264,11 @@
           <label class="cfg-hint"><input type="checkbox" id="ui-close-confirm-chk"> 启用</label>
         </div>
         <p class="maa-note">开启后, 关闭本页标签会弹浏览器确认, 防误触关闭; 关掉后不再提醒。<b>流程运行中即使设了不再提醒仍会确认</b>(防误关丢失实时监控)。改动即时保存。弹窗文案由浏览器固定, 无法自定义。「关闭服务」成功后本页已失效, 关闭标签页不再重复确认; 服务端页面更新后, 旧页面会自动在顶部横幅提示刷新。</p>
+        <div class="cfg-row">
+          <span class="lbl">截图缓存提醒阈值 (MB)</span>
+          <input type="number" id="fc-prompt-mb" min="1" step="10" style="width:90px">
+        </div>
+        <p class="maa-note">出错时的全量 OCR + 截图会缓存在 <span class="mono">data/fail_cache/</span>（<b>当场写盘, 不占运行内存</b>; 跨服务重启保留）。<b>系统不会自动删除</b>；只有打开页面时若缓存 ≥ 本阈值, 才弹出提醒由你选择清理范围。顶栏常驻显示当前缓存大小, 点「浏览截图」打开缓存目录。清理只删图片, <b>存证记录（时间/tag/全量OCR文本）永久保留在 index.jsonl</b>。</p>
       </div>
 
       <div class="maa-panel">
@@ -298,6 +323,7 @@
         <h2 style="margin-top:12px">运行日志
           <button id="log-clear" style="float:right;font-size:12px;padding:2px 10px;margin-right:6px" title="清空服务端日志缓冲与磁盘备份，本页日志显示也会一并清空；不可恢复，如需留档请先点「保存日志」">清除日志</button>
           <button id="log-save" style="float:right;font-size:12px;padding:2px 10px" title="服务端可用时导出服务端全量日志；服务已停(如 ctrl+c / 控制台被误关)时改为导出本页快照">保存日志</button>
+          <button id="log-browse-shots" style="float:right;font-size:12px;padding:2px 10px" title="在服务端机器的资源管理器中打开故障存证截图缓存目录 data/fail_cache/">浏览截图</button>
         </h2>
         <div id="log"><span class="muted">暂无日志</span></div>
       </div>
@@ -451,6 +477,24 @@ async function refreshStatus(){
         $("screen-size").removeAttribute("title");
     if(c) $("screen-hint").style.display = "none";
     else $("screen-hint").style.display = "flex";
+    // 截图缓存(里程碑 94): 顶栏常驻显示; 首次加载超阈值弹提醒(服务端记录, 刷新不重复弹)
+    const fc = s.fail_cache || null;
+    if(fc){
+      failCacheInfo = fc;
+      const b = $("fail-cache-badge");
+      if(b){
+        b.textContent = `截图缓存 ${fc.mb.toFixed(1)}MB`;
+        b.style.color = fc.exceed ? "#c0392b" : "";
+        b.style.fontWeight = fc.exceed ? "600" : "";
+        b.title = `故障存证截图缓存 ${fc.mb.toFixed(1)} MB / ${fc.count} 张 / ${fc.sessions} 个会话`
+                + `${fc.oldest ? '，最早 ' + fc.oldest : ''}（提醒阈值 ${fc.threshold_mb} MB）`
+                + `\n出错现场的全量 OCR + 截图（当场写盘, 不占运行内存; 跨重启保留）。`
+                + `\n点右侧「浏览截图」打开缓存目录。`;
+      }
+      const inp = $("fc-prompt-mb");
+      if(inp && document.activeElement !== inp) inp.value = fc.threshold_mb;
+      if(fc.prompt && !fcModalShown){ fcModalShown = true; showFcModal(fc); }
+    }
     $("maa-connect").textContent = c ? "已连接" : "连接";
     try{
       $("connect-btn").textContent = c ? "已连接" : "连接";
@@ -739,6 +783,55 @@ $("ui-close-confirm-chk").onchange = async (ev)=>{
   })});
 };
 
+// ---- 故障存证截图缓存 (里程碑 94, 用户方案) ----
+// 设计: 截图当场写盘(零运行内存); 系统不自动删; 启动后**页面首次加载**若缓存 ≥ 阈值弹提醒,
+//       由用户选清理范围(全部/30天/7天/1天/暂不); 清理只删像素, index.jsonl 存证记录永久保留。
+let failCacheInfo = null;
+let fcModalShown = false;
+
+function showFcModal(info){
+  const el = $("fc-modal"); if(!el) return;
+  $("fc-modal-info").innerHTML =
+    `当前缓存: <b>${info.mb.toFixed(1)} MB</b> / <b>${info.count}</b> 张 / ${info.sessions} 个会话`
+    + `${info.oldest ? '，最早 ' + info.oldest.slice(0,4) + '-' + info.oldest.slice(4,6) + '-' + info.oldest.slice(6,8) : ''}`
+    + `（提醒阈值 ${info.threshold_mb} MB）`;
+  el.classList.remove("hidden");
+  el.style.display = "flex";
+}
+window.__fcClose = ()=>{ const el=$("fc-modal"); el.classList.add("hidden"); el.style.display="none"; };
+$("fc-modal").onclick = async (ev)=>{
+  const b = ev.target.closest("button[data-fc-mode]"); if(!b) return;
+  const mode = b.dataset.fcMode;
+  if(mode === "none"){ window.__fcClose(); return; }
+  const days = b.dataset.fcDays ? parseInt(b.dataset.fcDays) : null;
+  const label = mode === "all" ? "全部" : (days + " 天前");
+  const fc = failCacheInfo || {};
+  if(!confirm(`确定清理缓存截图（${label}）？\n\n将删除缓存目录中对应会话的图片文件（约 ${fc.mb||0} MB / ${fc.count||0} 张中的一部分）。\n存证记录（时间/tag/全量OCR文本）会保留在 index.jsonl，清理动作也会写入运行日志。\n不可恢复，如需留档请先点「保存日志」导出归档。`)) return;
+  b.disabled = true;
+  try{
+    const d = await api("/api/fail_cache_clean", {method:"POST", body:JSON.stringify({mode, days})});
+    alert(`已清理 ${d.removed} 张 / ${(d.bytes/1048576).toFixed(1)} MB / ${d.sessions} 个会话（保留 ${d.kept} 张）。\n存证记录仍保留在 index.jsonl。`);
+  }catch(e){ alert("清理失败: " + e.message); }
+  window.__fcClose();
+  await refreshStatus();
+};
+
+// 浏览截图: 在**服务端机器**上打开缓存目录
+$("log-browse-shots").onclick = async ()=>{
+  try{
+    const d = await api("/api/fail_cache_open", {method:"POST"});
+    $("log-browse-shots").title = "已打开: " + d.dir;
+  }catch(e){ alert("打开目录失败: " + e.message); }
+};
+
+// 阈值(即时保存; 必进服务端白名单, 否则会被静默丢弃)
+$("fc-prompt-mb").onchange = async (ev)=>{
+  const v = parseFloat(ev.target.value);
+  if(!v || v < 1){ ev.target.value = (failCacheInfo && failCacheInfo.threshold_mb) || 100; return; }
+  await api("/api/set_config", {method:"POST", body:JSON.stringify({fail_cache_prompt_mb: v})});
+  $("fc-prompt-mb").title = "已保存 ✓";
+};
+
 // 使用界面: 开始一轮
 $("maa-start").onclick = async ()=>{
   try{
@@ -810,7 +903,10 @@ $("log-save").onclick = saveLog;
 $("log-clear").onclick = clearLog;
 
 async function clearLog(){
-  if(!confirm("确定清除日志？\n\n将清空服务端日志缓冲与磁盘备份，本页显示也一并清空，且不可恢复。\n如需留档请先点「保存日志」。")) return;
+  if(!confirm("确定清除日志？\n\n将清空服务端日志缓冲与磁盘备份，本页显示也一并清空；\n同时删除截图缓存 "
+    + ((failCacheInfo && failCacheInfo.count) || 0) + " 张 / "
+    + ((failCacheInfo && failCacheInfo.mb) || 0).toFixed(1) + " MB"
+    + "（截图存证记录仍保留在 index.jsonl）。\n不可恢复，如需留档请先点「保存日志」（保存会同时归档截图）。")) return;
   try{
     const d = await api("/api/log_clear", {method:"POST"});
     logCursor = d.next || 0;      // 服务端下标已归零, 必须同步复位(失败时不复位, 保持原游标)

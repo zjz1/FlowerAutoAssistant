@@ -226,6 +226,10 @@ class OCREngine:
         #     如需每轮重置可在 run_daily 追加一行 —— 主 agent 里程碑 91 记, 当前维持进程级(上限 20)。
         self._dump_left = int(self.config.get("fail_dump_budget", 20))
         self._dump_sig = None
+        # 里程碑 94(用户方案): 截图存 data/fail_cache/<会话戳>/ 下 —— 会话戳=引擎实例创建时刻
+        # (webui 常驻单例 ⇒ 一次服务运行=一个会话目录, 跨重启保留不清), 归档/清理按会话粒度操作。
+        self._session_stamp = time.strftime("%Y%m%d_%H%M%S")
+        self._dump_seq = 0
 
     # ---- 公共导航注册表 (flows/common/entries.json) ----
     def _load_navigation(self) -> dict:
@@ -1334,16 +1338,39 @@ class OCREngine:
             lines.append("  ⚠ 区域外含同字块(疑似区域坐标不对): " + brief(outside_same))
         print("\n".join(lines))
 
+    # 故障存证 tag → 文件名 ASCII slug(里程碑 94): 中文 tag 在 Windows 下经 cv2.imwrite 落盘会**乱码**
+    # (现网实测 fail_绛夊緟瓒呮椂___…png), 故文件名一律 ASCII; 中文原文保留在日志与 index.jsonl 的 tag 字段。
+    _DUMP_TAG_MAP = (("未命中", "miss"), ("等待超时", "wait_timeout"), ("消失超时", "vanish_timeout"))
+
+    @classmethod
+    def _dump_tag_slug(cls, tag: str) -> str:
+        for zh, en in cls._DUMP_TAG_MAP:
+            if tag.startswith(zh):
+                return en
+        s = re.sub(r"_+", "_", "".join(
+            ch if (ch.isascii() and (ch.isalnum() or ch in "_-")) else "_" for ch in str(tag))).strip("_")
+        return (s or "misc")[:32]
+
     def dump_full_frame(self, tag: str, img=None) -> None:
         """故障现场存证: 全量 OCR(不截断) + 当前帧截图落盘 (2026-10-14 用户要求)。
 
         常规未命中日志(_log_ocr_miss)只列前 10 块, 卡死/报错时无法判断画面到底有什么
         (弹窗遮挡? 动画中间帧? 艺术字被读错?) —— 故在**离散错误点**(等待超时/点击未命中)
-        额外做一次**全量** OCR 并保存当帧 PNG, 供离线复核与模板/区域校准。
+        额外做一次**全量** OCR 并保存当帧, 供离线复核与模板/区域校准。
 
-        防膨胀: ①每轮预算 fail_dump_budget(默认 20) 上限; ②(tag, 帧指纹) 去重 ——
-        同一帧同一原因只存一次(同帧重试场景天然收敛)。异常一律吞掉, 不影响流程。
-        只读观测: 不改任何判定行为; data/ 为运行期产物目录(.gitignore data/*)。
+        ⚠ 里程碑 94(用户方案) 存证策略重构 —— "缓存"语义 + 零内存 + 信息不死:
+        - **零运行内存**: 截图**当场同步写盘**, 进程内不缓存 numpy/bytes/图片数据(只留一条元数据);
+          代价是该点阻塞若干毫秒~百毫秒(全量 OCR 是大头), 属用户明示接受的取舍。
+        - **缓存目录**: `data/fail_cache/<会话戳>/`(会话戳=引擎实例创建时刻 ⇒ 一次服务运行一个目录,
+          跨服务重启**保留不清**, 便于崩溃后仍能看现场)。
+        - **纯 ASCII 文件名**: `fail_<日期>_<时刻>_<序号>_<slug>.jpg` —— 修 O2(Windows 中文名乱码)。
+        - **JPEG(q85)** 而非 PNG: 单张 ≈200KB(原 PNG 1.3~1.6MB) —— 缓解 O3。
+        - **不设自动淘汰**: 无任何大小/张数守卫(避免每次落盘都统计的开销); 清理**只由用户触发**
+          (启动超阈值提醒弹窗 / 「清除日志」按钮), 详见 webui.py::clean_fail_cache。
+        - **元数据墓碑(信息不死)**: 每次落盘追加一条到 `data/fail_cache/index.jsonl`, 含
+          时间/会话/tag(中文原文)/文件名/字节数/**全量 OCR 文本**/帧指纹 —— 日后像素被清理时
+          该条目标 `evicted:true` 而**记录永久保留** ⇒ 不会"静默丢失信息"。
+        - 预算 `fail_dump_budget` 与 (tag,帧指纹) 去重维持不变; 异常一律吞掉, 不影响流程。
         """
         try:
             if self._dump_left <= 0:
@@ -1365,14 +1392,37 @@ class OCREngine:
                 c = b.get("center") or (0, 0)
                 print(f"    · {str(b.get('text',''))[:24]} @{float(b.get('score',1.0)):.2f} ({c[0]},{c[1]})")
             import cv2
-            out = Path(__file__).parent / "data" / "collect"
+            import json
+            base = Path(__file__).parent / "data" / "fail_cache"
+            out = base / self._session_stamp
             out.mkdir(parents=True, exist_ok=True)
-            safe = "".join(ch if (ch.isalnum() or ch in "_-") else "_" for ch in str(tag))
-            fn = out / f"fail_{safe}_{time.strftime('%H%M%S')}.png"
-            if cv2.imwrite(str(fn), img):
-                print(f"[故障存证] {tag}: 画面已保存 -> data/collect/{fn.name}")
-            else:
-                print(f"[故障存证] {tag}: 画面写盘失败(路径/权限)")
+            self._dump_seq += 1
+            slug = self._dump_tag_slug(tag)
+            fn = f"fail_{time.strftime('%Y%m%d_%H%M%S')}_{self._dump_seq:03d}_{slug}.jpg"
+            fp = out / fn
+            ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+            if not ok:
+                print(f"[故障存证] {tag}: JPEG 编码失败, 跳过")
+                return
+            buf.tofile(str(fp))   # 用 tofile 而非 imwrite: 绕开 OpenCV 对非 ASCII 路径的处理差异
+            nbytes = fp.stat().st_size
+            rel = f"{self._session_stamp}/{fn}"
+            print(f"[故障存证] {tag}: 画面已保存 -> data/fail_cache/{rel} ({nbytes/1024:.0f} KB, {len(blocks)} 块)")
+            # 元数据墓碑: 记录永久留档, 供日后"像素已清理但记录仍在"的追溯
+            try:
+                entry = {
+                    "ts": time.strftime("%Y-%m-%d %H:%M:%S"), "session": self._session_stamp,
+                    "tag": str(tag), "slug": slug, "file": rel, "bytes": nbytes,
+                    "sig": (sig.hex()[:16] if sig is not None else None),
+                    "ocr": [f"{str(b.get('text',''))[:40]}@{float(b.get('score',1.0)):.2f}"
+                            f"({(b.get('center') or (0,0))[0]},{(b.get('center') or (0,0))[1]})"
+                            for b in blocks],
+                    "evicted": False,
+                }
+                with open(base / "index.jsonl", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            except Exception as e2:
+                print(f"[故障存证] {tag}: 索引写入失败(不影响流程): {e2}")
         except Exception as e:
             print(f"[故障存证] {tag}: 存证异常(不影响流程): {e}")
 

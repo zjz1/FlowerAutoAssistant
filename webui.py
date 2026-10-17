@@ -58,6 +58,7 @@ _POST_ROUTES = {
     "/api/stop", "/api/set_config", "/api/run_daily", "/api/shutdown",
     "/api/tplt_load", "/api/tplt_submit", "/api/tplt_contour",
     "/api/failures_clear", "/api/log_clear",
+    "/api/fail_cache_clean", "/api/fail_cache_open",   # 里程碑 94 截图缓存
 }
 
 # ---- 运行日志环形缓冲 (支持增量拉取) ----
@@ -117,6 +118,192 @@ def _log_reset_history() -> None:
             pass
     except Exception:
         pass
+
+
+# ---- 故障存证截图: 缓存/归档/清理 (里程碑 94, 用户方案) ----
+# 设计(用户 2026-10-17/18 定案):
+#  ①截图**当场同步写盘**在 data/fail_cache/<会话戳>/ (零运行内存; 跨服务重启保留不清);
+#  ②**不设自动上限**(不写死张数/MB, 也不在落盘路径做任何统计 → 零额外开销);
+#  ③**服务启动时统计一次**缓存大小; 页面首次加载若 ≥ fail_cache_prompt_mb(默认 100, 可在 WebUI 改)
+#    则弹提醒, 由**用户选择**清理粒度(全部/>30天/>7天/>1天/暂不) —— 系统永不自动删;
+#  ④清理**只删像素**, index.jsonl 元数据墓碑**永久保留**(信息不死: 时间/tag/全量OCR文本仍在),
+#    且被清条目标 evicted=true; 清理前后各写一行日志(删除必须"有声", 不静默);
+#  ⑤「浏览截图」按钮打开缓存根目录(服务端资源管理器);
+#  ⑥点「保存日志」时把**本次会话**的截图复制到 data/fail_archives/<导出时刻>/ + manifest,
+#    并把归档路径/张数/淘汰情况写进日志头段(日志内 [故障存证] 行已自带文件名, 天然对应)。
+_FAIL_CACHE_DIR = BASE / "data" / "fail_cache"
+_FAIL_ARCHIVE_DIR = BASE / "data" / "fail_archives"
+_CACHE_PROMPT_PENDING = True      # 本次服务会话是否还未弹出过缓存提醒(刷新页面不重复弹)
+
+
+def _fail_cache_stat() -> dict:
+    """统计缓存: 总字节/张数/会话数/最早一张时间(按**文件名内嵌时间戳**, 不用 mtime —— 复制迁移后 mtime 不可靠)。"""
+    total = 0
+    count = 0
+    sessions = []
+    oldest = None
+    try:
+        if not _FAIL_CACHE_DIR.exists():
+            return {"bytes": 0, "count": 0, "sessions": 0, "oldest": None, "session": "", "session_files": 0}
+        for d in sorted(_FAIL_CACHE_DIR.iterdir()):
+            if not d.is_dir():
+                continue
+            n = 0
+            for f in d.iterdir():
+                if f.is_file() and f.suffix.lower() in (".jpg", ".png"):
+                    total += f.stat().st_size
+                    count += 1
+                    n += 1
+                    ts = f.stem.split("_")[1] if len(f.stem.split("_")) > 2 else None
+                    if ts and ts.isdigit() and len(ts) == 8:
+                        if oldest is None or ts < oldest:
+                            oldest = ts
+            if n:
+                sessions.append(d.name)
+    except Exception as e:
+        print(f"[截图缓存] 统计异常(不影响流程): {e}")
+    # 当前会话戳: 直接读模块全局(不用 get_engine() —— 那会在未连接时**创建引擎/加载 OCR 模型**)
+    cur = getattr(globals().get("ENGINE"), "_session_stamp", "") or ""
+    cur_files = 0
+    if cur and (_FAIL_CACHE_DIR / cur).exists():
+        cur_files = sum(1 for f in (_FAIL_CACHE_DIR / cur).iterdir() if f.is_file())
+    return {"bytes": total, "count": count, "sessions": len(sessions),
+            "oldest": oldest, "session": cur, "session_files": cur_files}
+
+
+def _fail_cache_clean(mode: str = "all", days: int | None = None) -> dict:
+    """清理缓存**像素**(用户触发; index.jsonl 墓碑永久保留)。mode: all | days(需 days>0)。
+
+    返回 {removed, bytes, sessions, kept}; 全过程写日志(有声删除), 被删条目标 evicted=true。
+    mode="all" 连**本次会话目录**一并清(用户裁决: 日志清了截图就不需要了);
+    mode="days" 按会话目录内**最早一张**(文件名时间戳)判定, 今日会话天然不满足"早于 N 天前"故自动保留。
+    """
+    import json
+    stat = _fail_cache_stat()
+    if not _FAIL_CACHE_DIR.exists():
+        return {"removed": 0, "bytes": 0, "sessions": 0, "kept": 0}
+    cutoff = None
+    if mode == "days" and days:
+        cutoff = time.strftime("%Y%m%d", time.localtime(time.time() - int(days) * 86400))
+    removed = rbytes = rsess = kept = 0
+    evicted_files = set()
+    for d in sorted(_FAIL_CACHE_DIR.iterdir()):
+        if not d.is_dir():
+            continue
+        files = [f for f in d.iterdir() if f.is_file() and f.suffix.lower() in (".jpg", ".png")]
+        if not files:
+            continue
+        # 会话目录内以**最早一张**（按文件名时间戳）判定是否整目录清理
+        stamps = [f.stem.split("_")[1] for f in files if len(f.stem.split("_")) > 2 and f.stem.split("_")[1].isdigit()]
+        sess_stamp = min(stamps) if stamps else "99999999"
+        if mode == "all" or (cutoff and sess_stamp < cutoff):
+            for f in files:
+                try:
+                    rbytes += f.stat().st_size
+                    f.unlink()
+                    removed += 1
+                    evicted_files.add(f"{d.name}/{f.name}")
+                except Exception:
+                    pass
+            rsess += 1
+            try:
+                d.rmdir()
+            except Exception:
+                pass
+        else:
+            kept += len(files)
+    # 墓碑: 把 index.jsonl 中被删条目改 evicted=true(记录保留, 只加删除标记)
+    marked = 0
+    idx = _FAIL_CACHE_DIR / "index.jsonl"
+    if evicted_files and idx.exists():
+        try:
+            lines = idx.read_text(encoding="utf-8").splitlines()
+            out = []
+            for ln in lines:
+                if not ln.strip():
+                    continue
+                try:
+                    e = json.loads(ln)
+                    if e.get("file") in evicted_files and not e.get("evicted"):
+                        e["evicted"] = True
+                        e["evicted_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                        marked += 1
+                    out.append(json.dumps(e, ensure_ascii=False))
+                except Exception:
+                    out.append(ln)
+            idx.write_text("\n".join(out) + "\n", encoding="utf-8")
+        except Exception as e:
+            print(f"[截图缓存] 墓碑标注失败(不影响清理): {e}")
+    log_append(f"[截图缓存] 已清理 {removed} 张 / {rbytes/1048576:.1f} MB / {rsess} 个会话"
+               f" (mode={mode}{', days=' + str(days) if days else ''}; 保留 {kept} 张; "
+               f"墓碑标注 {marked} 条 —— 元数据与 OCR 文本仍保留在 index.jsonl)\n")
+    return {"removed": removed, "bytes": rbytes, "sessions": rsess, "kept": kept}
+
+
+def _fail_cache_archive(ts: str) -> dict:
+    """把**缓存目录中现存的全部截图**复制到 data/fail_archives/<ts>/（保留会话子目录结构）+ 写 manifest。
+
+    用户原话: 「点击保存运行日志时, 会将缓存目录的截图复制到一个归档文件夹」—— 即复制缓存的**全部**,
+    而非仅本次会话(也避免依赖"服务是否已连接引擎"), 一次导出=缓存的一次快照。
+    返回 {dir, count, bytes, sessions, session_files, evicted}。
+    """
+    import json, shutil
+    stat = _fail_cache_stat()
+    sess = stat.get("session") or ""
+    dst = _FAIL_ARCHIVE_DIR / ts
+    copied = []
+    total = 0
+    sess_count = 0
+    try:
+        dst.mkdir(parents=True, exist_ok=True)
+        if _FAIL_CACHE_DIR.exists():
+            for d in sorted(_FAIL_CACHE_DIR.iterdir()):
+                if not d.is_dir():
+                    continue
+                files = sorted(f for f in d.iterdir() if f.is_file() and f.suffix.lower() in (".jpg", ".png"))
+                if not files:
+                    continue
+                sub = dst / d.name
+                sub.mkdir(parents=True, exist_ok=True)
+                for f in files:
+                    shutil.copy2(f, sub / f.name)
+                    copied.append(f"{d.name}/{f.name}")
+                    total += (sub / f.name).stat().st_size
+                    if d.name == sess:
+                        sess_count += 1
+        # manifest: 逐张 文件名 ↔ 中文tag ↔ 时刻; 并标注缓存中被清理(evicted)的条目
+        idxmap, evicted = {}, []
+        idx = _FAIL_CACHE_DIR / "index.jsonl"
+        if idx.exists():
+            for ln in idx.read_text(encoding="utf-8").splitlines():
+                try:
+                    e = json.loads(ln)
+                except Exception:
+                    continue
+                idxmap[e.get("file", "")] = e
+                if e.get("evicted"):
+                    evicted.append(e.get("file", ""))
+        lines = [f"# 归档清单 (生成 {time.strftime('%Y-%m-%d %H:%M:%S')})",
+                 f"# 归档目录: data/fail_archives/{ts}",
+                 f"# 归档张数: {len(copied)} 张 / {total} 字节 ({total/1048576:.2f} MB)"
+                 f"  其中本次会话 {sess_count} 张",
+                 "# 说明: 日志正文 [故障存证] 行末已自带文件名, 与下表一一对应;",
+                 "#      「(已淘汰)」= 该图已被缓存清理(像素已删), 但其**存证记录(时间/tag/全量OCR文本)**",
+                 "#      永久保留在 data/fail_cache/index.jsonl, 可按文件名回查 —— 不是导出出错。",
+                 "-" * 70]
+        for n in copied:
+            e = idxmap.get(n, {})
+            lines.append(f"{n:56s} {str(e.get('tag','?'))[:16]:16s} {e.get('ts','')}")
+        for f in evicted:
+            if f not in copied:
+                e = idxmap.get(f, {})
+                lines.append(f"{f:56s} {str(e.get('tag','?'))[:16]:16s} {e.get('ts','')}  ← (已淘汰)")
+        (dst / "manifest.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception as e:
+        log_append(f"[截图归档] 归档异常(不影响日志导出): {e}\n")
+    return {"dir": str(dst), "count": len(copied), "bytes": total,
+            "sessions": len({c.split("/")[0] for c in copied}), "session_files": sess_count,
+            "evicted": len([f for f in evicted if f not in copied])}
 
 
 class _TeeOut:
@@ -201,10 +388,17 @@ def _ui_build() -> str:
 
 
 def _status() -> dict:
+    global _CACHE_PROMPT_PENDING
     eng = get_engine()
     # screen=实机分辨率(adb 直读, 2026-10-07 用户反馈修正); 读取失败回退引擎工作区
     # (MAA 截图长边 1280 缩放, 与实机可能不同)。work=引擎工作区, 前端悬停提示用。
     disp = getattr(eng, "display_w", 0)
+    # 里程碑 94: 截图缓存大小(前端常驻显示) + 首次加载是否弹提醒(服务端记录, 刷新页面不重复弹)
+    cst = _fail_cache_stat()
+    thr = float(eng.config.get("fail_cache_prompt_mb", 100) or 100)
+    cmb = cst["bytes"] / 1048576
+    prompt = bool(_CACHE_PROMPT_PENDING and cmb >= thr)
+    _CACHE_PROMPT_PENDING = False
     return {
         "connected": _is_connected(eng),
         "screen": ([eng.display_w, eng.display_h] if disp
@@ -219,6 +413,10 @@ def _status() -> dict:
         "confirm_page_close": bool(eng.config.get("confirm_page_close", True)),
         # webui.html 版本戳: 前端与自身 meta 比对判断页面是否落后于服务端 (2026-10-12)
         "ui_build": _ui_build(),
+        # 里程碑 94: 截图缓存(前端状态栏常驻显示 + 首屏超阈值弹提醒)
+        "fail_cache": {"mb": round(cmb, 2), "count": cst["count"], "sessions": cst["sessions"],
+                       "oldest": cst["oldest"], "threshold_mb": thr, "exceed": cmb >= thr,
+                       "prompt": prompt},
     }
 
 
@@ -297,6 +495,7 @@ class Handler(BaseHTTPRequestHandler):
                 "enable_like": bool(eng.config.get("enable_like", False)),
                 "log_click_pos": bool(eng.config.get("log_click_pos", False)),
                 "use_cache_pos": bool(eng.config.get("use_cache_pos", False)),
+                "fail_cache_prompt_mb": float(eng.config.get("fail_cache_prompt_mb", 100) or 100),
             })
         if api == "daily" and self.command == "GET":
             return self._daily()
@@ -336,6 +535,12 @@ class Handler(BaseHTTPRequestHandler):
                 eng.update_config(enable_water=bool(data["enable_water"]))
             if "confirm_page_close" in data:
                 eng.update_config(confirm_page_close=bool(data["confirm_page_close"]))
+            # 里程碑 94: 截图缓存提醒阈值(MB) —— 必进白名单, 否则 WebUI 保存被静默丢弃(里程碑 87 教训)
+            if "fail_cache_prompt_mb" in data:
+                try:
+                    eng.update_config(fail_cache_prompt_mb=max(1.0, float(data["fail_cache_prompt_mb"])))
+                except (TypeError, ValueError):
+                    pass
             now = bool(eng.config.get("enable_switch", False))
             log_append(f"[config] 切换账号功能 {'启用' if now else '关闭'}"
                        + (f", 目标尾部={eng.config.get('target_tail')}" if now else ""))
@@ -390,6 +595,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._log_download()
         if api == "log_clear" and self.command == "POST":
             return self._log_clear()
+        # ---- 故障存证截图: 缓存信息 / 清理 / 浏览目录 (里程碑 94) ----
+        if api == "fail_cache_info" and self.command == "GET":
+            st = _fail_cache_stat()
+            thr = float(get_engine().config.get("fail_cache_prompt_mb", 100) or 100)
+            return self._send_json({**st, "mb": st["bytes"] / 1048576, "threshold_mb": thr,
+                                    "exceed": st["bytes"] / 1048576 >= thr})
+        if api == "fail_cache_clean" and self.command == "POST":
+            data = self._read_json() if int(self.headers.get("Content-Length") or 0) else {}
+            return self._send_json({"ok": True,
+                                    **_fail_cache_clean(str(data.get("mode") or "all"), data.get("days"))})
+        if api == "fail_cache_open" and self.command == "POST":
+            import os
+            try:
+                _FAIL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                os.startfile(str(_FAIL_CACHE_DIR))
+                log_append(f"[截图缓存] 已打开缓存目录: {_FAIL_CACHE_DIR}\n")
+                return self._send_json({"ok": True, "dir": str(_FAIL_CACHE_DIR)})
+            except Exception as e:
+                return self._send_json({"ok": False, "error": str(e)}, 500)
         if api == "shutdown" and self.command == "POST":
             return self._shutdown()
 
@@ -855,11 +1079,20 @@ class Handler(BaseHTTPRequestHandler):
             lines = list(_LOGS)
         text = "".join(lines)
         ts = time.strftime("%Y%m%d_%H%M%S")
+        # 里程碑 94: 归档本次会话的截图(复制) + manifest, 并把契约写进日志头段
+        arc = _fail_cache_archive(ts)
+        stat = _fail_cache_stat()
         head = (f"# FlowerAutoAssistant 运行日志\n"
                 f"# 导出时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 # _LOGS 存的是 _TeeOut.write() 的写入分片(print 的正文与换行是两次 write),
                 # len(_LOGS) 是分片数 ≠ 行数(实测 2113 分片只对应 1202 行), 必须按实际换行数统计。
                 f"# 总行数: {text.count(chr(10))}\n"
+                f"# 归档目录: data/fail_archives/{ts}\n"
+                f"# 归档截图: {arc['count']} 张 / {arc['bytes']/1048576:.2f} MB"
+                f" (覆盖 {arc['sessions']} 个会话; 其中本次会话 {arc['session_files']} 张)\n"
+                f"# 截图清单: data/fail_archives/{ts}/manifest.txt (文件名 ↔ 中文tag ↔ 时刻)\n"
+                f"# 对应关系: 正文 [故障存证] 行末已自带文件名; 若该文件被缓存清理(像素已删), 其\n"
+                f"#           存证记录(时间/tag/全量OCR文本)永久保留在 data/fail_cache/index.jsonl\n"
                 + "-" * 40 + "\n")
         # 前缀 \ufeff(BOM) 让 Windows 记事本按 UTF-8 打开, 避免中文乱码
         body = ("\ufeff" + head + text).encode("utf-8")
@@ -880,9 +1113,13 @@ class Handler(BaseHTTPRequestHandler):
         只清服务端又会让下次增量拉取从新缓冲中部开始 —— 故三者必须一起动, 且**回 next=0**,
         前端收到后必须把 logCursor 复位(见 webui.html clearLog)。
         清完补一条标记日志, 让"清理确实生效、何时清理"可被验证(否则清空后页面一片空白, 无从判断)。
+
+        ⚠ 里程碑 94(用户裁决): 本按钮**同时清理截图缓存像素**(日志没了, 截图自然也不需要);
+        index.jsonl 元数据墓碑**保留**(记录不死), 被清图标注 evicted。清理行由 _fail_cache_clean 落到日志。
         """
         _log_reset_history()
         log_append(f"[webui] 运行日志已被手动清除 {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        _fail_cache_clean("all")   # 同时清缓存像素(本次会话目录同样清理 —— 用户明确要求"没有日志就不需要截图")
         return self._send_json({"ok": True, "next": 0})
 
     # ---- API: 停止流程 (UI「停止」按钮, 不关闭服务) ----
