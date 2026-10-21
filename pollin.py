@@ -21,7 +21,6 @@ import sys
 import time
 
 from ocr_engine import OCREngine, ADB_ADDRESS, ADB_PATH, stop_requested
-from ocr_ui import ocr_image
 
 # ---------------- 常量（全部相对坐标/相对区域，分辨率无关） ----------------
 TPL_GREEN = "friend_pollin"                      # 可采粉绿花角标(纯图形)
@@ -75,6 +74,12 @@ CATEGORIES = ("密友", "好友")
 # ---------------- 基础工具 ----------------
 
 def has(eng, kws, img=None, min_score=0.4, **kw):
+    """存在性判断(只返回布尔)。
+    O2(2026-10-21): 默认 need_refine=False —— 拆分的唯一用途是给**点击**提供精确子块坐标,
+    纯判断不需要; 省下 social 大量等待探测里的过宽块 2× 重识别。需要坐标的调用一律走 locate/click。
+    exact=True 时仍保留拆分(合并块会让 exact 失配, 拆分可能是唯一命中途径)。"""
+    if "need_refine" not in kw:
+        kw["need_refine"] = bool(kw.get("exact", False))
     return eng.locate(kws, img=img, min_score=min_score, **kw) is not None
 
 
@@ -348,36 +353,22 @@ def click_top_right_close(eng):
 #    「好希望点击任意处关闭」@0.89(661,675)(L290), 弹层确实在屏且从未被关闭。)
 # 合规: 弹窗是游戏既有控件, 关键字与弹窗本体定位均走实时 OCR, 不写死任何坐标(规则 6)。
 BOTTOM_BAR_REGION = [0.28, 0.86, 0.95, 1.0]        # 家园/好友花园底栏按钮带
-REWARD_POPUP_KWS = ("恭喜获得", "点击任意处关闭")   # 奖励弹窗族(与浇水/矿洞/在线礼包同款)
 
 
 def dismiss_reward_popup(eng, img=None, tries=2):
     """关闭半透明奖励弹窗(点弹窗 = 点任意处关闭)。True=确认已不在屏 / 本就无弹窗。
 
-    ! 优先级: 先点**标题「恭喜获得」**(落在弹窗面板内部, 无穿透风险); 标题读不到时才退而
-      点页脚「点击任意处关闭」—— 页脚贴近底栏, 弹窗若已消失则该点会**点击穿透**到底层 UI
-      (flow_social.json §4.1.3 notes, 2026-10-05 实测曾误点开「我的背包」)。两段式而非一次
-      locate([标题, 页脚]): locate 只返回**第一个**命中块, 命中顺序取决于底层 ocr_find 的块序,
-      不保证按关键字先后 —— 显式分段才能确定「标题优先」。
+    2026-10-20 D13(主 agent): 判定/关闭/上报统一走引擎 `reward_dialog` —— 原先这里有一份独立实现,
+      全项目因此存在 5 套不同写法。现保留本函数只为不动既有调用点(escape_overlay / 采粉收尾)。
+    ! 语义差异: 旧版"本就无弹窗"直接 True。本函数是**守卫**不是"领取成功判定", 故未见弹窗也算成功
+      (quiet=True 抑制"未见到"日志), 最终以"弹窗是否仍在屏"为准 —— 与旧返回值一致。
+    ! 关闭优先级: 引擎原语**先点标题「恭喜获得」**(落在弹窗内, 无穿透风险), 标题读不到才点页脚
+      「点击任意处关闭」; 页脚贴近底栏, 弹窗若已消失会**点击穿透**到底层 UI(flow_social 2026-10-05 实测
+      曾误开「我的背包」)。
     """
-    for i in range(1, tries + 1):
-        if stop_requested():
-            return False
-        img = img if img is not None else eng.screenshot()
-        pt = eng.locate([REWARD_POPUP_KWS[0]], img=img, min_score=0.4)   # ① 标题
-        if pt is None:
-            pt = eng.locate(list(REWARD_POPUP_KWS), img=img, min_score=0.4)  # ② 页脚兜底
-        if pt is None:
-            return True
-        print(f"  [弹窗] 命中奖励弹窗 ({pt.x},{pt.y}), 第{i}次点击关闭")
-        eng.click_abs(pt.x, pt.y)
-        if wait_screen_change(eng, img, desc=f"奖励弹窗关闭(第{i}次)", timeout=5):
-            continue
-        time.sleep(1.0)
-    gone = eng.locate(list(REWARD_POPUP_KWS), min_score=0.4) is None
-    if not gone:
-        print("  [弹窗] 奖励弹窗两次点击后仍在屏, 如实报出")
-    return gone
+    eng.reward_dialog({"wait": 0.0, "tries": tries, "required": False,
+                       "quiet": True, "name": "奖励弹窗(采粉守卫)"})
+    return not eng.has_reward_popup()
 
 
 def escape_overlay(eng, tries=2):
@@ -633,11 +624,20 @@ def open_friend_list(eng):
         if stop_requested():
             return False
         img = eng.screenshot()
-        # 2026-10-14 防御: 上一环节(采粉/浇水/矿洞…)可能残留半透明奖励弹窗 —— 它会遮住底栏
-        # 「社交」与店内的「好友」按钮区, 先清掉再判场景, 避免「点社交」整词 MISS 空转。
-        if in_garden(eng, img) and not has(eng, "社交", img=img, min_score=0.5):
-            escape_overlay(eng)
-            img = eng.screenshot()
+        # 2026-10-14 防御(2026-10-21 修正判据): 上一环节(采粉/浇水/矿洞…)可能残留半透明奖励弹窗。
+        # ⚠ 原判据 `not has(社交)` 是**反的**: 弹窗半透明时「社交」仍然可读, 但点击会被弹窗吞掉
+        #   (用户 2026-10-20 指出)。于是最需要清弹窗的场景反而永远不进 escape —— 日志里大量
+        #   「点「社交」后未见社交面板(点击被吞)」而 `[弹窗] 社交不可读` 只有寥寥几次, 即此。
+        # 现改为**先判是否存在弹窗**: 有 -> 关掉再继续; 没有再走旧「不可读」兜底(面板/其它遮挡)。
+        if in_garden(eng, img):
+            if eng.has_reward_popup(img):
+                print("  [列表] 花园画面存在半透明奖励弹窗(社交可读但点击会被吞) -> 先关闭")
+                dismiss_reward_popup(eng, img)
+                img = eng.screenshot()
+            elif not has(eng, "社交", img=img, min_score=0.5):
+                # 兜底: 确实读不到「社交」(可能是面板/其它遮挡) -> 旧清弹层链
+                escape_overlay(eng)
+                img = eng.screenshot()
         if in_list(eng, img):
             print("  [列表] 已在好友列表")
             eng.set_scene("好友列表")
@@ -734,7 +734,8 @@ def read_page(eng, img=None):
             _, binimg = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             _, bininv = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
             for bin_ in (binimg, bininv, gray):  # 二值 → 反相 → 纯灰度, 首个解析成功即返回
-                for b in ocr_image(cv2.cvtColor(bin_, cv2.COLOR_GRAY2BGR)):
+                # O0(2026-10-21): 走引擎直调统计 —— 原 `ocr_image` 完全不计时, 导致 OCR 总账被低估
+                for b in eng.ocr_direct(cv2.cvtColor(bin_, cv2.COLOR_GRAY2BGR), src="read_page"):
                     m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", b["text"].strip())
                     if m:
                         return (int(m[1]), int(m[2]))
@@ -904,7 +905,7 @@ def collect_one(eng, x, y):
         import cv2
         diag = os.path.join(os.path.dirname(__file__), "debug", "_enter_garden_fail.png")
         cv2.imwrite(diag, img)
-        texts = [b["text"] for b in sorted(ocr_image(img),
+        texts = [b["text"] for b in sorted(eng.ocr_direct(img, src="diag"),
                                            key=lambda b: b["score"], reverse=True)][:12]
         print(f"    [采集] 第{i}次点击后未进园也未在列表(可能点偏), 画面存 {diag}")
         print(f"    [采集] 画面文本: {texts}")

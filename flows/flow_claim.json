@@ -32,9 +32,8 @@
                                   "then": [
                                       { "type": "click_text", "text": ["抽奖"], "min_score": 0.5, "region_rel": [0.55, 0.52, 0.70, 0.62], "delay": 1.0, "name": "抽奖(OCR)",
                                         "_note": "合规改造(2026-10-04, zcode-20261004-4): 实机采集发现抽奖钮**自带文字**「抽奖」(1080p 实测 s=0.67 @rel 0.6094,0.5685), 直坐标 (0.6102,0.5681) 废弃; region 限定在按钮带内" },
-                                      { "type": "wait_text", "text": ["点击任意处关闭"], "timeout": 5, "interval": 1.0 },
-                                      { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭恭喜获得(OCR)",
-                                        "_note": "合规改造: 弹窗有「点击任意处关闭」文字, 直坐标改 OCR 点击" }
+                                      { "type": "reward_dialog", "wait": 5.0, "tries": 2, "name": "抽奖奖励弹窗",
+                                        "_note": "D13(2026-10-20 方案A): 原为 wait_text 5s + 点页脚文字(弹窗消失时会点击穿透)。现统一「领取成功界面」原语: 标题优先、页脚仅兜底; required=false —— 抽奖不保证必出奖励弹窗, 未见如实打印但不登记失败(诚实跳过)" }
                                   ] }
                             ] }
                       ],
@@ -44,55 +43,19 @@
                     { "_note": "时间礼包三行重构(2026-10-05, 协作区 zcode-20261005 S7 实机采集): 领取按钮=**礼盒本身**(纯图形, 无任何文字) —— 旧链 click_text[「领取」] 永远 MISS(10-04-3 合规改造误以为按钮有文字, 引入回归: 抽奖正常/领取礼包全灭), count_text[「已领取」]同因失效(永远 0 次) → 双双退役。用户授权代点实测: 可领态=彩色礼盒+右上红!角标+呼吸光效, 已领态=**礼盒灰化**(角标消失); 领取高档自动连领低档(50→30+10, 30→10, 用户口述+10分钟代点验证), 故按 50→30→10 顺序。og_giftXX 模板(紧盒体 130×104→87×69@1280, 中心=盒体=点击点)即判据即点击: 可领 0.998+(跨光效相位稳定, 光效在裁切外) / 已领灰盒 ≤0.970 / 跨档 ≤0.965 → 阈值 0.985, 未命中=不可领如实跳过。行 region 下移包住礼盒(旧区域是标签带, 盒中心 rel y 0.345/0.581/0.815 比标签低)。领取弹窗=标准奖励弹窗(恭喜获得@(0.5,0.237)/点击任意处关闭, 实拍 ~1s 弹出不自动关), 关闭**点标题区**防点击穿透(矿洞页实测: 点弹窗底部文字会穿透到底层 UI)" },
                     { "type": "click_template", "template": "og_gift50.png", "threshold": 0.985,
                       "region_rel": [0.08, 0.74, 0.40, 0.92], "delay": 2.0, "name": "领50分钟礼包(礼盒模板, 自动连领30/10)" },
-                    { "_note": "消噪(2026-10-06 用户确认, 协作区 zcode-20261006-7): 旧 wait_text[恭喜获得] 无条件执行 —— 模板未命中(今日不可领)时白等 3s 并登记软失败(16:35 日志 3 项), 把『不可领』这一日常态记成故障。改静默守卫: sleep 2 后 if_text 命中才点标题(弹窗实拍 ~1s 弹出); else 再 sleep 1.5 复查兜迟到弹窗, 覆盖窗口 3.5s ≥ 原 3s。if_text MISS 不登记任何失败(矿洞『诚实跳过』同款语义), 模板未命中事实仍在日志轨迹可见。" },
-                    { "type": "sleep", "seconds": 2.0 },
-                    { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                      "then": [
-                          { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
-                            "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
-                      ],
-                      "else": [
-                          { "type": "sleep", "seconds": 1.5 },
-                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                            "then": [
-                                { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
-                                  "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
-                            ] }
-                      ] },
+                    { "_note": "消噪(2026-10-06 用户确认, 协作区 zcode-20261006-7): 旧 wait_text[恭喜获得] 无条件执行 —— 模板未命中(今日不可领)时白等 3s 并登记软失败(16:35 日志 3 项), 把『不可领』这一日常态记成故障。D13(2026-10-20) 起由 reward_dialog 统一接管: 等 3.5s(≥ 原 3s 窗口), required 保持 false —— 该步与模板是兄弟关系, 模板 MISS 时它照样执行, 不能拿它判失败。" },
+                    { "type": "reward_dialog", "wait": 3.5, "tries": 2, "name": "时间礼包奖励弹窗",
+                      "_note": "D13(2026-10-20 方案A): 原为 sleep2 + if_text + else(sleep1.5 复查) 共覆盖 3.5s; 现统一原语等 3.5s, 标题优先点击(防穿透)。⚠ required 刻意=false: 本步与 og_gift 模板是**同级兄弟**——模板未命中(已领/未到时长)时本步照样执行, 若 required=true 会把『不可领』记成故障(里程碑 80 消噪要避免的正是这个); 未见弹窗仍如实打印, 可观测性与实领结果分离" },
                     { "type": "click_template", "template": "og_gift30.png", "threshold": 0.985,
                       "region_rel": [0.08, 0.51, 0.40, 0.69], "delay": 2.0, "name": "领30分钟礼包(礼盒模板, 自动连领10)" },
-                    { "_note": "同上消噪手法(2026-10-06 zcode-20261006-7): 静默守卫(sleep 2 + if_text, else 1.5s 复查)替代无条件 wait_text, 不可领零登记" },
-                    { "type": "sleep", "seconds": 2.0 },
-                    { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                      "then": [
-                          { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
-                            "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
-                      ],
-                      "else": [
-                          { "type": "sleep", "seconds": 1.5 },
-                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                            "then": [
-                                { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
-                                  "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
-                            ] }
-                      ] },
+                    { "_note": "同上消噪手法(2026-10-06 zcode-20261006-7), D13(2026-10-20) 起并入 reward_dialog: 未领到时的「未见成功界面」不登记失败(仅打印), 领到但 OCR 读不到才可能误报" },
+                    { "type": "reward_dialog", "wait": 3.5, "tries": 2, "name": "时间礼包奖励弹窗",
+                      "_note": "D13(2026-10-20 方案A): 原为 sleep2 + if_text + else(sleep1.5 复查) 共覆盖 3.5s; 现统一原语等 3.5s, 标题优先点击(防穿透)。⚠ required 刻意=false: 本步与 og_gift 模板是**同级兄弟**——模板未命中(已领/未到时长)时本步照样执行, 若 required=true 会把『不可领』记成故障(里程碑 80 消噪要避免的正是这个); 未见弹窗仍如实打印, 可观测性与实领结果分离" },
                     { "type": "click_template", "template": "og_gift10.png", "threshold": 0.985,
                       "region_rel": [0.08, 0.26, 0.40, 0.44], "delay": 2.0, "name": "领10分钟礼包(礼盒模板)" },
-                    { "_note": "同上消噪手法(2026-10-06 zcode-20261006-7): 静默守卫替代无条件 wait_text。三档各自独立判跳: 模板未命中(灰盒=已领/未到在线时长)则该档静默跳过 —— 全已领日整段最多多花 ~10.5s(旧 wait 9s 但带 3 项失败登记), 零软失败" },
-                    { "type": "sleep", "seconds": 2.0 },
-                    { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                      "then": [
-                          { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
-                            "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
-                      ],
-                      "else": [
-                          { "type": "sleep", "seconds": 1.5 },
-                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                            "then": [
-                                { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
-                                  "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5, "name": "关领取弹窗(点标题防穿透)" }
-                            ] }
-                      ] },
+                    { "_note": "同上消噪手法(2026-10-06 zcode-20261006-7), D13(2026-10-20) 起并入 reward_dialog。三档各自独立: 灰盒(已领/未到在线时长)时模板未命中 -> 该档不点, 但仍走一次 3.5s 弹窗检查(只打印, 不登记失败)" },
+                    { "type": "reward_dialog", "wait": 3.5, "tries": 2, "name": "时间礼包奖励弹窗",
+                      "_note": "D13(2026-10-20 方案A): 原为 sleep2 + if_text + else(sleep1.5 复查) 共覆盖 3.5s; 现统一原语等 3.5s, 标题优先点击(防穿透)。⚠ required 刻意=false: 本步与 og_gift 模板是**同级兄弟**——模板未命中(已领/未到时长)时本步照样执行, 若 required=true 会把『不可领』记成故障(里程碑 80 消噪要避免的正是这个); 未见弹窗仍如实打印, 可观测性与实领结果分离" },
                     { "type": "close_dialog", "only_types": ["anchor_color"], "delay": 1.0, "name": "关闭在线礼包面板(锚点:在线礼包)",
                       "_note": "改走锚点: 注册表新增「在线礼包」anchor_color 条目(标题@(202,90) 右侧 dx 700~1100 找粉花✕@(1105,97))。不再用通用的 close_online_small.png(仅17×21、各面板同形✕、到处 0.94+ 会误命中)" },
                     { "type": "close_dialog", "only_types": ["anchor_color"], "delay": 1.0, "name": "复核再关一次" }
@@ -132,9 +95,8 @@
                       "exclude": ["已领取"],
                       "delay": 1.2 },
                     { "type": "sleep", "seconds": 1.2 },
-                    { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                      "then": [ { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.0, "name": "关闭恭喜获得(OCR)",
-                                  "_note": "合规改造: 弹窗有「点击任意处关闭」文字, 直坐标改 OCR 点击" } ] }
+                    { "type": "reward_dialog", "wait": 2.0, "tries": 2, "required": true, "name": "花灵派对礼包",
+                      "_note": "D13(2026-10-20 方案A): 原为 if_text + 点页脚文字(弹窗消失时会点击穿透)。现统一原语: 标题优先关闭; required=true —— 点击前 OCR 已确认「领取」钮存在, 未见成功界面登记软失败" }
                 ] },
               { "type": "close_dialog", "anchor": "提示", "only_types": ["corner_pink_small", "corner"], "delay": 1.0,
                 "_note": "阶段一: 关掉「时长礼包」子面板" },
@@ -227,9 +189,8 @@
                             "region_rel": [0.84, 0.22, 0.98, 0.35], "delay": 2.0, "name": "领每日礼包(模板)",
                             "_note": "合规改造(2026-10-05, zcode-20261005 S1/A8): 实机采集奇妙花宝-奇妙特权面板裁「领」圆钮模板 hb_claim.png(76px→51×51@1280基准, 三档同字形复用: 源图 1.000/每周档 0.975/每月档 0.990; 异图(其它界面)全屏最高 0.959 但均在各档 region 外, 且本步前置有 P0-1 面板守卫+绿勾守卫)。直坐标 (0.9055,0.2861) 废弃(规则6)。⚠ 模板取自『已领』态按钮(当日三档均绿✓, 领钮仍可见); 若『可领』态配色不同致低于阈值, 该档如实跳过 —— 首个可领日回归确认" },
                           { "type": "sleep", "seconds": 1.5 },
-                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                            "then": [ { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭恭喜获得(OCR)",
-                                        "_note": "合规改造: 弹窗有「点击任意处关闭」文字, 直坐标改 OCR 点击" } ] }
+                          { "type": "reward_dialog", "wait": 2.0, "tries": 2, "required": true, "name": "奇妙花宝礼包",
+                            "_note": "D13(2026-10-20 方案A): 原为 if_text + 点页脚文字(穿透风险)。现统一原语标题优先; required=true —— 点击前 hb_claim 模板已确认该档可领" }
                       ] },
                     { "type": "if_color_count",
                       "name": "每周礼包未领 -> 点该档「领」",
@@ -245,9 +206,8 @@
                             "region_rel": [0.84, 0.43, 0.98, 0.56], "delay": 2.0, "name": "领每周礼包(模板)",
                             "_note": "同每日档: hb_claim.png 三档复用(每周档源图 0.975); 直坐标 (0.9039,0.4903) 废弃(规则6)" },
                           { "type": "sleep", "seconds": 1.5 },
-                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                            "then": [ { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭恭喜获得(OCR)",
-                                        "_note": "合规改造: 弹窗有「点击任意处关闭」文字, 直坐标改 OCR 点击" } ] }
+                          { "type": "reward_dialog", "wait": 2.0, "tries": 2, "required": true, "name": "奇妙花宝礼包",
+                            "_note": "D13(2026-10-20 方案A): 原为 if_text + 点页脚文字(穿透风险)。现统一原语标题优先; required=true —— 点击前 hb_claim 模板已确认该档可领" }
                       ] },
                     { "type": "if_color_count",
                       "name": "每月礼包未领 -> 点该档「领」",
@@ -263,9 +223,8 @@
                             "region_rel": [0.84, 0.66, 0.98, 0.79], "delay": 2.0, "name": "领每月礼包(模板)",
                             "_note": "同每日档: hb_claim.png 三档复用(每月档源图 0.990); 直坐标 (0.9000,0.7208) 废弃(规则6)" },
                           { "type": "sleep", "seconds": 1.5 },
-                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                            "then": [ { "type": "click_text", "text": ["点击任意处关闭"], "delay": 1.5, "name": "关闭恭喜获得(OCR)",
-                                        "_note": "合规改造: 弹窗有「点击任意处关闭」文字, 直坐标改 OCR 点击" } ] }
+                          { "type": "reward_dialog", "wait": 2.0, "tries": 2, "required": true, "name": "奇妙花宝礼包",
+                            "_note": "D13(2026-10-20 方案A): 原为 if_text + 点页脚文字(穿透风险)。现统一原语标题优先; required=true —— 点击前 hb_claim 模板已确认该档可领" }
                       ] },
                     { "type": "if_text", "text": ["奇妙特权"], "min_score": 0.4,
                       "then": [

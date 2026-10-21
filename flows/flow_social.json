@@ -26,11 +26,8 @@
                   "condition": "a<b",
                   "then": [
                       { "type": "click_text", "text": ["浇水"], "exact": true, "delay": 2.5 },
-                      { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                        "_note": "立即弹窗守卫: 清掉奖励弹窗再读计数, 否则弹窗盖住「今日浇水次数 X/3」区域会读错",
-                        "then": [
-                            { "type": "click_text", "text": ["点击任意处关闭", "恭喜获得"], "delay": 1.5, "name": "关闭浇水奖励弹窗(OCR)" }
-                        ] },
+                      { "type": "reward_dialog", "wait": 0.0, "tries": 2, "name": "浇水奖励弹窗(即时)",
+                        "_note": "立即弹窗守卫(D13 2026-10-20 统一原语): 清掉奖励弹窗再读计数, 否则弹窗盖住「今日浇水次数 X/3」区域会读错。wait=0 只判定一次; required=false —— 浇水不保证弹窗, 未见如实打印但不登记失败" },
                       { "type": "if_fraction",
                         "region_rel": [0.888, 0.7847],
                         "condition": "a==0",
@@ -51,11 +48,8 @@
             "min_score": 0.4,
             "region_rel": [0.78, 0.74, 1.00, 0.84],
             "then": [
-                { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                  "_note": "延迟弹窗守卫(10-05 日志 P1): 弹窗常在此刻才盖上来, 不先清掉 tree_close 必然低分 miss(实测 0.433)",
-                  "then": [
-                      { "type": "click_text", "text": ["点击任意处关闭", "恭喜获得"], "delay": 1.5, "name": "关延迟弹出的浇水奖励弹窗(OCR)" }
-                  ] },
+                { "type": "reward_dialog", "wait": 0.0, "tries": 2, "name": "浇水奖励弹窗(延迟)",
+                  "_note": "延迟弹窗守卫(10-05 日志 P1, D13 统一起见改用原语): 弹窗常在此刻才盖上来, 不先清掉 tree_close 必然低分 miss(实测 0.433)。wait=0 只判定一次; required=false" },
                 { "type": "click_template",
                   "template": "tree_close.png",
                   "threshold": 0.95,
@@ -78,11 +72,8 @@
                     { "type": "retry_loop",
                       "max_rounds": 3,
                       "do": [
-                          { "type": "if_text", "text": ["恭喜获得"], "min_score": 0.4,
-                            "_note": "浇水延迟弹窗清扫(10-05 日志P1): 该弹窗曾连续遮蔽本段 3 轮, 闪耀委托挑战/参与挑战全部 miss",
-                            "then": [
-                                { "type": "click_text", "text": ["点击任意处关闭", "恭喜获得"], "delay": 1.5, "name": "清理浇水延迟弹窗(OCR)" }
-                            ] },
+                          { "type": "reward_dialog", "wait": 0.0, "tries": 2, "name": "浇水延迟弹窗清理",
+                            "_note": "浇水延迟弹窗清扫(10-05 日志P1, D13 统一起见改用原语): 该弹窗曾连续遮蔽本段 3 轮, 闪耀委托挑战/参与挑战全部 miss。wait=0 只判定一次; required=false" },
                           { "type": "click_text", "text": ["闪耀委托挑战"], "mark": true, "delay": 1.5 },
                           { "type": "loop_text",
                       "text": ["参与挑战"],
@@ -172,12 +163,8 @@
                             "region_rel": [0.85, 0.33, 1.0, 0.47], "delay": 2.0,
                             "name": "领矿洞每日礼包(右侧栏钮)",
                             "_note": "region 钉住右侧栏实例(实测 (0.9542,0.4000)) —— 双实例相距很远(另一个在底部 (0.7958,0.8722)), 多实例关键字有均值复核误杀史(花灵派对「领取」教训); 任点其一, 取固定的侧栏钮(2026-10-05 实机采集)" },
-                          { "type": "wait_text", "text": ["点击任意处关闭", "恭喜获得"], "timeout": 5, "interval": 1.0,
-                            "_note": "领取成功界面(奖励弹窗族; 实测 ~1s 内弹出, 12s+ 不自动关)" },
-                          { "type": "click_text", "text": ["恭喜获得"], "min_score": 0.4,
-                            "region_rel": [0.30, 0.18, 0.70, 0.45], "delay": 1.5,
-                            "name": "关闭领取成功弹窗(点标题区)",
-                            "_note": "⚠ 实测发现(2026-10-05 矿洞页代点): 点弹窗底部「点击任意处关闭」文字(960,1012)会**点击穿透**到底层 UI —— 当场把矿洞页底部「我的背包」点开了。改点弹窗标题「恭喜获得」@(0.5,0.238)带: 穿透落在矿洞场景无副作用, 同样满足『点任意处关闭』语义" }
+                          { "type": "reward_dialog", "wait": 5.0, "tries": 2, "required": true, "name": "矿洞每日礼包",
+                            "_note": "领取成功界面(D13 2026-10-20 统一原语): 原为 wait_text 5s + click_text(标题 + region)+ 点标题区防穿透。现标题优先由原语保证, region 不再需要(点的是标题自身实时坐标); required=true —— 点击前 count_text/OCR 已确认「每日礼包」可领" }
                       ],
                       "else": [
                           { "type": "if_text", "text": ["明日再来"], "min_score": 0.4,

@@ -127,6 +127,45 @@ def _ts() -> str:
     return time.strftime("%H:%M:%S")
 
 
+# ---------------------------------------------------------------------------
+# OCR 观测计数(O0, 2026-10-21): 纯观测, 不改任何判定行为。
+# 背景: 原 `[OCR统计]` 只有 full/region/split/缓存 四个聚合数, 无法回答「这次全图是谁发起的」,
+#   导致 social 44min 归因只能估算。新增三个维度:
+#   ① by_src: 每个 OCR/拆分按**发起处**计数(步骤类型, 如 click_text/if_text/wait_scene;
+#      judge_scene 内部标记为 scene; pollin 直调标 read_page/diag);
+#   ② split_only_hit: 关键词**只在拆分子块里**命中(合并块本身不中)—— 这是「判断类是否可安全
+#      跳过拆分」的安全指标, 为 0 才允许开惰性拆分(见 O2);
+#   ③ split_cache_hit / direct_n: 拆分缓存命中与 pollin 直调 OCR —— 原实现对这两项完全失明。
+# 内存: 几张 source→int 的小字典(键数 = 步骤类型数量级, 十几个), 可忽略。
+# ---------------------------------------------------------------------------
+def _new_ocr_stat() -> dict:
+    """一套新的 OCR 观测计数器(模块级清零/整轮累计共用同一结构)。"""
+    return {
+        "full_n": 0, "full_t": 0.0,
+        "region_n": 0, "region_t": 0.0,
+        "split_n": 0, "split_t": 0.0,
+        "hit_n": 0,              # 帧缓存命中(不产生 OCR)
+        "direct_n": 0, "direct_t": 0.0,   # 流程外直调 OCR(页码/诊断等)
+        "split_cache_hit": 0,     # 拆分结果缓存命中(不产生 OCR)
+        "split_only_hit": 0,      # 仅子块命中(判断类跳过拆分的安全指标)
+        "scene_calls": 0,         # judge_scene 调用次数
+        "by_src": {},             # kind(full/region/split/direct) -> {来源: 次数}
+    }
+
+
+def _stat_add(dst: dict, src: dict) -> None:
+    """把一套 OCR 统计累加进另一套(数值相加, by_src 这类嵌套字典递归合并)。"""
+    for k, v in src.items():
+        if isinstance(v, dict):
+            d = dst.get(k)
+            if not isinstance(d, dict):      # 兼容 fromkeys 遗留的 0 值
+                d = {}
+                dst[k] = d
+            _stat_add(d, v)
+        else:
+            dst[k] = dst.get(k, 0) + v
+
+
 # 方案②「立体化分级+均值+偏差复核」: OCR 命中点与历史均值偏差超过该像素数即视为可疑,
 # 触发二次更精细处理(局部放大重识别, 无更优子块则沿用原命中, 仅记录日志)。
 BIAS_MAX_PX = 60
@@ -192,9 +231,10 @@ class OCREngine:
         self._frame_lock = threading.Lock()
         # 批C-②: OCR 计时统计(模块级 _ocr_stat, run_module 收尾打印并累计进 _ocr_stat_total,
         # run_daily 结束打整轮汇总)。纯观测, 不改任何判定行为。
-        self._ocr_stat = {"full_n": 0, "full_t": 0.0, "region_n": 0, "region_t": 0.0,
-                          "split_n": 0, "split_t": 0.0, "hit_n": 0}
-        self._ocr_stat_total = dict(self._ocr_stat)
+        # O0(2026-10-21): 结构见模块级 _new_ocr_stat(), 增加来源/拆分缓存/仅子块命中三个维度。
+        self._ocr_stat = _new_ocr_stat()
+        self._ocr_stat_total = _new_ocr_stat()
+        self._ocr_src = "other"   # 当前 OCR 发起处(步骤类型; judge_scene 置 scene), 仅用于观测
         # 批C-①: 区域化 OCR 结果 LRU(裁片像素指纹 -> (blocks, sub_blocks))。
         # 值为**裁片相对坐标**, 映射用当次 origin —— 同内容不同位置不会错位, 批A「缓存键必须
         # 含位置」的教训在此天然规避; 独立 LRU 不占用全图单槽帧缓存(避免全图/区域交替查询
@@ -293,8 +333,20 @@ class OCREngine:
         return conds[0] if len(conds) == 1 else {"op": "and", "conds": conds}
 
     def _scene_blocks(self, img, min_score: float) -> list:
-        """场景判定的 OCR 块(一次全图识别, 引擎帧缓存复用)。"""
-        return [b for b in self._ocr_frame(img)[0] if b.get("score", 1) >= min_score]
+        """场景判定的 OCR 块(一次全图识别, 引擎帧缓存复用)。
+
+        O0(2026-10-21): 把发起处临时标为 scene —— 这样 `[OCR统计]` 能直接量出「场景判断触发了
+        多少次全图 OCR / 多少次拆分」。拆分结果(子块)在本函数里**从未被读取**, 该计数也是
+        O1「场景判断不做拆分」的基线。
+        O1(2026-10-21): 传 need_split=False —— 场景判定只需要 blocks, 拆分纯属浪费。
+        """
+        prev = self._ocr_src
+        self._ocr_src = "scene"
+        try:
+            return [b for b in self._ocr_frame(img, need_split=False)[0]
+                    if b.get("score", 1) >= min_score]
+        finally:
+            self._ocr_src = prev
 
     @staticmethod
     def _kw_hits(blocks: list, kws, region=None) -> set:
@@ -350,6 +402,7 @@ class OCREngine:
         if img is None:
             return False
         rule = entry.get("rule") or self._compile_legacy_scene(entry)
+        self._ocr_stat["scene_calls"] += 1   # O0: 场景判定调用次数(含帧缓存命中)
         blocks = self._scene_blocks(img, min_score)
         hits = self._kw_hits(blocks, self._rule_kws(rule))
         ok = self._eval_rule(rule, blocks)
@@ -810,37 +863,65 @@ class OCREngine:
             return best[1]
         return None
 
-    def _ocr_frame(self, img) -> tuple[list, list]:
-        """对一帧做全图 OCR + 过宽块 2x 重识别拆分, 同一静态帧(指纹一致)直接复用上次结果。
+    def _ocr_frame(self, img, need_split: bool = True) -> tuple[list, list]:
+        """对一帧做全图 OCR(+ 可选过宽块 2x 拆分), 同一静态帧(指纹一致)直接复用上次结果。
 
         性能(2026-10-03, 长期目标 §11.3-2「同一静态帧内的重复 OCR 必须复用」): wait_text 每个轮询周期、
         相邻步骤(if_text 判断后紧跟 click_text)都会对**画面未变**的帧反复全屏 OCR, 每次实测烧 ~13 核 × 400ms。
         这里对帧内容做 blake2b 指纹: 指纹一致 → 复用; 画面一变指纹失效 → 自动重新识别,
         语义与逐次 OCR 完全一致(等待变化的循环不会被陈旧结果卡住 —— 变了指纹必然变)。
         返回 (全图文字块, 过宽块拆出的精确子块)。
+
+        O1(2026-10-21): **拆分改为按需**。`judge_scene` 只读 blocks[0]、从不使用子块, 却让整帧所有
+        过宽块都做 2× 重识别 —— social 单轮实测拆分 1093s(占模块 41%), 其中场景判断这一支纯浪费。
+        现在: `need_split=False` 时只做全图 OCR; 帧缓存先存 blocks、子块置 None(未算);
+        同一帧后续若需要坐标精度(点击)再补算一次并写回缓存 —— 同帧仍只拆一次, 语义零变化。
         """
         sig = self._frame_hash(img)
         if sig is not None:
             with self._frame_lock:
                 if sig == self._frame_sig:
                     self._ocr_stat["hit_n"] += 1
-                    return self._frame_cache
+                    blocks_c, subs_c = self._frame_cache
+                else:
+                    blocks_c = subs_c = None
+            if blocks_c is not None:
+                if need_split and subs_c is None:
+                    # 命中缓存但子块未算(O1 惰性): 补算一次; 若期间帧已变则不写回, 防止串帧
+                    subs_c = self._split_wide(img, blocks_c)
+                    with self._frame_lock:
+                        if sig == self._frame_sig:
+                            self._frame_cache = (blocks_c, subs_c)
+                return blocks_c, (subs_c or [])
         blocks = self._timed_ocr(img, "full")
-        sub_blocks = self._split_wide(img, blocks)
+        sub_blocks = self._split_wide(img, blocks) if need_split else None
         if sig is not None:
             with self._frame_lock:
                 self._frame_cache = (blocks, sub_blocks)
                 self._frame_sig = sig
-        return blocks, sub_blocks
+        return blocks, (sub_blocks or [])
 
     def _timed_ocr(self, img, kind: str):
         """批C-②: 带 OCR 计时统计的 ocr_image 封装。kind: full(全图)/region(区域裁片)/split(2x拆分)。
-        计时为纯观测, 不改行为; 缓存命中不经过本函数(由各缓存点自行计 hit_n)。"""
+        计时为纯观测, 不改行为; 缓存命中不经过本函数(由各缓存点自行计 hit_n)。
+        O0(2026-10-21): 同时按 self._ocr_src(当前步骤/内部模块) 计数, 用于回答“谁花的这笔时间”。"""
         t0 = time.perf_counter()
         blocks = ocr_image(img)
         self._ocr_stat[kind + "_n"] += 1
         self._ocr_stat[kind + "_t"] += time.perf_counter() - t0
+        d = self._ocr_stat["by_src"].setdefault(kind, {})
+        d[self._ocr_src] = d.get(self._ocr_src, 0) + 1
         return blocks
+
+    def ocr_direct(self, img, src: str = "direct"):
+        """流程外的直调 OCR(供 pollin 的页码/诊断等): 计入 direct 统计并按 src 归属。
+        与 _timed_ocr 的区别仅在于 kind=direct —— 不会混进“全图/区域”口径, 避免低估问题被掩盖。"""
+        prev = self._ocr_src
+        self._ocr_src = src
+        try:
+            return self._timed_ocr(img, "direct")
+        finally:
+            self._ocr_src = prev
 
     def _split_wide(self, img, blocks):
         """过宽块(宽>90) 2x 重识别拆分(批C 自 _ocr_frame 原样抽出, 全图/区域化两路径共用)。
@@ -873,6 +954,7 @@ class OCREngine:
                             self._split_cache.pop(key)
                             self._split_cache[key] = cached
                     if cached is not None:
+                        self._ocr_stat["split_cache_hit"] += 1   # O0: 缓存命中(无 OCR)
                         sub_blocks.extend(dict(nb) for nb in cached)
                         continue
                     big = cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
@@ -894,7 +976,7 @@ class OCREngine:
                     sub_blocks.extend(dict(nb) for nb in newly)
         return sub_blocks
 
-    def _ocr_frame_region(self, img, region_rel):
+    def _ocr_frame_region(self, img, region_rel, need_split: bool = True):
         """批C-①: 区域化 OCR —— region 面积<=全图 40% 时只 OCR 裁片, 坐标映射回全图。
         返回 (blocks, sub_blocks)(全图坐标系) 或 None(调用方回退全图路径)。
         - pad 按 region 宽/高各 5% 外扩(用户 2026-10-11 裁定: 纯比例适配任意分辨率, 不用固定像素),
@@ -903,6 +985,8 @@ class OCREngine:
           拆分复用 _split_wide(其缓存键含裁片内 origin, 语义一致);
         - 语义: 调用方拿到块后照常执行原有区域过滤, 过滤语义与全图路径一致; 区域内未命中时
           由调用方回退一次全图 —— 区域化只省命中路径耗时, 不制造新 MISS。
+        O2(2026-10-21): `need_split=False` 时跳过拆分子块(判断类调用); 缓存值用 None 表示“未算”,
+          同一裁片后续需要坐标精度时再补算并写回 —— 与 _ocr_frame 的惰性策略一致。
         """
         w, h = self.screen_w, self.screen_h
         if not w or not h or img is None or len(region_rel) != 4:
@@ -931,17 +1015,29 @@ class OCREngine:
             # ⚠ 命中副本与存储副本必须分离: 下面要按当次 origin 重映射(键重绑定),
             # 若直接改缓存内字典, 第二次命中会叠加两次偏移(坐标错位) —— 测试 T2 实证。
             blocks = [dict(b) for b in cached[0]]
-            sub_blocks = [dict(b) for b in cached[1]]
+            subs_cached = cached[1]      # None = 未拆分(O2 惰性)
         else:
             blocks = self._timed_ocr(crop, "region")
-            sub_blocks = self._split_wide(crop, blocks)
+            subs_cached = None
+        if need_split and subs_cached is None:
+            subs_cached = self._split_wide(crop, blocks)
             if sig is not None:
                 with self._region_lock:
-                    if len(self._region_cache) >= 200:
+                    if sig in self._region_cache:
+                        self._region_cache.pop(sig)
+                    elif len(self._region_cache) >= 200:
                         self._region_cache.pop(next(iter(self._region_cache)))
                     # 存**原始副本**(未经映射); 每次返回另出映射副本(见下), 缓存内容永不带偏移
                     self._region_cache[sig] = ([dict(b) for b in blocks],
-                                               [dict(b) for b in sub_blocks])
+                                               [dict(b) for b in subs_cached])
+            sub_blocks = [dict(b) for b in subs_cached]
+        else:
+            sub_blocks = [dict(b) for b in subs_cached] if subs_cached else []
+            if cached is None and sig is not None:
+                with self._region_lock:
+                    if len(self._region_cache) >= 200:
+                        self._region_cache.pop(next(iter(self._region_cache)))
+                    self._region_cache[sig] = ([dict(b) for b in blocks], None)
         # 裁片相对坐标 -> 全图绝对坐标(映射用当次 origin, 缓存命中也重映射)
         for b in blocks + sub_blocks:
             b["center"] = [b["center"][0] + cx1, b["center"][1] + cy1]
@@ -949,24 +1045,39 @@ class OCREngine:
                         b["box"][2] + cx1, b["box"][3] + cy1]
         return blocks, sub_blocks
 
-    def _ocr_candidates(self, img, region_rel):
+    def _ocr_candidates(self, img, region_rel, need_refine: bool = True):
         """批C-①: 判定入口共用的块获取。region 面积<=40% 且 region_ocr 开启时走区域化。
-        返回 (blocks, sub_blocks, used_region); 区域路径零命中时由调用方回退全图。"""
+        返回 (blocks, sub_blocks, used_region); 区域路径零命中时由调用方回退全图。
+        O2(2026-10-21): need_refine=False 时不做过宽块拆分(判断类只需布尔/计数)。"""
         if region_rel and len(region_rel) == 4 and self.config.get("region_ocr", True):
-            r = self._ocr_frame_region(img, region_rel)
+            r = self._ocr_frame_region(img, region_rel, need_split=need_refine)
             if r is not None:
                 return r[0], r[1], True
-        b, sb = self._ocr_frame(img)
+        b, sb = self._ocr_frame(img, need_split=need_refine)
         return b, sb, False
 
     def _print_ocr_stat(self, mid):
-        """批C-②: 模块级 OCR 计时汇总(纯观测), 并累计进整轮统计。"""
+        """批C-②: 模块级 OCR 计时汇总(纯观测), 并累计进整轮统计。
+        O0(2026-10-21): 追加「来源 / 拆分缓存 / 仅子块命中 / 直调」三行, 用于把 44min 之类的耗时
+        精确归因到步骤类型, 并为 O1/O2 提供前后对照基线。"""
         st = self._ocr_stat
-        for k in self._ocr_stat_total:
-            self._ocr_stat_total[k] += st[k]
+        _stat_add(self._ocr_stat_total, st)
         print(f"[OCR统计] 模块 {mid}: 全图 {st['full_n']} 次 {st['full_t']:.2f}s · "
               f"区域 {st['region_n']} 次 {st['region_t']:.2f}s · 拆分 {st['split_n']} 次 {st['split_t']:.2f}s · "
               f"缓存命中 {st['hit_n']} 次")
+        by = st.get("by_src") or {}
+
+        def _fmt(kind, limit=8):
+            d = by.get(kind) or {}
+            if not d:
+                return "-"
+            items = sorted(d.items(), key=lambda kv: -kv[1])[:limit]
+            return " · ".join(f"{k} {v}" for k, v in items)
+
+        print(f"[OCR来源] 全图: {_fmt('full')}  |  区域: {_fmt('region')}  |  拆分: {_fmt('split')}")
+        print(f"[OCR健康] 拆分缓存命中 {st['split_cache_hit']} 次 · 仅子块命中 {st['split_only_hit']} 次 · "
+              f"场景判断 {st['scene_calls']} 次 · 直调 {st['direct_n']} 次 {st['direct_t']:.2f}s "
+              f"({_fmt('direct', 4)})")
 
     # ---- 采集: dump_text (2026-10-12 每日任务/手账采集, 用户确认方案; 实机原型见协作区 v7/v8) ----
     def _group_task_rows(self, blocks):
@@ -1058,11 +1169,13 @@ class OCREngine:
                 print(f"[采集] {label}: 第{round_no}轮截图失败, 如实停止")
                 return
             if tab_region and tab_vars:
-                tb, _sub, _used = self._ocr_candidates(img, tab_region)
+                # O2: 页签守卫只需布尔 -> 不拆分
+                tb, _sub, _used = self._ocr_candidates(img, tab_region, need_refine=False)
                 if not any(v in b.get("text", "") for b in tb for v in tab_vars):
                     print(f"[采集] {label}: 第{round_no}轮页签守卫 MISS(变体={tab_vars}), 如实停止")
                     return
-            blocks, _sub, _used = self._ocr_candidates(img, region_rel)
+            # O2: 行分组只用 blocks(不看子块) -> 不拆分
+            blocks, _sub, _used = self._ocr_candidates(img, region_rel, need_refine=False)
             rows = self._group_task_rows(blocks) if use_pair else []
             self._merge_rows(acc_rows, rows)    # v2.1: 跨屏累计(供 if_collected; 修复曾只留末屏)
             fp = frozenset((d, p) for d, p, _c in rows) if use_pair else None
@@ -1106,13 +1219,109 @@ class OCREngine:
         except OSError as e:
             print(f"[采集] {label}: jsonl 写入失败(不影响流程): {e}")
 
+    # ---- 领取成功界面 (2026-10-20 D13, 方案A): 统一判定原语 ----
+    # 背景(用户 2026-10-19 裁定 + 本轮日志实证): 全项目共 13 处「点领取 -> 关成功弹窗」,
+    #   写成 5 种不同样子, 且**没有一处判断"是否真的领取成功"** —— 多是"点领取返回 ok 就当成功"。
+    #   实证: `[OCR未命中]['恭喜获得']` 27 次 / `[if_text]['恭喜获得'] -> MISS` 6 次, 甚至在活动列表
+    #   画面也去查成功弹窗 => 「点击成功」≠「真领取到」。且多数落点把**页脚**「点击任意处关闭」当关闭点,
+    #   弹窗已消失时会**点击穿透**到底层 UI(矿洞页曾误开「我的背包」)。
+    # 本原语统一三件事: ①判据(标题或页脚在屏=成功界面出现) ②收尾(标题优先点击, 页脚仅兜底)
+    #   ③上报(未见/关不掉如实 print, required=true 时登记软失败)。范式取自 pollin.dismiss_reward_popup。
+    REWARD_TITLE_KW = "恭喜获得"
+    REWARD_FOOTER_KW = "点击任意处关闭"
+
+    def _reward_popup_point(self, img=None, region_rel=None, kws=None, need_refine: bool = True):
+        """定位奖励弹窗的文字块(标题优先, 页脚兜底)。标题落在弹窗内, 点击无穿透风险。
+        O2: `need_refine=False` 供「只判是否存在」的守卫使用(has_reward_popup), 点击路径保持 True。"""
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return None
+        kws = list(kws or [self.REWARD_TITLE_KW, self.REWARD_FOOTER_KW])
+        # 显式两段式: locate 只返回首个命中块, 块序不保证按关键字先后 -> 必须标题单独先试
+        order = ([self.REWARD_TITLE_KW] if self.REWARD_TITLE_KW in kws else []) \
+            + [k for k in kws if k != self.REWARD_TITLE_KW]
+        for kw in order:
+            pt = self.locate([kw], img=img, min_score=0.4, region_rel=region_rel,
+                             need_refine=need_refine)
+            if pt is not None:
+                return pt
+        return None
+
+    def has_reward_popup(self, img=None, region_rel=None, keywords=None) -> bool:
+        """当前画面是否在屏奖励弹窗(标题「恭喜获得」或页脚「点击任意处关闭」)。公开给 pollin 守卫复用。
+        O2: 只判存在 -> 不拆分(拆分的唯一用途是给点击提供精确坐标)。"""
+        return self._reward_popup_point(img=img, region_rel=region_rel, kws=keywords,
+                                        need_refine=False) is not None
+
+    def reward_dialog(self, step: dict) -> bool:
+        """步骤 reward_dialog / 公开原语: 等待「领取成功界面」出现 -> 关闭 -> 如实上报。
+
+        参数: wait(秒, 等弹窗出现的窗口, 默认 2.0; 0=立即判定一次) / interval(轮询间隔, 默认 0.6)
+              tries(最多点击关闭次数, 默认 2) / required(true=未见或关不掉时登记软失败)
+              region_rel(限定搜索区域, 可选) / name(日志标签) / keywords(识别词, 可选)
+              quiet(true=未见时不打日志, 供"可能本就没有弹窗"的守卫复用)
+        返回 True=见到并已关闭 / False=未见或关不掉。
+        注意: 判据仍是 OCR 读到弹窗文字。真领到了但 OCR 未读到时 required=true 会误报 ——
+        故 required 只挂"点击前已用模板/OCR 确认过领取按钮"的领取链; 浇水/抽奖/签到等守卫用 false。
+        """
+        wait = max(0.0, float(step.get("wait", 2.0)))
+        interval = max(0.2, float(step.get("interval", 0.6)))
+        tries = max(1, int(step.get("tries", 2)))
+        required = bool(step.get("required", False))
+        quiet = bool(step.get("quiet", False))
+        region = step.get("region_rel")
+        kws = step.get("keywords")
+        label = step.get("name") or "领取成功界面"
+        mod = getattr(self, "current_module", None) or ""
+
+        # 1) 等弹窗出现(轮询 OCR; wait=0 只判定一次)
+        deadline = time.time() + wait
+        pt = self._reward_popup_point(region_rel=region, kws=kws)
+        while pt is None and time.time() < deadline:
+            if stop_requested():
+                return False
+            time.sleep(interval)
+            pt = self._reward_popup_point(region_rel=region, kws=kws)
+        if pt is None:
+            if not quiet:
+                print(f"[领取] {label}: 未见到「领取成功」界面(如实上报)")
+            if required:
+                report_failure(mod, f"{label}: 未见到「领取成功」界面(点击可能被吞/未达标)")
+            return False
+        print(f"[领取] {label}: 见到「领取成功」界面 @({pt.x},{pt.y})")
+
+        # 2) 关闭(标题优先; 每次点击后复查, 仍在屏才再点)
+        for i in range(1, tries + 1):
+            if stop_requested():
+                return False
+            pt = self._reward_popup_point(region_rel=region, kws=kws)
+            if pt is None:
+                print(f"[领取] {label}: 已关闭")
+                return True
+            print(f"[领取] {label}: 第{i}次点击关闭 @({pt.x},{pt.y})")
+            self.click_abs(pt.x, pt.y)
+            time.sleep(1.2)
+        gone = self._reward_popup_point(region_rel=region, kws=kws) is None
+        if gone:
+            print(f"[领取] {label}: 已关闭")
+        else:
+            print(f"[领取] {label}: {tries} 次点击后仍在屏, 如实上报")
+            if required:
+                report_failure(mod, f"{label}: 成功界面 {tries} 次点击后仍在屏")
+        return gone
+
     def _claim_scroll(self, step: dict) -> None:
         """领取循环(2026-10-12 v2, 每日任务四步闭环①④): 每屏点尽「领取」-> 关奖励弹窗 -> 上滑;
         行分组指纹连续两屏一致判到底。可选 save/row_pair 顺带按屏留档(同屏采集+领取一趟完成,
         同时写 _last_dump(跨屏累计, 见 _merge_rows) 供 if_collected)。只点 claim_keywords(默认「领取」)与弹窗关闭词,
         不点其它任何按钮。参数: region_rel; claim_keywords; close_keywords; tab_region_rel+
         tab_variants 页签守卫; max_claim_per_screen(默认8, 防单屏死循环); save/label/row_pair;
-        scroll={swipe,duration_ms,settle,max_rounds}。"""
+        stop_claim_after_first(D14a: 领取成功一次后不再找「领取」, 只滚动采行);
+        scroll={swipe,duration_ms,settle,max_rounds}。
+
+        D13: 奖励弹窗统一交给 _reward_dialog 判定/关闭/上报(未见成功界面 required 时登记软失败)。
+        D14a: 用户 2026-10-19 领域知识 —— 点任一已完成任务的「领取」后**所有已完成任务一并领取**,
+        故首次领取成功后本屏/后续屏都不必再找「领取」(只保留滚动采行, 供 if_collected/留档)。"""
         region_rel = step.get("region_rel")
         label = step.get("label", "claim")
         save = step.get("save")
@@ -1127,6 +1336,8 @@ class OCREngine:
         swipe = scroll.get("swipe")
         dur = int(scroll.get("duration_ms", 700))
         max_per_screen = int(step.get("max_claim_per_screen", 8))
+        stop_after_first = bool(step.get("stop_claim_after_first"))   # D14(a)
+        claimed_ok = 0                          # 真正见到「领取成功」界面的次数(不是点击次数)
         acc_rows: list = []                     # v2.1: 本次调用的跨屏累计行(供 _last_dump/if_collected)
         self._last_dump[label] = acc_rows       # 重置: 本 label 以本次采集为准(防跨次调用残留)
         prev_fp = None
@@ -1137,56 +1348,56 @@ class OCREngine:
                 print(f"[领取] {label}: 第{round_no}轮截图失败, 如实停止")
                 return
             if tab_region and tab_vars:
-                tb, _s, _u = self._ocr_candidates(img, tab_region)
+                # O2: 页签守卫只需布尔 -> 不拆分
+                tb, _s, _u = self._ocr_candidates(img, tab_region, need_refine=False)
                 if not any(v in b.get("text", "") for b in tb for v in tab_vars):
                     print(f"[领取] {label}: 第{round_no}轮页签守卫 MISS(变体={tab_vars}), 如实停止")
                     return
             # 1) 本屏点尽「领取」(每次点击后重截图; 奖励弹窗即时关闭)
             claimed = 0
-            for _ in range(max_per_screen):
-                self._check_stop()
-                img = self.screenshot()
-                blocks, _s, _u = self._ocr_candidates(img, region_rel)
-                claims = [b for b in blocks if any(k in b.get("text", "") for k in claim_kws)]
-                if not claims:
-                    break
-                c = max(claims, key=lambda b: float(b.get("score", 1.0)))
-                cc = c.get("center")
-                if not cc and c.get("box"):
-                    cc = [(c["box"][0] + c["box"][2]) / 2, (c["box"][1] + c["box"][3]) / 2]
-                if not cc:
-                    break
-                print(f"[领取] {label} 第{round_no}轮 点「{c.get('text', '')}」"
-                      f"@rel({cc[0] / self.screen_w:.3f},{cc[1] / self.screen_h:.3f})")
-                self.click_abs(int(cc[0]), int(cc[1]))
-                time.sleep(1.5)
-                # 2) 奖励弹窗关闭(最多两轮探测; 全图 OCR——弹窗可覆盖采集区域外)
-                for _try in range(2):
-                    img2 = self.screenshot()
-                    if img2 is None:
+            skipped_scan = False
+            if stop_after_first and claimed_ok > 0:
+                skipped_scan = True
+                print(f"[领取] {label} 第{round_no}轮: 已领取成功(全部已完成任务一并领取)"
+                      f" -> 跳过「{'/'.join(claim_kws)}」定位, 只采行")
+            else:
+                for _ in range(max_per_screen):
+                    self._check_stop()
+                    img = self.screenshot()
+                    blocks, _s, _u = self._ocr_candidates(img, region_rel)
+                    claims = [b for b in blocks if any(k in b.get("text", "") for k in claim_kws)]
+                    if not claims:
                         break
-                    b2, _s2, _u2 = self._ocr_candidates(img2, None)
-                    closers = [b for b in b2 if any(k in b.get("text", "") for k in close_kws)]
-                    if not closers:
+                    c = max(claims, key=lambda b: float(b.get("score", 1.0)))
+                    cc = c.get("center")
+                    if not cc and c.get("box"):
+                        cc = [(c["box"][0] + c["box"][2]) / 2, (c["box"][1] + c["box"][3]) / 2]
+                    if not cc:
                         break
-                    prefer = [b for b in closers if "点击任意处关闭" in b.get("text", "")] or closers
-                    t = max(prefer, key=lambda b: float(b.get("score", 1.0)))
-                    tc = t.get("center")
-                    if not tc and t.get("box"):
-                        tc = [(t["box"][0] + t["box"][2]) / 2, (t["box"][1] + t["box"][3]) / 2]
-                    if not tc:
-                        break
-                    print(f"[领取] 关奖励弹窗「{t.get('text', '')}」")
-                    self.click_abs(int(tc[0]), int(tc[1]))
-                    time.sleep(1.2)
-                claimed += 1
-            if claimed == 0:
+                    print(f"[领取] {label} 第{round_no}轮 点「{c.get('text', '')}」"
+                          f"@rel({cc[0] / self.screen_w:.3f},{cc[1] / self.screen_h:.3f})")
+                    self.click_abs(int(cc[0]), int(cc[1]))
+                    time.sleep(1.5)
+                    # 2) 奖励弹窗(D13 统一原语; 全图 OCR——弹窗可覆盖采集区域外)
+                    ok = self.reward_dialog({
+                        "wait": 0.5, "tries": 2, "required": True,
+                        "keywords": close_kws, "name": f"{label} 奖励弹窗",
+                    })
+                    claimed += 1
+                    if ok:
+                        claimed_ok += 1
+                        if stop_after_first:
+                            print(f"[领取] {label} 第{round_no}轮: 领取成功 -> 本屏不再找"
+                                  f"「{'/'.join(claim_kws)}」(D14a: 已完成任务一并领取)")
+                            break
+            if claimed == 0 and not skipped_scan:
                 print(f"[领取] {label} 第{round_no}轮: 本屏无「{'/'.join(claim_kws)}」")
             # 3) 留档 + 内存(供 if_collected)
             img3 = self.screenshot()
             if img3 is None:
                 return
-            blocks3, _s, _u = self._ocr_candidates(img3, region_rel)
+            # O2: 行分组只用 blocks -> 不拆分
+            blocks3, _s, _u = self._ocr_candidates(img3, region_rel, need_refine=False)
             rows = self._group_task_rows(blocks3) if use_pair else []
             self._merge_rows(acc_rows, rows)    # v2.1: 跨屏累计(修复曾只留末屏行)
             if save:
@@ -1233,31 +1444,131 @@ class OCREngine:
         if branch:
             self.run_steps(branch, indent=indent + 1)
 
-    def find_text(self, keywords, img=None, top_k=3, exact=False, region_rel=None, exclude=None):
+    def _refine_wide_block(self, img, block):
+        """O3(2026-10-21): **只对命中的合并块**做一次定向精识(替代全帧预拆)。
+
+        为什么不直接复用 _split_wide 的固定参数:
+          - 横向留 10px 会把隔壁按钮的字重新纳入裁片 -> det 又合并成一块(越拆越合);
+          - 纵向需要更宽余量, 防上下切掉笔画/标点。
+        故: pad_x=3(紧), pad_y=max(6, 0.35×块高)(松), 放大倍率按块高自适应(小字 3×, 常规 2×)。
+        返回映射回全帧坐标的子块列表; 缓存与 _split_wide 共用 `_split_cache`(键含 pad/scale, 不会串用)。
+        """
+        x1, y1, x2, y2 = block["box"]
+        bh = max(1, y2 - y1)
+        pad_y = max(6, int(bh * 0.35))
+        pad_x = 3
+        ox, oy = max(0, x1 - pad_x), max(0, y1 - pad_y)
+        ex, ey = min(self.screen_w, x2 + pad_x), min(self.screen_h, y2 + pad_y)
+        crop = img[oy:ey, ox:ex]
+        if crop.size == 0:
+            return []
+        scale = 3.0 if bh < 16 else 2.0
+        key = (ox, oy, pad_x, pad_y, int(round(scale * 10)),
+               hashlib.blake2b(np.ascontiguousarray(crop).tobytes(), digest_size=16).digest())
+        with self._split_lock:
+            cached = self._split_cache.get(key)
+            if cached is not None:
+                self._split_cache.pop(key)
+                self._split_cache[key] = cached
+        if cached is not None:
+            self._ocr_stat["split_cache_hit"] += 1
+            return [dict(nb) for nb in cached]
+        import cv2
+        big = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        subs: list = []
+        for nb in self._timed_ocr(big, "split"):
+            nb2 = dict(nb)
+            nb2["center"] = [int(nb["center"][0] / scale) + ox,
+                             int(nb["center"][1] / scale) + oy]
+            nb2["box"] = [int(nb["box"][0] / scale) + ox,
+                          int(nb["box"][1] / scale) + oy,
+                          int(nb["box"][2] / scale) + ox,
+                          int(nb["box"][3] / scale) + oy]
+            subs.append(nb2)
+        with self._split_lock:
+            if len(self._split_cache) >= 400:
+                self._split_cache.pop(next(iter(self._split_cache)))
+            self._split_cache[key] = subs
+        return [dict(nb) for nb in subs]
+
+    def _is_merged_hit(self, block, keywords) -> bool:
+        """O3: 该命中块是否是**合并块**(文本比关键字更长, 且宽度>90)。
+        注意必须在 `_narrow_merged` 之前判断 —— 窄化后 box 已缩到关键字本身, 宽度失去意义。
+        归一化只用于“是否需要精识”的判断, 不参与坐标计算。"""
+        if (block["box"][2] - block["box"][0]) <= 90:
+            return False
+        text = re.sub(r"\s+", "", block.get("text", "") or "")
+        if not text:
+            return False
+        kws = keywords if isinstance(keywords, list) else [keywords]
+        for kw in kws:
+            nk = re.sub(r"\s+", "", str(kw))
+            if nk and nk in text and len(text) > len(nk):
+                return True
+        return False
+
+    def find_text(self, keywords, img=None, top_k=3, exact=False, region_rel=None, exclude=None,
+                  need_refine: bool = True):
         """在截图(或给定图)中按关键字找文字块。返回 OCR 块列表 (含坐标)。
         exact=True 要求块文本与关键字完全相等, 避免『家园』误命中『勇气国花园』等。
         region_rel=[x1,y1,x2,y2] (0~1) 时只保留中心落在该区域内的块 (用于区域限定文本判断)。
         exclude=['已领取'] 时剔除「文字里含这些排除词」的块: 关键字默认是**子串匹配**,
         所以「领取」会命中「已领取」——按钮已领取时点它当然什么都不会发生, 必须排除。
-        对过宽的合并块(宽>90, 如「种植箱一键种植」)尝试放大 2x 重识别拆出子按钮以提升
-        定位精度, 但始终保留原合并块(且置于拆分块之前优先匹配), 避免重识别丢失命中。
-        全图 OCR + 过宽块拆分走 _ocr_frame(同一静态帧复用结果)。
+
+        O3(2026-10-21) 三级策略(取代“先对全帧所有过宽块做 2× 拆分”):
+          ① 精确等值命中 -> 直接用, 零额外开销;
+          ② 模糊命中在**合并块**内(文本比关键字长且宽>90) -> 只对该块做一次定向精识
+             (`_refine_wide_block`: 横向紧/纵向松/自适应倍率), 再在“子块+合并块”中重匹配;
+          ③ 仍未命中且需要精度 -> 兜底全量拆分一次(保持旧召回, 防“只在子块可读”的极端情况);
+        判断类调用(need_refine=False)完全不拆分(O2)。合并块始终保留, `_narrow_merged` 仍兜底。
         """
         img = img if img is not None else self.screenshot()
         if img is None:
             return []
-        blocks, sub_blocks, used_region = self._ocr_candidates(img, region_rel)
+        # O3: 先不拆分; 后面只对命中的合并块按需精识
+        blocks, sub_blocks, used_region = self._ocr_candidates(img, region_rel, need_refine=False)
         hits = []
+        refined_ids: set = set()
+        did_full_split = False
+        rx1 = ry1 = rx2 = ry2 = 0
+        if region_rel:
+            w, h = self.screen_w, self.screen_h
+            rx1, ry1 = int(region_rel[0] * w), int(region_rel[1] * h)
+            rx2, ry2 = int(region_rel[2] * w), int(region_rel[3] * h)
+
+        def _in_region(lst):
+            if not region_rel:
+                return list(lst)
+            return [b for b in lst
+                    if rx1 <= b["center"][0] <= rx2 and ry1 <= b["center"][1] <= ry2]
+
         for _attempt in range(2):
-            # 精确子块优先(点击点优先落到「菜单」二字自身中心), 原合并块兜底保证整体命中
-            refined = sub_blocks + blocks
-            if region_rel:
-                w, h = self.screen_w, self.screen_h
-                rx1, ry1 = int(region_rel[0] * w), int(region_rel[1] * h)
-                rx2, ry2 = int(region_rel[2] * w), int(region_rel[3] * h)
-                refined = [b for b in refined
-                           if rx1 <= b["center"][0] <= rx2 and ry1 <= b["center"][1] <= ry2]
-            hits = ocr_find(refined, keywords, exact=exact)
+            # 精确子块优先(点击点优先落到目标文字自身中心), 原合并块兜底保证整体命中
+            hits = ocr_find(_in_region(sub_blocks + blocks), keywords, exact=exact)
+            # O0: 安全指标 —— 本次命中是否**完全依赖拆分子块**?
+            if hits and sub_blocks:
+                if not ocr_find(_in_region(blocks), keywords, exact=exact):
+                    self._ocr_stat["split_only_hit"] += 1
+            # O3-②: 命中的合并块定向精识(只处理这一块, 不碰全帧其它过宽块)
+            if need_refine and hits:
+                merged = [b for b in hits
+                          if id(b) not in refined_ids and self._is_merged_hit(b, keywords)]
+                if merged:
+                    new_subs = []
+                    for b in merged:
+                        refined_ids.add(id(b))
+                        new_subs.extend(self._refine_wide_block(img, b))
+                    if new_subs:
+                        sub_blocks = sub_blocks + new_subs
+                        hits = ocr_find(_in_region(sub_blocks + blocks), keywords, exact=exact)
+            # O3-③: 仍未命中 -> 兜底全量拆分一次(与旧行为一致的召回)。
+            # 仅在**全图**块上做: 区域化未命中时先回退全图再拆, 避免对裁片块做无用拆分。
+            if need_refine and not hits and not did_full_split and not used_region:
+                did_full_split = True
+                more = self._split_wide(img, blocks)
+                if more:
+                    sub_blocks = sub_blocks + more
+                    hits = ocr_find(_in_region(sub_blocks + blocks), keywords, exact=exact)
             if not exact:
                 kws = keywords if isinstance(keywords, list) else [keywords]
                 hits = [self._narrow_merged(b, kws) for b in hits]
@@ -1274,7 +1585,8 @@ class OCREngine:
                 break
             # 批C-①: 区域化未命中 → 回退一次全图重试(防小图 det 上下文差异制造新 MISS;
             # 结果照常入全图单槽缓存)。区域化只省命中路径耗时, 不制造新 MISS。
-            blocks, sub_blocks = self._ocr_frame(img)
+            # O3: 回退的全图也不预拆 —— 若命中合并块, 下一轮会定向精识。
+            blocks, sub_blocks = self._ocr_frame(img, need_split=False)
             used_region = False
         if hits:
             self._miss_sig = None  # 命中即复位「同画面未命中折叠」(2026-10-03, 见 _log_ocr_miss)
@@ -1386,7 +1698,8 @@ class OCREngine:
                 return
             self._dump_sig = key
             self._dump_left -= 1
-            blocks, _sub = self._ocr_frame(img)
+            # O2: 存证只打印/落盘文字块 -> 不拆分
+            blocks, _sub = self._ocr_frame(img, need_split=False)
             print(f"[故障存证] {tag}: 全量 OCR {len(blocks)} 块 (本轮预算余 {self._dump_left})")
             for b in blocks:
                 c = b.get("center") or (0, 0)
@@ -1447,12 +1760,14 @@ class OCREngine:
                 return nb
         return b
 
-    def locate(self, keywords, img=None, min_score=0.5, exact=False, region_rel=None, exclude=None):
+    def locate(self, keywords, img=None, min_score=0.5, exact=False, region_rel=None, exclude=None,
+               need_refine: bool = True):
         """返回第一个命中块的中心绝对坐标 Point; 未命中返回 None。
         命中后更新 last_rel 缓存, 并把**实际命中的原始文字**记到 self._last_match_text,
         便于日志区分「命中就是关键字本身」与「命中的是含关键字的更长文字(如已领取)」。
         """
-        blocks = self.find_text(keywords, img=img, exact=exact, region_rel=region_rel, exclude=exclude)
+        blocks = self.find_text(keywords, img=img, exact=exact, region_rel=region_rel, exclude=exclude,
+                                need_refine=need_refine)
         for b in blocks:
             if b.get("score", 1.0) < min_score:
                 continue
@@ -1555,7 +1870,9 @@ class OCREngine:
             dx, dy = a.get("offset", [0, 0])
             pat = a.get("text_contains")
             if pat:
-                hit = next((b for b in self._ocr_frame(img)[0] if pat in b.get("text", "")), None)
+                # O2: 锚点查询只用合并块文本 -> 不拆分
+                hit = next((b for b in self._ocr_frame(img, need_split=False)[0]
+                            if pat in b.get("text", "")), None)
                 if hit is None:
                     print(f"[锚点偏移] 未找到含 '{pat}' 的文本块")
                     continue
@@ -1667,12 +1984,12 @@ class OCREngine:
         if self.config.get("region_ocr", True) and w and h:
             r = int(tol * 1.25)
             box = (max(0, tx - r) / w, max(0, ty - r) / h, min(w, tx + r) / w, min(h, ty + r) / h)
-            rr = self._ocr_frame_region(img, box)
+            rr = self._ocr_frame_region(img, box, need_split=False)
             if rr is not None:
                 best, best_d = _scan(rr[0])
                 if best is not None and best_d ** 0.5 <= tol:
                     return best
-        best, best_d = _scan(self._ocr_frame(img)[0])
+        best, best_d = _scan(self._ocr_frame(img, need_split=False)[0])
         if best is not None and best_d ** 0.5 <= tol:
             return best
         return None
@@ -1703,12 +2020,12 @@ class OCREngine:
         if self.config.get("region_ocr", True) and w and h:
             r = int(tol * 1.25)
             box = (max(0, tx - r) / w, max(0, ty - r) / h, min(w, tx + r) / w, min(h, ty + r) / h)
-            rr = self._ocr_frame_region(img, box)
+            rr = self._ocr_frame_region(img, box, need_split=False)
             if rr is not None:
                 best, best_d = _scan(rr[0])
                 if best is not None and best_d ** 0.5 <= tol:
                     return best
-        best, best_d = _scan(self._ocr_frame(img)[0])
+        best, best_d = _scan(self._ocr_frame(img, need_split=False)[0])
         if best is not None and best_d ** 0.5 <= tol:
             return best
         return None
@@ -1741,7 +2058,7 @@ class OCREngine:
         if img is None:
             return 0
         w, h = self.screen_w, self.screen_h
-        blocks, _sub, used_region = self._ocr_candidates(img, region_rel)
+        blocks, _sub, used_region = self._ocr_candidates(img, region_rel, need_refine=False)
         hits = 0
         for _attempt in range(2):
             hits = 0
@@ -1756,8 +2073,8 @@ class OCREngine:
                     hits += text.count(kw)
             if hits or not used_region:
                 break
-            # 批C-①: 区域化零命中 → 回退一次全图重试(语义同 find_text)
-            blocks = self._ocr_frame(img)[0]
+            # 批C-①: 区域化零命中 → 回退一次全图重试(语义同 find_text); O2: 只数块 -> 不拆分
+            blocks = self._ocr_frame(img, need_split=False)[0]
             used_region = False
         print(f"[count_text] {kws} 区域{region_rel or '全屏'} 命中 {hits} 次")
         return hits
@@ -2459,7 +2776,7 @@ class OCREngine:
             self._check_stop()
             img = self.screenshot()
             probes += 1
-            if self.locate(kws, img=img, min_score=0.3) is None:
+            if self.locate(kws, img=img, min_score=0.3, need_refine=False) is None:
                 print(f"[消失成功] {kws} (第{probes}次探测)")
                 return True
             time.sleep(interval)
@@ -2508,6 +2825,9 @@ class OCREngine:
         # 批B: 每个可执行步骤递增序号 —— 相邻定位守卫只在"紧邻的下一步"可复用(见 _take_guard_point)。
         # 放在文档节点之后: 注释节点无副作用, 不消耗序号, 不至于平白让紧邻守卫过期。
         self._step_seq += 1
+        # O0(2026-10-21): 标记本步骤为 OCR 发起处(纯观测)。不做 save/restore —— 每个步骤都会重置,
+        # 残留值只会影响「步骤结束后、非步骤内」的调用(pollin 内部函数在 friend_pollin 步骤内, 正确归属)。
+        self._ocr_src = s_type
         kws = step.get("text", step.get("keywords"))
         # 步骤可声明当前界面场景(如 "scene": "家园主界面"), 之后的点击默认记入该场景
         if step.get("scene"):
@@ -2598,6 +2918,9 @@ class OCREngine:
         elif s_type == "claim_scroll":
             # 领取循环(2026-10-12 v2): 每屏点尽「领取」+关奖励弹窗+上滑, 行分组指纹判到底。
             self._claim_scroll(step)
+        elif s_type == "reward_dialog":
+            # 领取成功界面(2026-10-20 D13 方案A): 等弹窗 -> 标题优先关闭 -> 如实上报。
+            self.reward_dialog(step)
         elif s_type == "if_collected":
             # 条件分支(2026-10-12 v2): 按最近采集(label)的行分组进度求条件(如点赞任务 a<b)。
             self._if_collected(step, indent)
@@ -2665,7 +2988,8 @@ class OCREngine:
             # 与 click_account_tail 同一套尾号解析(尾部数字 + **** 校验, 不误认普通数字块)。
             tail = str(self.resolve(step.get("tail", ""))).strip()
             img = self.screenshot()
-            blocks = [b for b in (self._ocr_frame(img)[0] if img is not None else [])
+            # O2: 只判尾部数字 -> 不拆分
+            blocks = [b for b in (self._ocr_frame(img, need_split=False)[0] if img is not None else [])
                       if b.get("score", 1) >= step.get("min_score", 0.4)]
             if step.get("region_rel"):
                 w, h = self.screen_w, self.screen_h
@@ -2955,8 +3279,7 @@ class OCREngine:
         mid = module.get("id", "?")
         self._module = str(mid)      # 失败登记时标注来源模块
         # 批C-②: 模块级 OCR 统计清零(模块结束打印并累计进整轮 _ocr_stat_total)
-        self._ocr_stat = {"full_n": 0, "full_t": 0.0, "region_n": 0, "region_t": 0.0,
-                          "split_n": 0, "split_t": 0.0, "hit_n": 0}
+        self._ocr_stat = _new_ocr_stat()
         _, fail_seq0 = get_failures(0)   # 进入模块前的失败序号, 用于识别流程内软失败(A1)
         fname = module.get("flow")
         flow = module.get("flow_data") or registry.get(fname)
@@ -3004,7 +3327,7 @@ class OCREngine:
         # run_module 只在**入口**清零 _ocr_stat(出口不清), 故同一进程连跑第 2 轮时, 此处会把上一轮
         # **末模块**的残留当成本轮初值, 整轮汇总被翻倍(实测: 伪造 10 次/轮 → 第 2 轮 20 次)。
         # 改为按 key 显式全零, 整轮统计才逐轮独立。
-        self._ocr_stat_total = dict.fromkeys(self._ocr_stat, 0)
+        self._ocr_stat_total = _new_ocr_stat()
         name = plan.get("name", "每日编排")
         # 预加载所有引用到的流程
         registry = {}
@@ -3038,7 +3361,17 @@ class OCREngine:
             t = self._ocr_stat_total
             print(f"[{_ts()}] [OCR统计] 整轮: 全图 {t['full_n']} 次 {t['full_t']:.2f}s · "
                   f"区域 {t['region_n']} 次 {t['region_t']:.2f}s · 拆分 {t['split_n']} 次 {t['split_t']:.2f}s · "
-                  f"缓存命中 {t['hit_n']} 次")
+                  f"缓存命中 {t['hit_n']} 次 · 直调 {t['direct_n']} 次 {t['direct_t']:.2f}s")
+            by = t.get("by_src") or {}
+
+            def _tot(kind, limit=8):
+                d = by.get(kind) or {}
+                items = sorted(d.items(), key=lambda kv: -kv[1])[:limit]
+                return " · ".join(f"{k} {v}" for k, v in items) or "-"
+
+            print(f"[{_ts()}] [OCR来源] 整轮 全图: {_tot('full')} | 拆分: {_tot('split')}")
+            print(f"[{_ts()}] [OCR健康] 整轮 拆分缓存命中 {t['split_cache_hit']} 次 · "
+                  f"仅子块命中 {t['split_only_hit']} 次 · 场景判断 {t['scene_calls']} 次")
         print(f"[{_ts()}] ########## 编排结束: ok={len(result['ok'])} skip={len(result['skip'])} fail={len(result['fail'])} ##########")
         return result
 

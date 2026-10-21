@@ -76,16 +76,12 @@
                     { "type": "click_text", "text": ["点击签到"], "mark": true, "delay": 2.0 },
                     { "type": "sleep", "seconds": 1.5 }
                 ] },
-              { "type": "wait_text",
-                "text": ["点击任意处关闭", "点击任意处", "恭喜获得"],
-                "timeout": 5,
-                "interval": 1.0 },
-              { "type": "if_text",
-                "text": ["点击任意处关闭", "点击任意处"],
-                "min_score": 0.4,
-                "then": [
-                    { "type": "click_text", "text": ["点击任意处关闭", "点击任意处"], "delay": 2.0 }
-                ] },
+              { "type": "reward_dialog",
+                "wait": 5.0,
+                "tries": 2,
+                "keywords": ["恭喜获得", "点击任意处关闭", "点击任意处"],
+                "name": "签到奖励弹窗",
+                "_note": "D13(2026-10-20 方案A): 原为 wait_text(5s) + if_text(仅认页脚词) + 点页脚文字 —— 弹窗消失时会点击穿透。现统一「领取成功界面」原语: 标题优先、页脚兜底, 仍是 5s 窗口; required=false —— 当日已签或无奖励属常态, 未见弹窗只打印不登记失败" },
               { "type": "close_dialog",
                 "only_types": ["corner", "corner_white"],
                 "delay": 2.0,
