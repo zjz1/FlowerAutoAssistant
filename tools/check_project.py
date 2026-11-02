@@ -49,7 +49,6 @@ PY_SOURCES = [
 # flow 文件 → FLOWS.md 章节关键字（文档同步提醒用，仅做软提示）
 FLOW_DOC_HINT = {
     "flow_startup.json": "§1 开始启动",
-    "flow_signin.json": "§2 签到",
     "flow_plant.json": "§3 种植 / 花田",
     "flow_social.json": "§4 社交任务",
     "flow_energy.json": "§5 体力任务",
@@ -69,7 +68,7 @@ FAA 项目地图（仓库根 = FlowerAutoAssistant/）
   ocr_engine.py    引擎 CLI: python ocr_engine.py 查看用法（--ocr-screen 等）
 
 业务逻辑（改 JSON 不改代码）
-  flows/daily.json        8 模块编排（startup→signin→plant→social→energy→daily→claim→idle）
+  flows/daily.json        7 模块编排（startup→plant→social→energy→claim→daily→idle）
   flows/flow_*.json       各模块流程
   flows/common/entries.json  navigate 导航注册表
 
@@ -86,7 +85,7 @@ FAA 项目地图（仓库根 = FlowerAutoAssistant/）
   data/click_log.json       坐标知识库（自动累积，出仓）
 
 文档
-  PROGRESS.md            活进度（末尾里程碑最新）
+  PROGRESS.md            活进度（按里程碑编号查；100+ 在文件后半段顶部，新→旧）
   docs/FLOWS.md          功能流程手册
   docs/DEV_PROMPT.md     编码约定 / 7 区契约
   docs/PROJECT_GUIDE.md  总纲 / 接手接口（本脚本所属体系）

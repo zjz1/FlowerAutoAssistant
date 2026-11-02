@@ -3,8 +3,10 @@
     "description": "领取奖励(含三个可用 if_config 开关): 功能1 claim_online【在线礼包】: 进面板->抽奖耗尽剩余次数(抽奖仅每日8时后开放, 用 if_time window=[8,23] 守卫, 0~7时整段跳过)->时间礼包从长到短领取->关闭; 功能2 claim_party【花灵派对】: navigate(公共注册表)进花灵派对->wait_text 载入守卫(面板可能仍在加载, 2026-10-05 日志 P4: 89% 加载中全屏仅 2 个 OCR 块)->派对时长礼包->loop_text 有'领取'就点(领完按钮消失即停)->关闭; 功能3 claim_hb【奇妙花宝】: retry_loop(点-等-重试)进家园->点顶部工具栏'奇妙花宝'->点左侧'奇妙特权'页签->右侧'奇妙礼包'每日/每周/每月三档各自按区域限定绿勾判定是否已领, 未领则点该档圆形'领'按钮->关闭面板。任一开关设 false 则该功能整段跳过。",
     "steps": [
         { "_note": "===== 0. 归位守卫（2026-10-02）=====" },
-        { "_note": "领取奖励的三个功能入口(在线礼包/花灵派对/奇妙花宝)都只在家园主界面可见。此前 social 结束停在好友列表时, in_home 误判为主界面, ensure_home 直接收工 -> 本模块整段空跑(2026-10-02 日志: 奖励领取几乎全未触发)。故本模块首步强制归位。" },
+        { "_note": "领取奖励的三个功能入口(在线礼包/花灵派对/奇妙花宝)都只在家园主界面可见。此前 social 结束停在好友列表时, 旧 in_home(现 social_usable) 误判为主界面, ensure_home 直接收工 -> 本模块整段空跑(2026-10-02 日志: 奖励领取几乎全未触发)。故本模块首步强制归位。" },
         { "type": "ensure_home", "delay": 0.5 },
+        { "type": "ensure_menu", "delay": 0.5,
+          "_note": "2026-10-24(P1-3): 顶部菜单被「收起菜单」折叠时, 在线礼包入口会整排消失(本轮实机日志: claim 静默跳过在线礼包)。本步检测收起态并点右上角白色箭头展开; 展开态零动作。" },
 
         { "type": "if_config",
           "key": "claim_online",
@@ -68,8 +70,8 @@
           "value": true,
           "then": [
               { "type": "navigate", "target": "花灵派对", "max_rounds": 3 },
-              { "type": "wait_text", "text": ["时长礼包", "每日任务"], "timeout": 3, "interval": 1.0,
-                "_note": "载入守卫(2026-10-05, 10-05 日志 P4; 同日用户复核定值 3s): navigate 命中后面板可能仍在加载 —— 当晚实测停在 89% 加载中, 全屏只有 2 个 OCR 块, 立即判定「时长礼包」必然 MISS → 6 个时长礼包全跳过。先等面板左侧导航出现再判定, 加载通常 3s 内完成; 超时只登记软失败不中止, 由下方 if_text 如实判定" },
+              { "type": "wait_text", "text": ["时长礼包", "每日任务"], "timeout": 5, "interval": 1.0,
+                "_note": "载入守卫(2026-10-05, 10-05 日志 P4; 同日用户复核定值 3s): navigate 命中后面板可能仍在加载 —— 当晚实测停在 89% 加载中, 全屏只有 2 个 OCR 块, 立即判定「时长礼包」必然 MISS → 6 个时长礼包全跳过。先等面板左侧导航出现再判定, 加载通常 3s 内完成; 超时只登记软失败不中止, 由下方 if_text 如实判定。⚠ 2026-10-22 修订(A3): 3s → 5s —— 10-22 日志 L1972-1981 过场动画「云帆帆雨雨正在飞向花灵派对」持续 >3s(全屏仅 2 块), 3s 超时登记了假失败, 紧随其后的 if_text 立即 HIT 并成功领取; 5s 覆盖过场+加载两种慢态, 正常加载仍会提前返回" },
               { "type": "if_text",
                 "text": ["时长礼包"],
                 "min_score": 0.4,
@@ -102,6 +104,7 @@
                 "_note": "阶段一: 关掉「时长礼包」子面板" },
               { "type": "sleep", "seconds": 1.0 },
               { "type": "if_text", "text": ["时长礼包", "每日任务"], "min_score": 0.4,
+                "need_refine": false,
                 "_note": "BUG2 收尾守卫: 左侧导航仍在 → 说明画面还停在花灵派对主面板, 必须再关一次, 否则 7.3 会在错误界面上瞎跑",
                 "then": [
                     { "type": "close_dialog", "delay": 1.0,
@@ -173,6 +176,7 @@
                       ] }
                 ] },
               { "type": "if_text", "text": ["奇妙特权"], "min_score": 0.4,
+                "need_refine": false,
                 "_note": "P0-1 守卫: 进入链耗尽仍未确认已在面板时整段跳过; 不得在未知界面采样色块/盲点三档「领」",
                 "then": [
                     { "type": "if_color_count",
@@ -226,7 +230,77 @@
                           { "type": "reward_dialog", "wait": 2.0, "tries": 2, "required": true, "name": "奇妙花宝礼包",
                             "_note": "D13(2026-10-20 方案A): 原为 if_text + 点页脚文字(穿透风险)。现统一原语标题优先; required=true —— 点击前 hb_claim 模板已确认该档可领" }
                       ] },
+                    { "_note": "===== 奇妙花宝·花神之契（2026-10-24 新功能）=====" },
+                    { "type": "click_text", "text": ["花神之契"], "exact": true, "min_score": 0.4,
+                      "region_rel": [0.05, 0.33, 0.22, 0.42], "delay": 2.5,
+                      "name": "切到花神之契页签",
+                      "_note": "左侧导航第三项。必须 exact + 区域限定: 顶部有「花神之契规则说明？」, 子串匹配会把点击引到它上面(实机实测 locate 返回了规则说明)。" },
+                    { "type": "if_text", "text": ["周礼包", "月礼包"], "min_score": 0.4,
+                      "need_refine": false, "region_rel": [0.78, 0.24, 0.93, 0.72],
+                      "_note": "页面守卫: 两张礼包卡都读到才执行领取; 无该特权/页面没切过来时整段跳过, 不误点。",
+                      "then": [
+                        { "type": "if_color_count",
+                          "name": "周礼包未领 -> 点红!徽标领取",
+                          "hsv_lower": [35, 40, 40], "hsv_upper": [85, 255, 255],
+                          "area_min": 200, "area_max": 999999,
+                          "region_rel": [0.755, 0.35, 0.835, 0.435],
+                          "op": "<", "threshold": 1,
+                          "_note": "已领=礼包盒上的绿勾(实测 524px 连通域); 未领=无绿勾 + 红!徽标。",
+                          "then": [
+                            { "type": "click_template", "template": "hsq_badge.png", "threshold": 0.95,
+                              "region_rel": [0.82, 0.29, 0.89, 0.38], "delay": 1.8,
+                              "name": "领周礼包(点红!徽标)",
+                              "_note": "模板取自 2026-10-24 未领态实拍(25×25): 未领 1.000 / 已领 0.901<0.95。徽标压在礼包盒可点区上。" },
+                            { "type": "reward_dialog", "wait": 3.0, "tries": 2, "required": false,
+                              "name": "花神之契周礼包",
+                              "_note": "实拍会弹「恭喜获得 金话筒×25」+「点击任意处关闭」; 也可能直接变绿勾无弹窗, 故 required=false。" },
+                            { "type": "if_color_count",
+                              "name": "周礼包领取复核(未生效则点盒体)",
+                              "hsv_lower": [35, 40, 40], "hsv_upper": [85, 255, 255],
+                              "area_min": 200, "area_max": 999999,
+                              "region_rel": [0.755, 0.35, 0.835, 0.435],
+                              "op": "<", "threshold": 1,
+                              "then": [
+                                { "type": "click_template", "template": "hsq_badge.png", "threshold": 0.95,
+                                  "offset_rel": [-0.033, 0.033],
+                                  "region_rel": [0.82, 0.29, 0.89, 0.38], "delay": 1.8,
+                                  "name": "周礼包二次尝试(徽标偏移到盒体)",
+                                  "_note": "首次点徽标未生效时改点礼包盒体中心; 偏移点由本次实时命中推导(非写死坐标)。" },
+                                { "type": "reward_dialog", "wait": 3.0, "tries": 2, "required": false,
+                                  "name": "花神之契周礼包" }
+                              ] }
+                          ] },
+                        { "type": "if_color_count",
+                          "name": "月礼包未领 -> 点红!徽标领取",
+                          "hsv_lower": [35, 40, 40], "hsv_upper": [85, 255, 255],
+                          "area_min": 200, "area_max": 999999,
+                          "region_rel": [0.755, 0.715, 0.835, 0.795],
+                          "op": "<", "threshold": 1,
+                          "_note": "月礼包绿勾实测 530px。未领时同一红!徽标(卡片布局与周礼包一致)。",
+                          "then": [
+                            { "type": "click_template", "template": "hsq_badge.png", "threshold": 0.95,
+                              "region_rel": [0.82, 0.66, 0.89, 0.75], "delay": 1.8,
+                              "name": "领月礼包(点红!徽标)" },
+                            { "type": "reward_dialog", "wait": 3.0, "tries": 2, "required": false,
+                              "name": "花神之契月礼包" },
+                            { "type": "if_color_count",
+                              "name": "月礼包领取复核(未生效则点盒体)",
+                              "hsv_lower": [35, 40, 40], "hsv_upper": [85, 255, 255],
+                              "area_min": 200, "area_max": 999999,
+                              "region_rel": [0.755, 0.715, 0.835, 0.795],
+                              "op": "<", "threshold": 1,
+                              "then": [
+                                { "type": "click_template", "template": "hsq_badge.png", "threshold": 0.95,
+                                  "offset_rel": [-0.033, 0.033],
+                                  "region_rel": [0.82, 0.66, 0.89, 0.75], "delay": 1.8,
+                                  "name": "月礼包二次尝试(徽标偏移到盒体)" },
+                                { "type": "reward_dialog", "wait": 3.0, "tries": 2, "required": false,
+                                  "name": "花神之契月礼包" }
+                              ] }
+                          ] }
+                      ] },
                     { "type": "if_text", "text": ["奇妙特权"], "min_score": 0.4,
+                      "need_refine": false,
                       "then": [
                           { "type": "click_template", "template": "hb_close.png", "threshold": 0.95,
                             "region_rel": [0.92, 0.0, 1.0, 0.12], "delay": 2.0,

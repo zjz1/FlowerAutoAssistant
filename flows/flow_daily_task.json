@@ -1,60 +1,895 @@
 {
     "name": "每日任务",
-    "description": "每日任务(手账)v2 四步闭环(2026-10-12 用户构思): ①开手账→领取已完成任务+采集(claim_scroll 一趟完成, save=daily_tasks); ②判断未完成(if_collected 读行分组进度); ③完成剩余任务(本期=社区点赞: enable_like 开 且「献上点赞」行 a<b 才跑 community_like——点赞唯一价值=完成该任务, 2026-10-12 用户裁定自社交 4.3 迁入; 已完成/行缺失跳过); ④再开手账→领取新完成奖励+二次采集留档(save=daily_tasks_after)。全程只点「领取」与弹窗关闭词, 不点「前往/交付」; 神秘订单板块不展开。编排位置=倒数第二(idle 之前; 其它模块顺带完成部分任务以减小判断量, 用户裁定)。",
-    "status": "v2_cycle",
+    "description": "每日任务(手账)v2.8 四步闭环(2026-10-12 用户构思; 2026-10-25 增浏览热卖+花宝照顾; 2026-10-27 位置修订): ①开手账→领取+采集(claim_scroll, save=daily_tasks); ①.5浏览热卖+花宝照顾两链改在手账仍开时执行(2026-10-26 双日志实锤: 原位置在 community_like 归位后手账已关, click_row_button 空滑 8 轮必然行未命中; 花宝链首加重开守卫, 结尾加第二层关闭+归位前有界关闭, 治「花宝/资料叠层页卡死→④段被跳过」); ②关手账条件化(手账仍在才点 ✕)→社区点赞(enable_like)·浏览热卖(enable_hot_sale)·花宝照顾(enable_baobao) 三开关独立(2026-10-27 用户工作流批准拆分; ⚙ 面板/白名单/config.example 三方一致), 各链仍以对应行 a<b 门控; 链内 click_row_button/wait_text_gone 带 required+require_seen(2026-10-27 E2: 行未命中/未确认离开即短路当前链, 不空跑收尾步, 引擎 BranchAborted 机制, 治 10-26『行未命中后链继续空转+假消失成功』); ④再开手账→领取新完成奖励+二次采集留档(save=daily_tasks_after)。claim_scroll 仍只点「领取」与弹窗关闭词; 行级「前往」由 click_row_button 原子执行(行锚定+行内实时识别, 无写死坐标); 道具手套=模板+数量角标判据(minus1 前缀兼容), touch_drag=手势(规则6边界); 道具页无货态(「购买道具」在屏) v1=dump_frame 取证+跳过手套段, 不成交(购买弹窗未采样, 货币守卫待 v2)。道具无库存(2026-10-26 实锤: 手套模板 MISS+画面出现「购买道具」)应走购买 —— 购买弹窗结构未经实机采集, 本版不做盲实现, 留待采样后另批开发(见 REPORT 提案)。神秘订单不展开。编排位置=倒数第二(idle 之前)。",
+    "status": "v2.8_cycle",
     "steps": [
-        { "_note": "===== ① 开手账: 领取已完成任务 + 采集(claim_scroll 一趟完成) =====" },
-        { "type": "ensure_home" },
-        { "type": "retry_loop", "max_rounds": 3,
-          "_note": "手账入口加固(2026-10-14 日志分诊 D1): 原为单次 click_text[\"手账\"], 入口被弹窗/子面板遮挡时一 MISS 即放弃 -> 紧随的 wait_scene 手账界面 8s 空等超时 -> 步骤①/④ 全败(本轮日志16 次『手账界面 MISS』, 首轮 click_text 单次未命中)。仿浇水/签到『点-等-重试』补 retry_loop: 每轮点一次手账入口(真实 OCR 命中即 mark 退出本轮), 整轮未命中则 close_dialog 清掉可能的遮挡再进下一轮; 3 轮仍不行 retry_loop 自动 report_failure 如实上报, 交后续步骤处置。wait_scene 8s 保留在循环之后, 继续覆盖开页载入窗口。",
-          "do": [ { "type": "click_text", "text": ["手账"], "mark": true, "delay": 2.5 } ],
-          "fail_do": [ { "type": "close_dialog", "delay": 1.5 } ] },
-        { "type": "wait_scene", "scene": "手账界面", "timeout": 8 },
-        { "type": "claim_scroll",
-          "region_rel": [0.40, 0.03, 0.95, 0.74],
-          "tab_region_rel": [0.0, 0.10, 0.25, 0.45],
-          "tab_variants": ["每日任", "日任务", "任务"],
-          "claim_keywords": ["领取"],
-          "close_keywords": ["点击任意处关闭", "恭喜获得"],
-          "row_pair": true, "label": "daily_tasks", "save": "daily_tasks",
-          "stop_claim_after_first": true,
-          "_note": "D14(a) 2026-10-20: 用户 2026-10-19 领域知识——点任一已完成任务的「领取」后所有已完成任务一并领取。首轮领取成功后即停止找「领取」(本屏与后续屏都只滚动采行), 避免 2~8 轮空转。仍保留全量行采集供 if_collected。",
-          "scroll": { "swipe": [0.68, 0.60, 0.68, 0.35], "duration_ms": 700, "settle": 1.5, "max_rounds": 12 } },
-        { "type": "click_template", "template": "handbook_close.png", "threshold": 0.95,
-          "region_rel": [0.90, 0.0, 1.0, 0.12], "no_fallback": true },
-        { "type": "sleep", "seconds": 2.0 },
-        { "type": "ensure_home" },
-        { "_note": "===== ②判断未完成 + ③完成剩余任务(社区点赞, 2026-10-12 自社交 4.3 迁入) =====" },
-        { "type": "if_config",
-          "key": "enable_like",
-          "value": true,
-          "then": [
-              { "_note": "「为精美搭配献上点赞吧」a<b(未完成) -> 执行社区点赞闭环(内部含每期 20 次额度守卫; 行缺失=当日无此任务要求 -> else 跳过)" },
-              { "type": "if_collected", "label": "daily_tasks", "keywords": ["献上点赞"], "cond": "a<b",
-                "then": [ { "type": "community_like", "delay": 1.0 } ],
-                "else": [] }
-          ],
-          "else": [] },
-        { "type": "ensure_home" },
-        { "_note": "===== ④ 再开手账: 领取新完成任务的奖励 + 二次采集留档 =====" },
-        { "type": "retry_loop", "max_rounds": 3,
-          "_note": "手账入口加固(2026-10-14 日志分诊 D1): 原为单次 click_text[\"手账\"], 入口被弹窗/子面板遮挡时一 MISS 即放弃 -> 紧随的 wait_scene 手账界面 8s 空等超时 -> 步骤①/④ 全败(本轮日志16 次『手账界面 MISS』, 首轮 click_text 单次未命中)。仿浇水/签到『点-等-重试』补 retry_loop: 每轮点一次手账入口(真实 OCR 命中即 mark 退出本轮), 整轮未命中则 close_dialog 清掉可能的遮挡再进下一轮; 3 轮仍不行 retry_loop 自动 report_failure 如实上报, 交后续步骤处置。wait_scene 8s 保留在循环之后, 继续覆盖开页载入窗口。",
-          "do": [ { "type": "click_text", "text": ["手账"], "mark": true, "delay": 2.5 } ],
-          "fail_do": [ { "type": "close_dialog", "delay": 1.5 } ] },
-        { "type": "wait_scene", "scene": "手账界面", "timeout": 8 },
-        { "type": "claim_scroll",
-          "region_rel": [0.40, 0.03, 0.95, 0.74],
-          "tab_region_rel": [0.0, 0.10, 0.25, 0.45],
-          "tab_variants": ["每日任", "日任务", "任务"],
-          "claim_keywords": ["领取"],
-          "close_keywords": ["点击任意处关闭", "恭喜获得"],
-          "row_pair": true, "label": "daily_tasks_after", "save": "daily_tasks_after",
-          "stop_claim_after_first": true,
-          "_note": "D14(a) 2026-10-20: 同上(首成功即停找「领取」)。本步产物仅留档(无 if_collected 消费者), 但仍按 (a) 滚动采行到底 —— 用户裁定用 (a) 而非首成功直接 return。",
-          "scroll": { "swipe": [0.68, 0.60, 0.68, 0.35], "duration_ms": 700, "settle": 1.5, "max_rounds": 12 } },
-        { "type": "click_template", "template": "handbook_close.png", "threshold": 0.95,
-          "region_rel": [0.90, 0.0, 1.0, 0.12], "no_fallback": true },
-        { "type": "sleep", "seconds": 2.0 },
-        { "type": "ensure_home" }
+        {
+            "_note": "===== ① 开手账: 领取已完成任务 + 采集(claim_scroll 一趟完成) ====="
+        },
+        {
+            "type": "ensure_home"
+        },
+        {
+            "type": "ensure_menu",
+            "_note": "2026-10-24(P1-3): 顶部菜单被「收起菜单」折叠时, 手账入口整排消失(本轮实机日志: daily 3 轮 MISS → 整模块 fail)。本步检测收起态并点右上角白色箭头展开; 展开态零动作。"
+        },
+        {
+            "type": "retry_loop",
+            "max_rounds": 3,
+            "_note": "手账入口加固(2026-10-14 日志分诊 D1): 原为单次 click_text[\"手账\"], 入口被弹窗/子面板遮挡时一 MISS 即放弃 -> 紧随的 wait_scene 手账界面 8s 空等超时 -> 步骤①/④ 全败(本轮日志16 次『手账界面 MISS』, 首轮 click_text 单次未命中)。仿浇水/签到『点-等-重试』补 retry_loop: 每轮点一次手账入口(真实 OCR 命中即 mark 退出本轮), 整轮未命中则 close_dialog 清掉可能的遮挡再进下一轮; 3 轮仍不行 retry_loop 自动 report_failure 如实上报, 交后续步骤处置。wait_scene 8s 保留在循环之后, 继续覆盖开页载入窗口。",
+            "do": [
+                {
+                    "type": "click_text",
+                    "text": [
+                        "手账"
+                    ],
+                    "mark": true,
+                    "delay": 2.5
+                }
+            ],
+            "fail_do": [
+                {
+                    "type": "close_dialog",
+                    "delay": 1.5
+                }
+            ]
+        },
+        {
+            "type": "wait_scene",
+            "scene": "手账界面",
+            "timeout": 8
+        },
+        {
+            "type": "claim_scroll",
+            "region_rel": [
+                0.4,
+                0.03,
+                0.95,
+                0.74
+            ],
+            "tab_region_rel": [
+                0.0,
+                0.1,
+                0.25,
+                0.45
+            ],
+            "tab_variants": [
+                "每日任",
+                "日任务",
+                "任务"
+            ],
+            "claim_keywords": [
+                "领取"
+            ],
+            "close_keywords": [
+                "点击任意处关闭",
+                "恭喜获得"
+            ],
+            "row_pair": true,
+            "label": "daily_tasks",
+            "save": "daily_tasks",
+            "stop_claim_after_first": true,
+            "_note": "D14(a) 2026-10-20: 用户 2026-10-19 领域知识——点任一已完成任务的「领取」后所有已完成任务一并领取。首轮领取成功后即停止找「领取」(本屏与后续屏都只滚动采行), 避免 2~8 轮空转。仍保留全量行采集供 if_collected。",
+            "scroll": {
+                "swipe": [
+                    0.68,
+                    0.6,
+                    0.68,
+                    0.35
+                ],
+                "duration_ms": 700,
+                "settle": 1.5,
+                "max_rounds": 12
+            }
+        },
+        {
+            "_note": "===== ①.5 完成剩余任务(浏览热卖+花宝照顾, 2026-10-27 位置修订: 手账仍开时执行) ====="
+        },
+        {
+            "type": "if_config",
+            "key": "enable_hot_sale",
+            "value": true,
+            "then": [
+                {
+                    "_note": "「查看最新热卖套装」a<b(未完成) -> 点该行「前往」进「最新热卖套装」页, 等「最新热卖」文字确认在页 -> close_dialog 关页(共享小✕ rank_last 兜底) -> ensure_home 归位。浏览即完成, 无弹窗交互。行内按钮由 click_row_button 行锚定+行内实时识别, 不写死坐标; 判据用子串「热卖套装」兼容「查看/香看」OCR 变体(五日留档实见)。行未找到/按钮未命中=当日无此任务或行采集缺失, 如实告警不假装成功。"
+                },
+                {
+                    "type": "if_collected",
+                    "label": "daily_tasks",
+                    "keywords": [
+                        "热卖套装"
+                    ],
+                    "cond": "a<b",
+                    "then": [
+                        {
+                            "type": "click_row_button",
+                            "label": "daily_tasks",
+                            "keywords": [
+                                "热卖套装"
+                            ],
+                            "text": [
+                                "前往"
+                            ],
+                            "delay": 2.5,
+                            "_note": "「查看最新热卖套装」a<b(未完成) -> 点该行「前往」进「最新热卖套装」页 -> close_dialog 关页 -> ensure_home 归位。浏览即完成, 无弹窗交互。行内按钮由 click_row_button 行锚定+行内实时识别, 不写死坐标; 判据用子串「热卖套装」兼容「查看/香看」OCR 变体。【位置修订 2026-10-27】本链改在 ①段 claim_scroll 之后、手账仍开(列表在底部)时执行 —— 2026-10-26 双日志(faa_log_20261026_214511/231400, 均 ok=4 fail=1)实锤: 原位置在 community_like 归位之后, 手账已关, click_row_button 在户外主界面空滑 8 轮必然「行未命中」(存证帧=户外主界面图证), 任务当日未完成。",
+                            "required": true
+                        },
+                        {
+                            "type": "wait_text_gone",
+                            "text": [
+                                "热卖套装"
+                            ],
+                            "timeout": 8,
+                            "_note": "手账消失=真离开手账(2026-10-25 E2E: 等「最新热卖」假阳性实锤——手账描述块本身含「最新热卖」四字, 点「前往」失败时 wait_text 仍 HIT)。新页无固定文字判据前, 以「手账页判据消失」为在页证据。",
+                            "required": true,
+                            "require_seen": true
+                        },
+                        {
+                            "type": "close_dialog",
+                            "delay": 1.5
+                        },
+                        {
+                            "type": "if_scene",
+                            "scene": "家园界面",
+                            "then": [],
+                            "else": [
+                                {
+                                    "type": "close_dialog",
+                                    "only_types": [
+                                        "corner"
+                                    ],
+                                    "delay": 1.5,
+                                    "_note": "右上角关闭钮二次兜底(2026-10-25 E2E#4: 关「最新热卖套装」页后残留「土豆花开」等活动页, 其右上角粉花✕模板分 0.763<0.85 不达通用阈值)。主 agent 修订: 不用 0.72 弱阈值直点模板 —— 实测首页收起箭头对同模板 0.865, 会比真✕分更高; 改走 close_dialog 的 corner 档(模板分不足时由颜色通道命中 (1245,25), 离线实测可关且复检通过, 白箭头被粉色否决)。"
+                                }
+                            ]
+                        },
+                        {
+                            "type": "ensure_home",
+                            "delay": 1.0
+                        }
+                    ],
+                    "else": []
+                }
+            ],
+            "else": []
+        },
+        {
+            "type": "if_config",
+            "key": "enable_baobao",
+            "value": true,
+            "then": [
+                {
+                    "_note": "「在花园中照顾小花宝一次」a<b(未完成) -> 点该行「前往」 -> 主界面「服装」(exact, 免撞「服装圣殿」子串) -> 服装页页签「跟随」 -> 跟随页「照顾」进花宝照顾页 -> 左栏「道具」页签(OCR) -> 抚摸/点击道具(模板匹配, 白手套纯图案无文字)拖到花宝身上执行 -> 关页归位。道具模板按用户 2026-10-25 高清样例裁切(tpl_pat_glove/tpl_touch_glove, 1280 基准), 分离度: 自位 0.91~0.99 / 交叉误配 ≤0.88 / 角色区 ≤0.88, 阈值 0.90(余量 0.009~0.03); swipe 拖动=手势动作非点击(规则6边界, 2026-10-06 用户裁定沿用), 终点为 OCR 实时命中的花宝本体。 【位置修订 2026-10-27】同浏览热卖: 改在 ①段 claim_scroll 之后、手账仍开时执行; 链首加重开手账守卫(浏览热卖链执行后会关手账归位), 结尾加两层关闭+归位前有界关闭(2026-10-26 实锤收尾卡花宝/资料叠层页)。"
+                },
+                {
+                    "type": "if_collected",
+                    "label": "daily_tasks",
+                    "keywords": [
+                        "照顾小花宝"
+                    ],
+                    "cond": "a<b",
+                    "then": [
+                        {
+                            "type": "if_scene",
+                            "scene": "手账界面",
+                            "then": [],
+                            "else": [
+                                {
+                                    "type": "retry_loop",
+                                    "max_rounds": 3,
+                                    "do": [
+                                        {
+                                            "type": "click_text",
+                                            "text": [
+                                                "手账"
+                                            ],
+                                            "mark": true,
+                                            "delay": 2.5
+                                        }
+                                    ],
+                                    "fail_do": [
+                                        {
+                                            "type": "close_dialog",
+                                            "delay": 1.5
+                                        }
+                                    ]
+                                },
+                                {
+                                    "type": "wait_scene",
+                                    "scene": "手账界面",
+                                    "timeout": 8
+                                }
+                            ],
+                            "_note": "重开手账守卫(2026-10-27 位置修订): 浏览热卖链执行后会关闭手账并归位; 本链执行前须确认手账仍开, 否则按 ①段同款「点-等-重试」重开, 使 click_row_button 的行锚定落在手账列表页上。手账仍开则零动作。"
+                        },
+                        {
+                            "type": "click_row_button",
+                            "label": "daily_tasks",
+                            "keywords": [
+                                "照顾小花宝"
+                            ],
+                            "text": [
+                                "前往"
+                            ],
+                            "delay": 2.5,
+                            "required": true
+                        },
+                        {
+                            "type": "wait_text_gone",
+                            "text": [
+                                "照顾小花宝"
+                            ],
+                            "timeout": 8,
+                            "_note": "手账消失=真离开手账(同浏览热卖手法; 「前往」点击后回主界面或直达目标页均使手账判据消失)",
+                            "required": true,
+                            "require_seen": true
+                        },
+                        {
+                            "type": "if_text",
+                            "text": [
+                                "服装"
+                            ],
+                            "min_score": 0.4,
+                            "exact": true,
+                            "need_refine": false,
+                            "then": [
+                                {
+                                    "type": "click_text",
+                                    "text": [
+                                        "服装"
+                                    ],
+                                    "min_score": 0.4,
+                                    "exact": true,
+                                    "delay": 2.5,
+                                    "name": "进服装页(主界面右栏)",
+                                    "_note": "exact=True: 右栏「服装圣殿」含「服装」子串且同列更高位, 不用 exact 会误点(2026-10-25 实探)"
+                                },
+                                {
+                                    "type": "click_text",
+                                    "text": [
+                                        "跟随"
+                                    ],
+                                    "min_score": 0.4,
+                                    "delay": 2.5,
+                                    "name": "服装页右栏页签-跟随"
+                                },
+                                {
+                                    "type": "click_text",
+                                    "text": [
+                                        "照顾"
+                                    ],
+                                    "min_score": 0.5,
+                                    "delay": 2.5,
+                                    "name": "跟随页「我的花宝」卡片-照顾"
+                                },
+                                {
+                                    "type": "if_text",
+                                    "text": [
+                                        "照顾花宝",
+                                        "奇妙花宝等级"
+                                    ],
+                                    "min_score": 0.4,
+                                    "need_refine": false,
+                                    "_note": "在页守卫: 照顾花宝页特征(标题/奇妙值面板, 2026-10-25 实探 OCR 0.74/0.85)",
+                                    "then": [
+                                        {
+                                            "type": "click_text",
+                                            "text": [
+                                                "道具"
+                                            ],
+                                            "min_score": 0.5,
+                                            "delay": 2.0,
+                                            "name": "照顾页左栏-道具页签"
+                                        },
+                                        {
+                                            "type": "if_text",
+                                            "text": [
+                                                "购买道具"
+                                            ],
+                                            "min_score": 0.4,
+                                            "need_refine": false,
+                                            "then": [
+                                                {
+                                                    "type": "dump_frame",
+                                                    "tag": "购买道具弹窗取证",
+                                                    "_note": "G1 v1(2026-10-27): 只取证不成交 —— 购买弹窗结构(价格/货币/数量/确认键)未经实机采样, 本帧落 data/fail_cache/ 供后续批次定案; 用户货币守卫(禁神叶/碎片/灵豆/星之粉, 仙豆<=10000) 将在 v2 实现为确认前判据。"
+                                                },
+                                                {
+                                                    "type": "close_dialog",
+                                                    "only_types": [
+                                                        "anchor_color"
+                                                    ],
+                                                    "delay": 1.5,
+                                                    "_note": "尽力关闭可能打开的弹窗(锚点档须读到标题才动作, 零误点); 若弹窗非标题型则保留在屏, 交紧随的 handbook_close/伙伴页出口/ensure_home 链兜底。"
+                                                },
+                                                {
+                                                    "_note": "无货态: 手套段跳过(抓不到手套, 以下拖拽全部无意义), 照顾任务当日如实未完成。"
+                                                }
+                                            ],
+                                            "else": [
+                                                {
+                                                    "type": "click_template",
+                                                    "template": "tpl_pat_glove.png",
+                                                    "threshold": 0.9,
+                                                    "region_rel": [
+                                                        0.05,
+                                                        0.12,
+                                                        0.2,
+                                                        0.62
+                                                    ],
+                                                    "scale_range": [
+                                                        0.9,
+                                                        1.1
+                                                    ],
+                                                    "delay": 1.0,
+                                                    "name": "选抚摸手套(607, 手掌朝下)",
+                                                    "_note": "手套在左栏道具列表上半(实拍 @rel(0.120,0.198)中心), region 钉住列表列防误配其他区"
+                                                },
+                                                {
+                                                    "type": "count_probe",
+                                                    "region_rel": [
+                                                        0.125,
+                                                        0.235
+                                                    ],
+                                                    "tol": 60,
+                                                    "as": "pat_before",
+                                                    "delay": 0.5,
+                                                    "name": "记录抚摸道具使用前数量(607 角标, 偏移自模板命中位)"
+                                                },
+                                                {
+                                                    "type": "touch_drag",
+                                                    "start_rel": [
+                                                        0.121,
+                                                        0.375
+                                                    ],
+                                                    "end_rel": [
+                                                        0.5,
+                                                        0.52
+                                                    ],
+                                                    "delay": 2.5,
+                                                    "name": "抚摸手套拖到花宝身上(手势, 规则6边界)",
+                                                    "_note": "终点 (0.5,0.52)=花宝本体区域中心(角色区, 实拍 OCR 「奇妙值」面板下方); 手势无识别目标, 起终点为手势参数(2026-10-06 用户裁定)"
+                                                },
+                                                {
+                                                    "type": "reward_dialog",
+                                                    "wait": 5.0,
+                                                    "tries": 2,
+                                                    "required": false,
+                                                    "name": "抚摸奖励弹窗(若有)",
+                                                    "_note": "使用成功判据=道具数量 -1(用户 2026-10-25 裁定): 拖后由 count_probe 复核, 见下"
+                                                },
+                                                {
+                                                    "type": "count_probe",
+                                                    "region_rel": [
+                                                        0.125,
+                                                        0.235
+                                                    ],
+                                                    "tol": 60,
+                                                    "as": "pat_after",
+                                                    "delay": 0.5,
+                                                    "name": "记录抚摸道具使用后数量"
+                                                },
+                                                {
+                                                    "type": "if_count",
+                                                    "before": "pat_before",
+                                                    "cond": "minus1",
+                                                    "region_rel": [
+                                                        0.125,
+                                                        0.235
+                                                    ],
+                                                    "tol": 60,
+                                                    "then": [
+                                                        {
+                                                            "_note": "抚摸道具 -1 = 使用成功(用户判据)"
+                                                        }
+                                                    ],
+                                                    "else": [
+                                                        {
+                                                            "_note": "抚摸道具数量未减 = 第一拖未成功或驻留气泡致误读, 有界重试一轮: 重选手套恢复选中态 -> 重读数量 -> 再拖一次 -> 再判"
+                                                        },
+                                                        {
+                                                            "type": "click_template",
+                                                            "template": "tpl_pat_glove.png",
+                                                            "threshold": 0.9,
+                                                            "region_rel": [
+                                                                0.05,
+                                                                0.12,
+                                                                0.2,
+                                                                0.62
+                                                            ],
+                                                            "scale_range": [
+                                                                0.9,
+                                                                1.1
+                                                            ],
+                                                            "delay": 1.0,
+                                                            "name": "重选抚摸手套(恢复选中态)"
+                                                        },
+                                                        {
+                                                            "type": "count_probe",
+                                                            "region_rel": [
+                                                                0.125,
+                                                                0.235
+                                                            ],
+                                                            "tol": 60,
+                                                            "as": "pat_before",
+                                                            "delay": 1.0,
+                                                            "name": "重读抚摸道具数量(避开气泡误读)"
+                                                        },
+                                                        {
+                                                            "type": "touch_drag",
+                                                            "start_rel": [
+                                                                0.121,
+                                                                0.375
+                                                            ],
+                                                            "end_rel": [
+                                                                0.5,
+                                                                0.52
+                                                            ],
+                                                            "delay": 2.5,
+                                                            "name": "抚摸手套重试拖拽"
+                                                        },
+                                                        {
+                                                            "type": "reward_dialog",
+                                                            "wait": 5.0,
+                                                            "tries": 2,
+                                                            "required": false,
+                                                            "name": "抚摸重试弹窗(若有)"
+                                                        },
+                                                        {
+                                                            "type": "count_probe",
+                                                            "region_rel": [
+                                                                0.125,
+                                                                0.235
+                                                            ],
+                                                            "tol": 60,
+                                                            "as": "pat_after",
+                                                            "delay": 0.5,
+                                                            "name": "抚摸重试后数量"
+                                                        },
+                                                        {
+                                                            "type": "if_count",
+                                                            "before": "pat_before",
+                                                            "cond": "minus1",
+                                                            "region_rel": [
+                                                                0.125,
+                                                                0.235
+                                                            ],
+                                                            "tol": 60,
+                                                            "then": [
+                                                                {
+                                                                    "_note": "抚摸重试 -1 = 使用成功"
+                                                                }
+                                                            ],
+                                                            "else": [
+                                                                {
+                                                                    "_note": "抚摸重试仍未成功, 如实转点击道具兜底"
+                                                                }
+                                                            ]
+                                                        }
+                                                    ]
+                                                },
+                                                {
+                                                    "type": "click_template",
+                                                    "template": "tpl_touch_glove.png",
+                                                    "threshold": 0.9,
+                                                    "region_rel": [
+                                                        0.05,
+                                                        0.12,
+                                                        0.2,
+                                                        0.62
+                                                    ],
+                                                    "scale_range": [
+                                                        0.9,
+                                                        1.1
+                                                    ],
+                                                    "delay": 1.0,
+                                                    "name": "选点击手套(872, 食指上指)"
+                                                },
+                                                {
+                                                    "type": "count_probe",
+                                                    "region_rel": [
+                                                        0.125,
+                                                        0.372
+                                                    ],
+                                                    "tol": 60,
+                                                    "as": "touch_before",
+                                                    "delay": 0.5,
+                                                    "name": "记录点击道具使用前数量(872 角标)"
+                                                },
+                                                {
+                                                    "type": "touch_drag",
+                                                    "start_rel": [
+                                                        0.121,
+                                                        0.545
+                                                    ],
+                                                    "end_rel": [
+                                                        0.5,
+                                                        0.52
+                                                    ],
+                                                    "delay": 2.5,
+                                                    "name": "点击手套拖到花宝身上(手势)"
+                                                },
+                                                {
+                                                    "type": "reward_dialog",
+                                                    "wait": 5.0,
+                                                    "tries": 2,
+                                                    "required": false,
+                                                    "name": "点击奖励弹窗(若有)"
+                                                },
+                                                {
+                                                    "type": "count_probe",
+                                                    "region_rel": [
+                                                        0.125,
+                                                        0.372
+                                                    ],
+                                                    "tol": 60,
+                                                    "as": "touch_after",
+                                                    "delay": 0.5,
+                                                    "name": "记录点击道具使用后数量"
+                                                },
+                                                {
+                                                    "type": "if_count",
+                                                    "before": "touch_before",
+                                                    "cond": "minus1",
+                                                    "region_rel": [
+                                                        0.125,
+                                                        0.372
+                                                    ],
+                                                    "tol": 60,
+                                                    "then": [
+                                                        {
+                                                            "_note": "点击道具 -1 = 使用成功(用户判据)"
+                                                        }
+                                                    ],
+                                                    "else": [
+                                                        {
+                                                            "_note": "点击道具数量未减 = 第一拖未成功或驻留气泡致误读, 同样有界重试一轮(重选-重读-再拖-再判)"
+                                                        },
+                                                        {
+                                                            "type": "click_template",
+                                                            "template": "tpl_touch_glove.png",
+                                                            "threshold": 0.9,
+                                                            "region_rel": [
+                                                                0.05,
+                                                                0.12,
+                                                                0.2,
+                                                                0.62
+                                                            ],
+                                                            "scale_range": [
+                                                                0.9,
+                                                                1.1
+                                                            ],
+                                                            "delay": 1.0,
+                                                            "name": "重选点击手套(恢复选中态)"
+                                                        },
+                                                        {
+                                                            "type": "count_probe",
+                                                            "region_rel": [
+                                                                0.125,
+                                                                0.372
+                                                            ],
+                                                            "tol": 60,
+                                                            "as": "touch_before",
+                                                            "delay": 1.0,
+                                                            "name": "重读点击道具数量(避开气泡误读)"
+                                                        },
+                                                        {
+                                                            "type": "touch_drag",
+                                                            "start_rel": [
+                                                                0.121,
+                                                                0.545
+                                                            ],
+                                                            "end_rel": [
+                                                                0.5,
+                                                                0.52
+                                                            ],
+                                                            "delay": 2.5,
+                                                            "name": "点击手套重试拖拽"
+                                                        },
+                                                        {
+                                                            "type": "reward_dialog",
+                                                            "wait": 5.0,
+                                                            "tries": 2,
+                                                            "required": false,
+                                                            "name": "点击重试弹窗(若有)"
+                                                        },
+                                                        {
+                                                            "type": "count_probe",
+                                                            "region_rel": [
+                                                                0.125,
+                                                                0.372
+                                                            ],
+                                                            "tol": 60,
+                                                            "as": "touch_after",
+                                                            "delay": 0.5,
+                                                            "name": "点击重试后数量"
+                                                        },
+                                                        {
+                                                            "type": "if_count",
+                                                            "before": "touch_before",
+                                                            "cond": "minus1",
+                                                            "region_rel": [
+                                                                0.125,
+                                                                0.372
+                                                            ],
+                                                            "tol": 60,
+                                                            "then": [
+                                                                {
+                                                                    "_note": "点击重试 -1 = 使用成功"
+                                                                }
+                                                            ],
+                                                            "else": [
+                                                                {
+                                                                    "_note": "两轮均未减量: 任一道具成功即完成(用户裁定), 未成功不假装成功, 关页后手账进度如实反映"
+                                                                }
+                                                            ]
+                                                        }
+                                                    ]
+                                                }
+                                            ],
+                                            "_note": "G1 v1(2026-10-27): 道具页无货态分支 —— 「购买道具」在屏=手套无库存(2026-10-26 实锤: 手套模板 MISS+计数读到其它道具+购买道具@(380,148))。在库(else)才执行手套段。v1 只取证不成交; v2 待弹窗采样后实现受守卫的购买。"
+                                        },
+                                        {
+                                            "type": "click_template",
+                                            "template": "handbook_close.png",
+                                            "threshold": 0.95,
+                                            "region_rel": [
+                                                0.9,
+                                                0.0,
+                                                1.0,
+                                                0.12
+                                            ],
+                                            "no_fallback": true,
+                                            "delay": 1.5,
+                                            "name": "关照顾花宝页(右上粉花✕与手账同款, 实拍 0.965/1.0)",
+                                            "_note": "任务完成判据=使用任一道具后即可完成(用户: 使用抚摸或点击道具); 关页后手账行进度 1/1"
+                                        },
+                                        {
+                                            "type": "if_text",
+                                            "text": [
+                                                "照顾花宝"
+                                            ],
+                                            "min_score": 0.4,
+                                            "need_refine": false,
+                                            "then": [
+                                                {
+                                                    "type": "click_template",
+                                                    "template": "handbook_close.png",
+                                                    "threshold": 0.95,
+                                                    "region_rel": [
+                                                        0.9,
+                                                        0.0,
+                                                        1.0,
+                                                        0.12
+                                                    ],
+                                                    "no_fallback": true,
+                                                    "delay": 1.5,
+                                                    "name": "关照顾花宝页(右上粉花✕与手账同款)",
+                                                    "_note": "照顾花宝页 ✕ 与手账同款粉花(2026-10-25 实拍 0.965/1.0); MISS 即无动作(no_fallback)。"
+                                                }
+                                            ],
+                                            "else": [],
+                                            "_note": "照顾花宝页第二层关闭(2026-10-26 实锤: 道具面板 ✕ 关掉后仍停在照顾花宝页); 若仍在照顾花宝页(handbook_close 同款 ✕ 可关)则再点一次 ✕。"
+                                        },
+                                        {
+                                            "type": "if_text",
+                                            "text": [
+                                                "我的花宝",
+                                                "跟随中"
+                                            ],
+                                            "min_score": 0.4,
+                                            "need_refine": false,
+                                            "then": [
+                                                {
+                                                    "type": "click_text",
+                                                    "text": [
+                                                        "服装"
+                                                    ],
+                                                    "min_score": 0.4,
+                                                    "exact": true,
+                                                    "region_rel": [
+                                                        0.0,
+                                                        0.0,
+                                                        0.12,
+                                                        0.1
+                                                    ],
+                                                    "delay": 2.0,
+                                                    "name": "伙伴页出口-左上「服装」返回",
+                                                    "_note": "2026-10-27 实采实锤(伙伴页/服装圣殿系页面): 右上角粉 ✕(1245,27) 属底层服装圣殿、被伙伴面板模态层吃点击(模板 0.96-0.98 命中、点击两次无效); 点左上「服装」页签即整页返回主界面。exact+左上角 region: 排除右栏「服装」(x≈0.96)与「服装圣殿」入口; 若点击未生效, 紧随的 if_scene+close_dialog 与 ensure_home(E3 已加同款出口分支)兜底。"
+                                                }
+                                            ],
+                                            "else": [],
+                                            "_note": "伙伴页(我的花宝/跟随中在屏)出口: 点左上「服装」整页返回(2026-10-27 实采实证的唯一可靠出口)。"
+                                        },
+                                        {
+                                            "type": "if_scene",
+                                            "scene": "家园界面",
+                                            "then": [],
+                                            "else": [
+                                                {
+                                                    "type": "close_dialog",
+                                                    "delay": 1.5,
+                                                    "_note": "归位前最后一道有界关闭(2026-10-26 实锤残留页): close_dialog 走全注册表且带 M103 校验(锚点须读到面板标题才动作 / 角区粉花须过粉色占比复检), 不盲点低分模板; 仍关不掉由紧随的 ensure_home 如实上报, 不伪装成功。"
+                                                }
+                                            ],
+                                            "_note": "归位前三重收尾的第 3 道: 家园界面直判命中=零动作; 未命中才花一次 close_dialog。"
+                                        },
+                                        {
+                                            "type": "ensure_home",
+                                            "delay": 1.0
+                                        }
+                                    ],
+                                    "else": [
+                                        {
+                                            "_note": "未确认进照顾花宝页(点击被吞等): 如实跳过第三部分, 交 ensure_home 归位"
+                                        }
+                                    ]
+                                }
+                            ],
+                            "else": [
+                                {
+                                    "_note": "主界面未见「服装」: 前往可能直达目标页或停未知页, 交 ensure_home 归位, 如实跳过"
+                                }
+                            ]
+                        }
+                    ],
+                    "else": []
+                }
+            ],
+            "else": []
+        },
+        {
+            "_note": "===== ② 关手账(条件化) + 社区点赞(2026-10-12 自社交 4.3 迁入) ====="
+        },
+        {
+            "type": "if_scene",
+            "scene": "手账界面",
+            "then": [
+                {
+                    "type": "click_template",
+                    "template": "handbook_close.png",
+                    "threshold": 0.95,
+                    "region_rel": [
+                        0.9,
+                        0.0,
+                        1.0,
+                        0.12
+                    ],
+                    "no_fallback": true
+                }
+            ],
+            "else": [],
+            "_note": "条件化关手账(2026-10-27 位置修订): 浏览热卖/花宝照顾两链改在手账内执行后, 手账可能已被链内ensure_home 关闭 —— 仅当手账界面仍在时才点 ✕; 省一次必然 MISS 的模板匹配且语义更准确。"
+        },
+        {
+            "type": "sleep",
+            "seconds": 2.0
+        },
+        {
+            "type": "ensure_home"
+        },
+        {
+            "_note": "===== ②判断未完成 + ③完成剩余任务(社区点赞, 2026-10-12 自社交 4.3 迁入) ====="
+        },
+        {
+            "type": "if_config",
+            "key": "enable_like",
+            "value": true,
+            "then": [
+                {
+                    "_note": "「为精美搭配献上点赞吧」a<b(未完成) -> 执行社区点赞闭环(内部含每期 20 次额度守卫; 行缺失=当日无此任务要求 -> else 跳过)"
+                },
+                {
+                    "type": "if_collected",
+                    "label": "daily_tasks",
+                    "keywords": [
+                        "献上点赞"
+                    ],
+                    "cond": "a<b",
+                    "then": [
+                        {
+                            "type": "community_like",
+                            "delay": 1.0
+                        }
+                    ],
+                    "else": []
+                }
+            ],
+            "else": []
+        },
+        {
+            "type": "ensure_home"
+        },
+        {
+            "_note": "===== ④ 再开手账: 领取新完成任务的奖励 + 二次采集留档 ====="
+        },
+        {
+            "type": "retry_loop",
+            "max_rounds": 3,
+            "_note": "手账入口加固(2026-10-14 日志分诊 D1): 原为单次 click_text[\"手账\"], 入口被弹窗/子面板遮挡时一 MISS 即放弃 -> 紧随的 wait_scene 手账界面 8s 空等超时 -> 步骤①/④ 全败(本轮日志16 次『手账界面 MISS』, 首轮 click_text 单次未命中)。仿浇水/签到『点-等-重试』补 retry_loop: 每轮点一次手账入口(真实 OCR 命中即 mark 退出本轮), 整轮未命中则 close_dialog 清掉可能的遮挡再进下一轮; 3 轮仍不行 retry_loop 自动 report_failure 如实上报, 交后续步骤处置。wait_scene 8s 保留在循环之后, 继续覆盖开页载入窗口。",
+            "do": [
+                {
+                    "type": "click_text",
+                    "text": [
+                        "手账"
+                    ],
+                    "mark": true,
+                    "delay": 2.5
+                }
+            ],
+            "fail_do": [
+                {
+                    "type": "close_dialog",
+                    "delay": 1.5
+                }
+            ]
+        },
+        {
+            "type": "wait_scene",
+            "scene": "手账界面",
+            "timeout": 8
+        },
+        {
+            "type": "claim_scroll",
+            "region_rel": [
+                0.4,
+                0.03,
+                0.95,
+                0.74
+            ],
+            "tab_region_rel": [
+                0.0,
+                0.1,
+                0.25,
+                0.45
+            ],
+            "tab_variants": [
+                "每日任",
+                "日任务",
+                "任务"
+            ],
+            "claim_keywords": [
+                "领取"
+            ],
+            "close_keywords": [
+                "点击任意处关闭",
+                "恭喜获得"
+            ],
+            "row_pair": true,
+            "label": "daily_tasks_after",
+            "save": "daily_tasks_after",
+            "stop_claim_after_first": true,
+            "_note": "D14(a) 2026-10-20: 同上(首成功即停找「领取」)。本步产物仅留档(无 if_collected 消费者), 但仍按 (a) 滚动采行到底 —— 用户裁定用 (a) 而非首成功直接 return。",
+            "scroll": {
+                "swipe": [
+                    0.68,
+                    0.6,
+                    0.68,
+                    0.35
+                ],
+                "duration_ms": 700,
+                "settle": 1.5,
+                "max_rounds": 12
+            }
+        },
+        {
+            "type": "click_template",
+            "template": "handbook_close.png",
+            "threshold": 0.95,
+            "region_rel": [
+                0.9,
+                0.0,
+                1.0,
+                0.12
+            ],
+            "no_fallback": true
+        },
+        {
+            "type": "sleep",
+            "seconds": 2.0
+        },
+        {
+            "type": "ensure_home"
+        }
     ]
 }

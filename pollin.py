@@ -111,11 +111,19 @@ BTN_REGION_CACHE: dict = {}   # {按钮关键字: [x1,y1,x2,y2] 相对坐标}
 BTN_EXPAND = (0.06, 0.08)     # 命中点向外扩展比例 (宽, 高)
 
 
-def click_btn_fine(eng, kws, img=None, min_score=0.4):
+def click_btn_fine(eng, kws, img=None, min_score=0.4, expect_region=None):
     """带「区域缓存 + 滤色精识」兜底的按钮点击: 常规 OCR 命中即点(并学习缓存区域);
-    未命中且有缓存 → 对缓存小区域滤色放大精识, 命中即点。返回 Point 或 None(未命中)。"""
+    未命中且有缓存 → 对缓存小区域滤色放大精识, 命中即点。返回 Point 或 None(未命中)。
+
+    D18①(2026-10-27, zcode-20261028-8): `expect_region` —— 该按钮在屏上的**实测常住带**
+    (判据, 非点击坐标, 与 region_rel 同性质)。传入后: 主定位先按该带 region_rel 过滤;
+    精识兜底得到的命中也须落在带内, 出界一律弃用并如实返回 None。
+    背景(10-27 22:45 实锤): 聊天气泡文本含「社交」@rel(0.441,0.906) 在底栏区域内被当按钮
+    点击 -> 打开聊天面板 -> ensure_home 无出口空转至关服。社交钮实测恒在 (0.331,0.949)。
+    """
     kws = kws if isinstance(kws, list) else [kws]
-    pt = eng.locate(kws, img=img, min_score=min_score)
+    pt = eng.locate(kws, img=img, min_score=min_score,
+                    region_rel=expect_region) if expect_region else eng.locate(kws, img=img, min_score=min_score)
     how = "ocr"
     if pt is None:
         for kw in kws:
@@ -128,6 +136,13 @@ def click_btn_fine(eng, kws, img=None, min_score=0.4):
                 break
     if pt is None:
         return None
+    if expect_region:
+        w0, h0 = eng.screen_w or 1280, eng.screen_h or 720
+        rx1, ry1, rx2, ry2 = expect_region
+        if not (rx1 * w0 <= pt.x <= rx2 * w0 and ry1 * h0 <= pt.y <= ry2 * h0):
+            print(f"  [按钮] {'/'.join(kws)} 命中 ({pt.x},{pt.y}) 在常住带外 {expect_region}, "
+                  f"判为同字气泡/遮挡文本, 弃用不点击(D18①)")
+            return None
     w, h = eng.screen_w or 1280, eng.screen_h or 720
     ex, ey = BTN_EXPAND
     BTN_REGION_CACHE[kws[0]] = [max(0.0, pt.x / w - ex), max(0.0, pt.y / h - ey),
@@ -190,6 +205,98 @@ def wait_screen_change(eng, base, desc="画面变化", timeout=None, threshold=N
     return False
 
 
+def wait_stable(eng, timeout=1.5, interval=0.3, threshold=None):
+    """C3(2026-10-22): 点击前等画面稳定(连续两帧帧差 < 阈值)。**纯帧差, 无 OCR**。
+
+    背景: 10-22 日志 L466-510 点击家园图标后画面纹丝不动、重试 3 次全被吞; 很多点击发生在
+    翻页/滑行/过场动画刚结束的瞬间 —— 画面还在动时, 点击容易被系统丢弃, 标记坐标也可能来自
+    未稳定的旧帧。等连续两帧几乎一致再点, 可显著降低「点了没反应」。
+    超时也放行: 宁可直接点, 不能因等稳定阻塞业务。返回 True=已稳定 / False=超时或停止。
+    """
+    if threshold is None:
+        threshold = ESCAPE_CHANGE_TH
+    prev = eng.screenshot()
+    if prev is None:
+        return False
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if stop_requested():
+            return False
+        time.sleep(interval)
+        cur = eng.screenshot()
+        if cur is not None and frame_diff(prev, cur) < threshold:
+            return True
+        prev = cur
+    return False
+
+
+def wait_enter_garden(eng, timeout=15, desc="进入好友花园", swallowed_hits=2, interval=1.0):
+    """C1b(2026-10-22): 等待进入好友花园; 连续 N 次探测仍在**好友列表** -> 判定点击被吞并提前失败。
+
+    原实现只等 `in_garden` 成立, 点击被吞时会把 15s 预算白白耗满(10-22 日志 L466-510:
+    8 次探测全部 `好友列表 HIT`, 3 次尝试 × 15s = 45s/标记)。这里加一条“仍在列表”的旁路判据:
+    连续 2 次(≥2s)仍 HIT 就立即返回 False, 由调用方重新点击 —— 失败标记从 45s 压到 ~6-10s。
+    每次探测只截一张图, `in_garden` 与 `in_list` 共用同一帧(第二次判定走帧缓存, 零额外 OCR)。
+    """
+    # C49(codex-20261025-2): 先等过场动画停稳再起算 15s —— 20261024 日志 L864:
+    # 15s 窗口 3 次探测全「其它」判超时, 超时后下一帧即「家园界面 HIT」(点击已生效,
+    # 窗口首段被过场动画吃掉)。等画面停稳可让探测全部落在可判定帧上。
+    wait_garden_frame_settled(eng)
+    t0 = time.time()
+    stuck = 0
+    probes = list_n = 0
+    while time.time() - t0 < timeout:
+        if stop_requested():
+            print(f"    [等待] {desc} 收到停止请求, 中断")
+            return False
+        img = eng.screenshot()
+        probes += 1
+        # 2026-10-24(P2-5②): 轮询内场景判定静默, 由本函数在出口打一行分布汇总 ——
+        # 信息不丢(探测次数/仍在列表次数), 但不再每秒刷一行「好友列表 MISS」。
+        if in_garden(eng, img, quiet=True):
+            print(f"    [等待] {desc} 命中 ({time.time() - t0:.0f}s, 探测{probes}次: "
+                  f"好友列表{list_n}/其它{probes - list_n})")
+            return True
+        if in_list(eng, img, quiet=True):
+            stuck += 1
+            list_n += 1
+            if stuck >= swallowed_hits:
+                print(f"    [等待] {desc} 提前失败: 连续{stuck}次探测仍在好友列表(点击被吞) "
+                      f"({time.time() - t0:.0f}s, 不等满{timeout}s, 探测{probes}次)")
+                return False
+        else:
+            stuck = 0
+        time.sleep(interval)
+    # C49(codex-20261025-2): 窗口末次终末探测 —— 窗口在最后 0~1s 内动画完成时不再误报超时。
+    img = eng.screenshot()
+    probes += 1
+    if in_garden(eng, img, quiet=True):
+        print(f"    [等待] {desc} 终末探测命中 "
+              f"({time.time() - t0:.0f}s, 探测{probes}次: 好友列表{list_n}/其它{probes - list_n})")
+        return True
+    print(f"    [等待] {desc} 超时 {timeout}s (探测{probes}次: 好友列表{list_n}/其它{probes - list_n})")
+    return False
+
+
+def wait_garden_frame_settled(eng, timeout=1.5):
+    """C49(codex-20261025-2): 点「家园图标」后等画面停稳, 再交给 wait_enter_garden。
+
+    纯帧差判定(零 OCR, 复用 frame_diff, 与 M100 wait_stable 同力学):
+    连续两帧差异 < 0.01 视为稳定即返回; 上限 1.5s、采样间隔 0.3s(最坏 5 张截图)。
+    收到停止请求立即返回, 交上层如实处理。
+    """
+    prev = eng.screenshot()
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if stop_requested():
+            return
+        time.sleep(0.3)
+        cur = eng.screenshot()
+        if frame_diff(prev, cur) < 0.01:
+            return
+        prev = cur
+
+
 def save_escape_evidence(eng, tag):
     """脱困/归位失败时把当前画面存到 debug/, 作为出口控件的定向采集素材。
 
@@ -229,43 +336,55 @@ def adb_key(code):
                    capture_output=True, timeout=15)
 
 
-def in_list(eng, img=None):
+def in_list(eng, img=None, quiet=False):
     """好友列表判据(2026-10-05 迁移至场景注册表): scenes.json「好友列表」=「删除好友」「好友设置」
-    任一命中即算(原 LIST_MARKS 常量判据原样迁入, 本函数保留为兼容入口)。"""
-    return eng.judge_scene("好友列表", img=img)
+    任一命中即算(原 LIST_MARKS 常量判据原样迁入, 本函数保留为兼容入口)。
+    quiet=True: 轮询内用, 不打印逐次判定(2026-10-24 P2-5, 由调用方汇总)。"""
+    return eng.judge_scene("好友列表", img=img, quiet=quiet)
 
 
-def in_home(eng, img=None):
-    """自己家园主界面判据: 「户外主界面」场景(底部导航「社交」可见) **且不在好友列表**。
+def social_usable(eng, img=None, quiet=False):
+    """「底栏可用」判据: 底部导航「社交」可见 **且不在好友列表**。
 
+    ⚠ 这不是场景分类器 —— 只有「社交」命中无法判断任意一个场景; 它的真实用途是判断
+      **能不能点底栏的「社交」**: 自己家园主界面、户外主界面、好友花园三种画面都可点
+      (用户 2026-10-22 澄清), 所以好友花园上返回 True 是**正确**的。
+    ⚠ 若调用方需要的是「已回到自己家园(而不是好友花园)」, 必须用 `at_home_main`
+      (ensure_home / 回家链), 不能单独用本函数 —— 好友花园底栏同样有「社交」。
     ⚠ 旧版只判「社交」二字 → 好友列表页也含该字样, 于是被误判成"已在主界面";
       2026-10-02 日志: social 结束停在好友列表, ensure_home 直接收工,
       claim 整段(5 分钟)在好友列表上空跑, 三个功能几乎全未触发。
-    ⚠ 2026-10-05 起底层走 scenes.json「户外主界面」(社交/家园/仙境花园, 锚点=社交)。
+    ⚠ 2026-10-05 起底层走 scenes.json「户外主界面」(锚点=社交)。
+    quiet=True: 重试循环内用, 不打印逐次判定(2026-10-24 P2-5)。
     """
     img = img if img is not None else eng.screenshot()
-    if in_list(eng, img):
+    if in_list(eng, img, quiet=quiet):
         return False
-    return eng.judge_scene("户外主界面", img=img)
+    return eng.judge_scene("户外主界面", img=img, quiet=quiet)
 
 
-def in_garden(eng, img=None):
-    """好友花园判据(2026-10-05 场景注册表版): 「家园界面」场景命中 **且没有**「勇气国花园」。
+def at_home_main(eng, img=None):
+    """「已回到主线(户外主界面)」判据 = 底栏可用 **且不在任何花园内**(用户 2026-10-22 命名拆分)。
 
-    ⚠ 判据来源(2026-10-05 用户口述): 家园界面 = 右下角 快捷操作/种植箱/一键种植/离开/地图
-      + 左上角 菜单/奇妙花宝/园艺店, 「一键种植」或「菜单」其一命中再任意两钮即算 ——
-      已录入 flows/common/scenes.json「家园界面」条目。
-    ⚠ 好友家园与自己家园无可辨差异(用户 2026-10-05), 业务上不区分谁的家;
-      本函数保留「排除自己家园」语义, 仅供回家链(ensure_home/leave_garden)决定是否点「离开」。
-      排除法仍靠左下角地图名「勇气国花园」(自己家园恒显示, 好友花园永不显示,
-      2026-09-22 多次实测; 不能写死任一好友花园名作判据)。
-    ⚠ 性能: judge_scene 一次全图 OCR 判完全部锚点; 「勇气国花园」复核走引擎帧缓存,
-      不再产生第二次整图识别。
+    花园(自己/好友)底栏「社交/家园/离开」与户外同名同位, 只能靠「家园界面」场景区分;
+    本函数把这一约束内置, 供 ensure_home / 回家链使用。同帧两次场景判断走帧缓存, 无额外 OCR。
     """
     img = img if img is not None else eng.screenshot()
-    if not eng.judge_scene("家园界面", img=img):
-        return False
-    return not has(eng, "勇气国花园", img=img)
+    return social_usable(eng, img) and not in_garden(eng, img)
+
+
+def in_garden(eng, img=None, quiet=False):
+    """花园判据(自己家园与好友花园**都算**): 「家园界面」场景命中。
+
+    2026-10-24(用户裁定, P2-5): 删除早期「勇气国花园」地点名排除 ——
+      ① 当前版本日志中该地名 **89 次探测 0 次命中**(全是 MISS), 纯噪声;
+      ② 违反「判据锚定按钮/UI, 不用地点名」原则(地点名会随版本/改名失效)。
+    去掉后语义 = 「人在花园里(自己或好友)」, 正是 ensure_home / leave_garden 需要的粒度:
+    两处花园的「离开/社交/家园」同名同位(用户 2026-10-05 确认), 业务上不需要区分谁的家。
+    quiet=True: 等待循环内用, 不打印逐次判定(2026-10-24 P2-5)。
+    """
+    img = img if img is not None else eng.screenshot()
+    return eng.judge_scene("家园界面", img=img, quiet=quiet)
 
 
 def in_family_panel(eng, img=None):
@@ -292,12 +411,25 @@ def in_delegate_subpage(eng, img=None):
 def _panel_friend_pt(eng, img=None):
     """「社交」面板内「好友」按钮位置; 面板未开则 None。
     region 限定 + exact, 避免误命中「添加好友」「删除好友」「好友设置」。
-    2026-10-06: 常规未命中时对该固定 region 做滤色精识兜底(面板底色个别情况下压置信度)。"""
+    2026-10-24(P2-5③): 只加**成功率统计**(粗识 / 精识兜底), 日志逐条保留 ——
+      用户裁定: 粗 OCR 频繁 MISS 是「粗 OCR 技术待改进」的提醒, 不得静默; 先量化再谈优化。
+    2026-10-25(codex-20261025-2): **调用时机收窄** —— 仅保留「点『社交』之后」的面板确认路径。
+      20261024 日志实测精识兜底 0/16, 且 16 次粗识 MISS 全部发生在「点『社交』前」的入口探测
+      (面板必然未开, 结构性不可能命中, 每次白跑一次区域 OCR + 一次滤色精识)。
+      「面板是否已开」由调用方改用 in_list 同帧判定(帧缓存复用, 零额外 OCR)。
+    """
+    st = eng._ocr_stat
+    st["friend_coarse_n"] = st.get("friend_coarse_n", 0) + 1
     pt = eng.locate(["好友"], img=img, exact=True,
                     region_rel=SOCIAL_FRIEND_REGION, min_score=0.4)
-    if pt is None:
-        pt = eng.locate_fine(["好友"], SOCIAL_FRIEND_REGION,
-                             min_score=0.3, img=img, exact=True)
+    if pt is not None:
+        st["friend_coarse_hit"] = st.get("friend_coarse_hit", 0) + 1
+        return pt
+    st["friend_fine_n"] = st.get("friend_fine_n", 0) + 1
+    pt = eng.locate_fine(["好友"], SOCIAL_FRIEND_REGION,
+                         min_score=0.3, img=img, exact=True)
+    if pt is not None:
+        st["friend_fine_hit"] = st.get("friend_fine_hit", 0) + 1
     return pt
 
 
@@ -320,27 +452,42 @@ CORNER_CLOSE_TEMPLATES = {
 CORNER_CLOSE_REGION = [0.90, 0.0, 1.0, 0.16]
 
 
+_PINK_CFG = {"hsv_lower": [150, 80, 90], "hsv_upper": [175, 255, 255]}
+_PINK_MIN = 0.02   # 与引擎 close_dialog verify_pink 同阈值(2026-10-24 实测: 真钮窗口 5.6%, 纯白箭头 0.0%)
+
+
 def click_top_right_close(eng):
     """点右上角关闭钮。整屏面板(家族面板/邮件对话框等)在返回键无效的情况下,
-    只能靠点右上角 X 关闭: 依次试模板(各自阈值见 CORNER_CLOSE_TEMPLATES), 都没命中则点右上角区域中心为止步操作。"""
+    只能靠点右上角 X 关闭: 依次试模板(各自阈值见 CORNER_CLOSE_TEMPLATES), 命中后须过「粉色一致性」校验。
+
+    E3(2026-10-27, zcode-20261028-4, D12 收窄实施):
+    ①**粉色校验**: 复用引擎 _pink_ratio_at(与 close_dialog verify_pink 同 HSV/同阈值)——
+      10-26 双日志实锤: 资料页上 close_corner_pink 0.748-0.753@(1195,99)/(1196,73) 以 0.65 低阈值
+      通过并点击, 画面无变化(真 ✕ ≈(1240,30) 形状不同) -> 连续 2 个退出动作无变化 -> 归位放弃,
+      ④段被跳过。校验后纯白/非粉候选被弃用, 交回下一模板。
+    ②**去掉「无模板命中则盲点区域中心」的为止步操作**: 该盲点属规则 6 禁止的写死坐标点击
+      (中心=(0.95w,0.08h) 随分辨率漂移), 且在「什么都不该点」的画面(户外/家园/伙伴页)必然点空或误点;
+      无可用候选时如实返回 False, 交 ensure_home 的 stale 计数如实放弃 —— 与 M103 方案C
+      「门控后无候选 -> 返回 False」的口径一致。
+    """
     img = eng.screenshot()
     if img is None:
         return False
+    tol = max(20, int(0.05 * eng.screen_h)) if eng.screen_h else 36
     for tpl, th in CORNER_CLOSE_TEMPLATES.items():
         pt = eng.locate_template(tpl, threshold=th, region_rel=CORNER_CLOSE_REGION, img=img)
-        if pt is not None:
-            print(f"  [关闭] 右上角模板 {tpl} 命中 ({pt.x},{pt.y})")
-            eng.click_abs(pt.x, pt.y)
-            return True
-    import os
-    x2 = int(CORNER_CLOSE_REGION[2] * img.shape[1])
-    y2 = int(CORNER_CLOSE_REGION[3] * img.shape[0])
-    x1 = int(CORNER_CLOSE_REGION[0] * img.shape[1])
-    y1 = int(CORNER_CLOSE_REGION[1] * img.shape[0])
-    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-    print(f"  [关闭] 无模板命中, 点右上角区域中心 ({cx},{cy})")
-    eng.click_abs(cx, cy)
-    return True
+        if pt is None:
+            continue
+        ratio = eng._pink_ratio_at(pt, img, _PINK_CFG, tol)
+        if ratio < _PINK_MIN:
+            print(f"  [关闭] 右上角候选 {tpl} ({pt.x},{pt.y}) 粉色占比 {ratio:.1%} < {_PINK_MIN:.0%}, "
+                  f"判为纯白图标/装饰, 弃用(不点击)")
+            continue
+        print(f"  [关闭] 右上角模板 {tpl} 命中 ({pt.x},{pt.y}) 粉色 {ratio:.1%} 校验通过")
+        eng.click_abs(pt.x, pt.y)
+        return True
+    print("  [关闭] 右上角无可用关闭候选(模板未命中或纯白否决), 不盲点, 如实返回 False")
+    return False
 
 
 # ---------------- 环节: 奖励弹窗关闭守卫 (2026-10-14) ----------------
@@ -352,7 +499,23 @@ def click_top_right_close(eng):
 #    @(424,496) —— 即弹层内容压住了「好友」按钮区; 区域外更直接读到弹层页脚
 #    「好希望点击任意处关闭」@0.89(661,675)(L290), 弹层确实在屏且从未被关闭。)
 # 合规: 弹窗是游戏既有控件, 关键字与弹窗本体定位均走实时 OCR, 不写死任何坐标(规则 6)。
-BOTTOM_BAR_REGION = [0.28, 0.86, 0.95, 1.0]        # 家园/好友花园底栏按钮带
+BOTTOM_BAR_REGION = [0.28, 0.86, 0.55, 1.0]        # 底栏「社交」所在左半段(2026-10-25 区域化, 见 has_social)
+SOCIAL_BTN_BAND = [0.26, 0.92, 0.46, 1.0]          # D18①(2026-10-27): 「社交」钮常住带(实测 x≈0.331, y≈0.949;
+                                                   # 10-27 气泡假命中在 (0.441,0.906), y 带即排除; 判据非点击坐标)
+
+# ---------------- D18②: 聊天面板出口(2026-10-27) ----------------
+# 背景: 聊天气泡被误点(见 SOCIAL_BTN_BAND)或其它途径打开**聊天面板**(全部/场景/频道/世界/家族/私聊/系统
+#   页签侧栏)后, ensure_home 的锚点/角区/服装三档全部无动作 -> 诚实空转循环(10-27 22:45-22:53 实锤 10 轮)。
+# 出口(用户 2026-10-27 领域知识): **右缘 ≪ 收起箭头**(rel≈(0.409,0.472))是唯一关闭钮。
+#   ⚠ 左下粉圆 ✕ @(≈(0.033,0.933)) 是「屏蔽聊天」钮 —— **禁点**: 内部红色(正常关闭钮内部白/粉色),
+#   粉环可能骗过粉色占比校验, 红内芯是判别项; 本分支 region 远离该钮, 亦不得为其建模板。
+# 模板 chat_collapse.png(30x34, 1280 基准): 自存证帧 escape_fail_unknown_scene_225243.png 裁切,
+#   两态分离度: 正例两帧 1.0 同位(像素级恒定) / 区域负例(主界面/手账/热卖/商城/照顾花宝) 0.950-0.975,
+#   好友列表 0.993 = 同款塌陷舌台(语义同向: 点它=收起侧栏, 且 ensure_home 的 in_list 分支先于本分支)。
+#   阈值 0.995: 不触发即落回原未识别分支(失败方向安全)。
+CHAT_COLLAPSE_TPL = "chat_collapse.png"
+CHAT_COLLAPSE_REGION = [0.38, 0.30, 0.52, 0.62]
+CHAT_COLLAPSE_TH = 0.995
 
 
 def dismiss_reward_popup(eng, img=None, tries=2):
@@ -397,20 +560,46 @@ def escape_overlay(eng, tries=2):
     for i in range(1, tries + 1):
         if stop_requested():
             return False
-        if has(eng, "社交", min_score=0.5):
+        if has_social(eng) is not None:
             return True
         print(f"  [弹窗] 花园底栏「社交」不可读, 判为半透明弹层遮挡 -> 清弹层(第{i}次)")
         dismiss_reward_popup(eng)          # ① OCR 定位弹窗文字后点其自身坐标(合规)
-        if not has(eng, "社交", min_score=0.5):
-            eng.close_dialog(only_types=["anchor_color"])   # ② 仅锚点档(须读到面板标题才动作) —— 防跨场景误点
-        time.sleep(1.0)
-    ok = has(eng, "社交", min_score=0.5)
+        if i < tries:
+            # ② 仅锚点档(须读到面板标题才动作) —— 防跨场景误点。
+            # P1-B(2026-10-27): 末轮不再做锚点探测+复查 —— 其结果只能被紧随的终判消费, 无 settle 时间的
+            # 探测纯属白花; 非末轮保留(决定是否需要锚点清面板)。
+            if has_social(eng) is None:
+                eng.close_dialog(only_types=["anchor_color"])
+            # P1-A(2026-10-27): 非末轮等待 1.0->3.0s —— 10-24 轮 17 次清弹层的实际生效机制是
+            # 「等遮挡物消散」(codex-20261025 分析 §4.2); 1s 不够, 3s 与既有重试节奏一致; 末轮不空等直接交回上层。
+            time.sleep(3.0)
+    ok = has_social(eng) is not None
     if not ok:
         print("  [弹窗] 底栏「社交」仍不可读, 如实报出(交上层 leave_friend_list/ensure_home 兜底)")
     return ok
 
 
 # ---------------- 环节: 回主界面 / 开列表 / 切页签 ----------------
+
+def has_social(eng, img=None, min_score=0.4, cache=None):
+    """codex-20261025-3(用户裁定「背景色遮挡」): 底栏「社交」统一判读入口。
+
+    现象与判读(20261024 日志): escape_overlay 的 has() 用 0.5 闸门判 MISS,
+    紧随其后的 click_btn_fine 用 0.4 闸门 OCR 命中同一按钮 —— 分数落在 [0.4,0.5) 灰带,
+    即「字在屏上、背景色把置信度压低」(与 locate_fine 的 2026-10-06 立项事实同源:
+    不同好友花园的紫/蓝彩底压白字置信度; 聊天气泡在屏顶 (640,78) 一带、位置固定,
+    不遮挡底栏 —— 2026-10-25 用户纠正)。
+
+    区域化读法: 「社交」恒在底栏左段(2026-10-22 用户澄清 + 10-24 全部命中 x∈[423,424]),
+    固定 region + min_score 0.40(主 agent 修订: 去掉 0.35 二次放宽 —— 日志证据只到 0.4 灰带,
+    0.35 无实测支撑, 按 R3 不擅自放宽阈值; 裁片 MISS 时由上层点-验-重试与 escape 链兜底)。
+    cache: 调用方可传 dict 收集 {命中方式: 次数} 供日志/观测(可选)。
+    """
+    img = img if img is not None else eng.screenshot()
+    pt = eng.locate(["社交"], img=img, region_rel=BOTTOM_BAR_REGION, min_score=min_score)
+    if pt is not None and cache is not None:
+        cache["region"] = cache.get("region", 0) + 1
+    return pt
 
 def ensure_home(eng):
     """确保回到自己家园主界面: 关提示框 -> 离开好友花园 -> 委托子页点左上角返回 -> 关家族面板 -> 兜底点右上角关闭。
@@ -426,12 +615,12 @@ def ensure_home(eng):
         if stop_requested():
             return False
         img = eng.screenshot()
-        if in_home(eng, img) and not in_garden(eng, img):
-            print("  [主界面] 已在自己家园主界面")
+        if at_home_main(eng, img):
+            print("  [主界面] 已回到主界面(户外)")
             eng.set_scene("家园主界面")
             return True
         if in_list(eng, img):
-            # 整屏好友列表面板: 返回键无效, 也不能当"已在主界面"(in_home 已排除),
+            # 整屏好友列表面板: 返回键无效, 也不能当"已在主界面"(social_usable 已排除列表),
             # 必须先关掉列表再往家园走 (2026-10-02 根因: 停在这里导致 claim 全程空跑)
             print("  [主界面] 停在好友列表, 先关闭列表")
             leave_friend_list(eng)
@@ -493,6 +682,41 @@ def ensure_home(eng):
                 save_escape_evidence(eng, "family_panel")
                 return False
             continue
+        pt_chat = eng.locate_template(CHAT_COLLAPSE_TPL, img=img,
+                                      threshold=CHAT_COLLAPSE_TH, region_rel=CHAT_COLLAPSE_REGION)
+        if pt_chat is not None:
+            print(f"  [主界面] 侧栏面板塌陷舌台(≪)命中 ({pt_chat.x},{pt_chat.y}) -> 点其收起(聊天面板唯一出口)")
+            eng.click_abs(pt_chat.x, pt_chat.y)
+            if wait_screen_change(eng, img, desc="侧栏面板收起"):
+                stale = 0
+                continue
+            print("  [主界面] ≪ 点击后画面无变化, 落入后续分支")
+            stale += 1
+            if stale >= 2:
+                print("  [主界面] 连续 2 个退出动作画面均无变化, 如实放弃归位")
+                save_escape_evidence(eng, "chat_panel")
+                return False
+            continue
+        pt_fashion = eng.locate(["服装"], img=img, min_score=0.5,
+                                region_rel=[0.0, 0.0, 0.12, 0.10])
+        if pt_fashion is not None:
+            # E3(2026-10-27, zcode-20261028-4): 服装圣殿系页面出口 —— 左上「服装」页签=整页返回。
+            # 2026-10-27 实采实锤: 伙伴页(我的花宝)覆盖在服装圣殿上, 右上角粉 ✕(1245,27) 属底层
+            # 服装圣殿且被模态层吃点击(模板 0.96-0.98 命中、点击无效), 引擎 close_dialog/ensure_home
+            # 角区档全部无效; 实测点左上「服装」即整页回主界面。region 限定左上角, 主界面右栏
+            # 「服装」(x≈0.96) 与「服装圣殿」(x≈0.95) 均被排除。
+            print(f"  [主界面] 服装圣殿系页面(左上「服装」在屏) -> 点其返回 ({pt_fashion.x},{pt_fashion.y})")
+            eng.click_abs(pt_fashion.x, pt_fashion.y)
+            if wait_screen_change(eng, img, desc="服装圣殿返回"):
+                stale = 0
+                continue
+            print("  [主界面] 「服装」点击后画面无变化, 落入角区档")
+            stale += 1
+            if stale >= 2:
+                print("  [主界面] 连续 2 个退出动作画面均无变化, 如实放弃归位")
+                save_escape_evidence(eng, "fashion_page")
+                return False
+            continue
         # ⚠ 主 agent 修复 Bug③(里程碑 93): 未识别场景分支原先**只有角区档**(click_top_right_close:
         #   角区模板 — 本事故里 close_family 0.705<0.92 / close_corner_pink 0.647<0.65 全 MISS —
         #   然后盲点角区中心 (1216,57)), 对「真钮在角区外且需标题锚点」的面板(如 在线礼包 真钮 (1105,97),
@@ -517,7 +741,7 @@ def ensure_home(eng):
             print("  [主界面] 连续 2 个退出动作画面均无变化, 如实放弃归位")
             save_escape_evidence(eng, "unknown_scene")
             return False
-    ok = in_home(eng)
+    ok = at_home_main(eng)
     if ok:
         eng.set_scene("家园主界面")
     return ok
@@ -555,7 +779,7 @@ def leave_garden(eng):
         if wait_screen_change(eng, img, desc=f"点离开(第{i}次)"):
             break
         print(f"  [离开] 第{i}次点击后画面无变化(吞点击), 重试")
-    ok = wait_until(eng, lambda: in_home(eng) and not in_garden(eng), 10, desc="回到自己家园")
+    ok = wait_until(eng, lambda: at_home_main(eng), 10, desc="回到自己家园")
     if ok:
         eng.set_scene("家园主界面")
     return ok
@@ -565,7 +789,7 @@ def leave_friend_list(eng):
     """关闭整屏好友列表面板, 回到自己家园。
 
     ⚠ 2026-10-02 根因: 采粉完成后画面停在好友列表 → 引擎 close_dialog 反复点 (1216,106) 无效,
-      而旧 `in_home` 只判「社交」把列表误判成主界面 → `ensure_home` 直接收工 →
+      而旧版 `in_home`(现 `social_usable`) 只判「社交」把列表误判成主界面 → `ensure_home` 直接收工 →
       claim 三个功能整段在列表上空跑 5 分钟。故归位链必须先认出列表并关掉它。
     出口优先「列表右上角 ✕」(与其它整屏面板一致), 未确认离开再试底部栏「离开」。
     ⚠ 待实机校准: 好友列表真实关闭钮尚未定向采集; 若两轮都未确认离开, 按
@@ -592,14 +816,14 @@ def leave_friend_list(eng):
             eng.click_abs(pt.x, pt.y)
         else:
             print(f"  [列表] 第{i}次: »钮模板未命中(friendlist_exit), 直接试底部栏「离开」")
-        if wait_until(eng, lambda: not in_list(eng), 5, desc=f"关闭好友列表(第{i}次)"):
+        if wait_until(eng, lambda: not in_list(eng, quiet=True), 5, desc=f"关闭好友列表(第{i}次)"):
             return True
         img = eng.screenshot()
         pt = eng.locate(["离开"], img=img, region_rel=[0.70, 0.88, 1.0, 1.0], min_score=0.5)
         if pt is not None:
             print(f"  [列表] 底部栏定位「离开」({pt.x},{pt.y})")
             eng.click_abs(pt.x, pt.y)
-            if wait_until(eng, lambda: not in_list(eng), 5, desc=f"离开好友列表(第{i}次)"):
+            if wait_until(eng, lambda: not in_list(eng, quiet=True), 5, desc=f"离开好友列表(第{i}次)"):
                 return True
     ok = not in_list(eng)
     if not ok:
@@ -620,6 +844,10 @@ def open_friend_list(eng):
       (气泡会轮走), 不做「先回家再开」绕路(用户裁定: 按钮一致, 绕路不合理)。
       面板等待已按定值规则 15s→5s, 空转代价同步压缩。
     """
+    # 2026-10-25(codex-20261025-2): 面板「可能还开着」标志 —— 仅当上一轮明确见到面板/确认过
+    # 点击生效/点过「好友」而列表未开(常见: 列表内完成动作后弹层残留)时为 True, 供入口
+    # _panel_friend_pt 恢复探测; 全新进入(采粉/回家后)为 False, 跳过结构性必然 MISS 的探测。
+    panel_may_open = False
     for attempt in range(1, 4):
         if stop_requested():
             return False
@@ -629,22 +857,28 @@ def open_friend_list(eng):
         #   (用户 2026-10-20 指出)。于是最需要清弹窗的场景反而永远不进 escape —— 日志里大量
         #   「点「社交」后未见社交面板(点击被吞)」而 `[弹窗] 社交不可读` 只有寥寥几次, 即此。
         # 现改为**先判是否存在弹窗**: 有 -> 关掉再继续; 没有再走旧「不可读」兜底(面板/其它遮挡)。
-        if in_garden(eng, img):
+        if in_garden(eng, img, quiet=True):
             if eng.has_reward_popup(img):
                 print("  [列表] 花园画面存在半透明奖励弹窗(社交可读但点击会被吞) -> 先关闭")
                 dismiss_reward_popup(eng, img)
                 img = eng.screenshot()
-            elif not has(eng, "社交", img=img, min_score=0.5):
-                # 兜底: 确实读不到「社交」(可能是面板/其它遮挡) -> 旧清弹层链
+            elif has_social(eng, img=img) is None:
+                # 兜底: 底栏小裁片确实读不到「社交」(彩底压分/横幅类遮挡) -> 清弹层链
                 escape_overlay(eng)
                 img = eng.screenshot()
-        if in_list(eng, img):
+        if in_list(eng, img, quiet=True):
             print("  [列表] 已在好友列表")
             eng.set_scene("好友列表")
             return True
-        pt = _panel_friend_pt(eng, img)
+        # 2026-10-25(codex-20261025-2): 入口探测按 panel_may_open 门控 —— 只有上一轮
+        # 确认「社交面板可能还开着」才调 _panel_friend_pt; 20261024 日志的 16 次粗识 MISS
+        # 全部发生在「从采粉/回家后首次进入」(面板必然未开, L173~L1005), 每次白跑
+        # 一次区域 OCR + 滤色精识。列表真开着已由上方 in_list 覆盖, 不受影响。
+        pt = _panel_friend_pt(eng, img) if panel_may_open else None
         if pt is None:
-            if in_home(eng, img) or in_garden(eng, img):
+            # 2026-10-24(P2-5④): 重试循环内场景判定静默, 由下面的「在XX点社交 / 场景未知」行保留结论
+            in_g = in_garden(eng, img, quiet=True)
+            if social_usable(eng, img, quiet=True) or in_g:
                 # 自己家园/好友花园按钮一致(用户 2026-10-05), 统一处理:
                 # 点-验-重试(2026-10-04 引入): 「社交」点击常被吞/被气泡遮挡 —— 点击后必须在
                 # 5s 内确认**社交面板出现**, 未出现立即重点(至多 3 次); 面板等待 15s→5s(定值规则)。
@@ -655,23 +889,30 @@ def open_friend_list(eng):
                 #   危害: ①每次误报都让 wait_screen_change 空等满 5s; ②多余的再点击可能把刚弹出的
                 #   面板又关掉。故在帧差之外**追加一次正向复核**(面板内「好友」按钮出现即视为生效),
                 #   并把循环末尾那次 5s 面板等待去掉(每轮点击已自带确认, 避免重复空等)。
-                where = "好友花园" if in_garden(eng, img) else "自己家园"
+                where = "花园(自己/好友)" if in_g else "户外主界面"
                 print(f"  [列表] 第{attempt}次 在{where} 点「社交」")
                 for i in range(1, 4):
                     if stop_requested():
                         return False
                     pre = eng.screenshot()
-                    pt_btn = click_btn_fine(eng, ["社交"], img=pre)
+                    # D18①: 社交钮实测恒在 rel(0.331,0.949)(10-22/10-24/10-27 三份日志同位),
+                    # 常住带过滤聊天气泡同字文本(10-27 实锤气泡 (0.441,0.906) 被误点开聊天面板)。
+                    pt_btn = click_btn_fine(eng, ["社交"], img=pre, expect_region=SOCIAL_BTN_BAND)
                     if pt_btn is None:
                         print("  [列表] 「社交」常规+滤色精识均未命中, 未产生点击, 重试")
                         continue
                     if wait_screen_change(eng, pre, desc=f"点「社交」(第{i}次)", timeout=5):
+                        panel_may_open = True
                         break
+                    # 2026-10-25 时机收窄后唯一调用点: 点「社交」之后的面板确认(面板此时才可能存在)。
                     if _panel_friend_pt(eng) is not None:
+                        panel_may_open = True
                         print("  [列表] 点「社交」后整屏帧差未达阈值, 但社交面板(「好友」钮)已出现 -> 视为点击生效")
                         break
                     print("  [列表] 点「社交」后未见社交面板(点击被吞), 重试")
                 pt = _panel_friend_pt(eng)
+                if pt is not None:
+                    panel_may_open = True
             else:
                 print(f"  [列表] 第{attempt}次: 场景未知, 先回自己家园")
                 ensure_home(eng)
@@ -679,15 +920,17 @@ def open_friend_list(eng):
         if pt is not None:
             print(f"  [列表] 点社交面板内「好友」({pt.x},{pt.y})")
             eng.click_abs(pt.x, pt.y)
-            if wait_until(eng, lambda: in_list(eng), 5, desc="好友列表出现"):
+            if wait_until(eng, lambda: in_list(eng, quiet=True), 5, desc="好友列表出现"):
                 eng.set_scene("好友列表")
                 return True
+            # 2026-10-25(codex-20261025-2): 点过「好友」而列表未确认, 下一轮入口可能需要
+            # 经面板恢复(而非再点「社交」把面板关掉), 保持 panel_may_open=True。
         # 兜底: 列表已在(只是标记未识别)时, 点右侧竖排页签「好友」
         pt = eng.locate(["好友"], exact=True, region_rel=TAB_REGION, min_score=0.4)
         if pt is not None:
             print(f"  [列表] 点右侧页签「好友」({pt.x},{pt.y})")
             eng.click_abs(pt.x, pt.y)
-            if wait_until(eng, lambda: in_list(eng), 5, desc="好友列表出现"):
+            if wait_until(eng, lambda: in_list(eng, quiet=True), 5, desc="好友列表出现"):
                 eng.set_scene("好友列表")
                 return True
     print("  [列表] 打开好友列表失败")
@@ -888,8 +1131,10 @@ def collect_one(eng, x, y):
             entered = True
             break
         print(f"  [采集] 第{i}次点击家园图标")
+        wait_stable(eng, 1.5)              # C3: 画面未稳定时点击易被系统丢弃
         eng.click_abs(hx, hy)
-        if wait_until(eng, lambda: in_garden(eng), 15, desc=f"进入好友花园(第{i}次)"):
+        # C1b: 点击被吞时(仍在好友列表)提前失败, 不再干等满 15s
+        if wait_enter_garden(eng, 15, desc=f"进入好友花园(第{i}次)"):
             entered = True
             break
         time.sleep(2)                      # 输入队列延迟宽限: 点击可能刚落地
@@ -1129,7 +1374,7 @@ def main():
     assert eng.connect(), "连接失败"
     if stage == "state":
         img = eng.screenshot()
-        print(f"  在列表={in_list(eng, img)} 在主界面={in_home(eng, img)} 在花园={in_garden(eng, img)}")
+        print(f"  在列表={in_list(eng, img)} 社交可用={social_usable(eng, img)} 在花园={in_garden(eng, img)}")
         print(f"  页码={read_page(eng, img)} 标记={scan_marks(eng, img)}")
         return
     if stage == "all":

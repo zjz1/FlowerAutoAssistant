@@ -11,16 +11,16 @@
         { "type": "if_text", "text": ["家族"], "min_score": 0.4,
           "region_rel": [0.25, 0.6, 0.45, 0.92],
           "then": [
-            { "type": "click_text", "text": ["家族"], "exact": true, "delay": 1.5 },
+            { "type": "click_text", "text": ["家族"], "min_score": 0.4, "exact": true, "delay": 1.5 },
             { "type": "sleep", "seconds": 1.5 },
-            { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5 }
+            { "type": "click_text", "text": ["家族活动"], "min_score": 0.4, "mark": true, "delay": 1.5 }
           ],
           "else": [
-            { "type": "click_text", "text": ["社交"], "delay": 1.5 },
+            { "type": "click_text", "text": ["社交"], "min_score": 0.4, "delay": 1.5 },
             { "type": "sleep", "seconds": 1.5 },
-            { "type": "click_text", "text": ["家族"], "exact": true, "delay": 1.5 },
+            { "type": "click_text", "text": ["家族"], "min_score": 0.4, "exact": true, "delay": 1.5 },
             { "type": "sleep", "seconds": 1.5 },
-            { "type": "click_text", "text": ["家族活动"], "mark": true, "delay": 1.5 }
+            { "type": "click_text", "text": ["家族活动"], "min_score": 0.4, "mark": true, "delay": 1.5 }
           ] }
       ]
     },
@@ -31,23 +31,23 @@
       "nav": [
         { "type": "if_text", "text": ["菜单"], "min_score": 0.4,
           "then": [
-            { "type": "click_text", "text": ["菜单"], "delay": 1.5 },
+            { "type": "click_text", "text": ["菜单"], "min_score": 0.4, "delay": 1.5 },
             { "type": "sleep", "seconds": 1.0 },
             { "type": "if_text", "text": ["闪耀变身"], "min_score": 0.4,
               "then": [
-                { "type": "click_text", "text": ["闪耀变身"], "mark": true, "delay": 1.5 }
+                { "type": "click_text", "text": ["闪耀变身"], "min_score": 0.4, "mark": true, "delay": 1.5 }
               ] }
           ],
           "else": [
             { "type": "if_text", "text": ["家园"], "min_score": 0.4,
               "then": [
-                { "type": "click_text", "text": ["家园"], "delay": 1.5 },
+                { "type": "click_text", "text": ["家园"], "min_score": 0.4, "delay": 1.5 },
                 { "type": "sleep", "seconds": 1.0 },
-                { "type": "click_text", "text": ["菜单"], "delay": 1.5 },
+                { "type": "click_text", "text": ["菜单"], "min_score": 0.4, "delay": 1.5 },
                 { "type": "sleep", "seconds": 1.0 },
                 { "type": "if_text", "text": ["闪耀变身"], "min_score": 0.4,
                   "then": [
-                    { "type": "click_text", "text": ["闪耀变身"], "mark": true, "delay": 1.5 }
+                    { "type": "click_text", "text": ["闪耀变身"], "min_score": 0.4, "mark": true, "delay": 1.5 }
                   ] }
               ] }
           ] }
@@ -60,23 +60,23 @@
       "nav": [
         { "type": "if_text", "text": ["菜单"], "min_score": 0.4,
           "then": [
-            { "type": "click_text", "text": ["菜单"], "delay": 1.5 },
+            { "type": "click_text", "text": ["菜单"], "min_score": 0.4, "delay": 1.5 },
             { "type": "sleep", "seconds": 1.0 },
             { "type": "if_text", "text": ["花灵派对"], "min_score": 0.4,
               "then": [
-                { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5 }
+                { "type": "click_text", "text": ["花灵派对"], "min_score": 0.4, "mark": true, "delay": 1.5 }
               ] }
           ],
           "else": [
             { "type": "if_text", "text": ["家园"], "min_score": 0.4,
               "then": [
-                { "type": "click_text", "text": ["家园"], "delay": 1.5 },
+                { "type": "click_text", "text": ["家园"], "min_score": 0.4, "delay": 1.5 },
                 { "type": "sleep", "seconds": 1.0 },
-                { "type": "click_text", "text": ["菜单"], "delay": 1.5 },
+                { "type": "click_text", "text": ["菜单"], "min_score": 0.4, "delay": 1.5 },
                 { "type": "sleep", "seconds": 1.0 },
                 { "type": "if_text", "text": ["花灵派对"], "min_score": 0.4,
                   "then": [
-                    { "type": "click_text", "text": ["花灵派对"], "mark": true, "delay": 1.5 }
+                    { "type": "click_text", "text": ["花灵派对"], "min_score": 0.4, "mark": true, "delay": 1.5 }
                   ] }
               ] }
           ] }

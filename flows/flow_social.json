@@ -44,6 +44,7 @@
           { "_note": "加**区域守卫**(2026-09-30): close_online_small.png 仅 17x21, 是游戏里所有面板共用的关闭字形, 不设守卫时在家族活动预界面/任意画面都会误命中空点。该子面板标题栏无文字(实测 OCR 在 y<130 无任何块), 无法用 anchor_color, 故改用它独有的「今日浇水次数：X/3」@abs(1067,565) 做守卫" },
           { "_note": "关闭方式再改模板(2026-10-04, 协作区 zcode-20261004-4, 规则6合规): 直坐标(0.938,0.089)废弃 —— 从当晚实机截图裁出含白圈的完整✕模板 tree_close.png(56x56@1280基准, 源图 0.998/异图 0.326 无假阳性); 17×21 旧模板与 ? 帮助圈无区分度已弃用; 「今日浇水次数」守卫保留" },
           { "type": "if_text",
+            "need_refine": false,
             "text": ["今日浇水次数"],
             "min_score": 0.4,
             "region_rel": [0.78, 0.74, 1.00, 0.84],
@@ -95,6 +96,7 @@
                       ] },
                     { "_note": "退出委托挑战全屏子页(2026-10-04 合规改造 zcode-20261004-4): 内容区右上角白圆粉花✕ → 模板 delegate_close.png(源图 0.999/异图 0.742); 旧直坐标 (0.9010,0.1065) 废弃(规则6)。注意外壳右上角花在子页被内容层压住点不动, 必须先点本钮" },
                     { "type": "if_text",
+                      "need_refine": false,
                       "text": ["委托排行", "距离结束"],
                       "min_score": 0.4,
                       "then": [
@@ -106,6 +108,7 @@
                       ] },
                     { "_note": "关家族外壳回主界面(2026-10-04 合规改造 zcode-20261004-4): 右上角花形✕ → 模板 shell_close.png(新鲜裁切, 源图 0.995/异图 0.766); 旧直坐标 (0.9833,0.0509) 废弃(规则6); 不再用 close_family 旧模板(自带背景有假阳性史)" },
                     { "type": "if_text",
+                      "need_refine": false,
                       "text": ["家族首页", "家族排行", "摇钱树"],
                       "min_score": 0.4,
                       "then": [
@@ -137,6 +140,7 @@
                 ],
                 "else": [
                     { "type": "if_text", "text": ["每日礼包", "明日再来"], "min_score": 0.4,
+                      "need_refine": false,
                       "then": [ { "_note": "已在矿洞页(重跑/残留), 免点入口" } ],
                       "else": [
                           { "type": "navigate", "target": "家族活动", "max_rounds": 2,
@@ -152,6 +156,7 @@
                       ] }
                 ] },
               { "type": "if_text", "text": ["每日礼包", "明日再来"], "min_score": 0.4,
+                "need_refine": false,
                 "_note": "P0 守卫: 未确认已在矿洞页则整段跳过, 不在未知界面点任何东西(同 flow_claim P0-1 手法)",
                 "then": [
                     { "type": "count_text",
@@ -168,11 +173,13 @@
                       ],
                       "else": [
                           { "type": "if_text", "text": ["明日再来"], "min_score": 0.4,
+                            "need_refine": false,
                             "then": [ { "_note": "「明日再来」在屏且「每日礼包」仅 1 个 = 今日已领, 跳过领取(用户步骤5)" } ],
                             "else": [ { "_note": "状态未识别(既非双礼包也无明日再来): 诚实跳过, 不点任何东西" } ] }
                       ] }
                 ] },
               { "type": "if_text", "text": ["每日礼包", "明日再来"], "min_score": 0.4,
+                "need_refine": false,
                 "then": [
                     { "type": "click_template", "template": "mine_close.png", "threshold": 0.97,
                       "region_rel": [0.92, 0.0, 1.0, 0.12], "delay": 1.5,
@@ -184,15 +191,66 @@
           ],
           "else": [] },
 
-        { "_note": "----- 4.1.4 守望兔子（待开发，占位）-----" },
+        { "_note": "----- 4.1.4 守望兔子（2026-10-25 实装; 周五~周日开放 if_weekday days=[5,6,0]; 总收获档位门控领取; 页面结构 2026-10-25 实机采集: 三档奖励钮右栏纵排 7200/20000/72000, 整块 OCR「总收获72000奖励」「20000奖励」「7200奖励」@x≈0.85; 右下角总收获纯数字 @rel(0.94,0.965); 领取弹窗=「恭喜获得」+「点击任意处关闭」同矿洞/浇水弹窗族; 已领=绿勾, 按钮文字不变 —— 全程 OCR 点文字块自身, 无写死坐标)-----" },
         { "type": "if_config",
           "key": "enable_rabbit",
-          "value": false,
+          "value": true,
           "then": [
-              { "type": "sleep", "seconds": 0.3 }
+              { "type": "if_weekday", "days": [5, 6, 0],
+                "then": [
+                    { "type": "navigate", "target": "家族活动", "max_rounds": 3,
+                      "_note": "入口同家族活动其它模块: 社交-家族-家族活动(公共导航注册表)。已在守望兔子页(重跑/残留)时 navigate 各轮 MISS 会经 close_dialog 脱困(白圆✕@0.926 实测可关守望兔子页)后逐步归位, 2026-10-25 重跑实测收敛" },
+                    { "type": "if_text", "text": ["守望兔子"], "min_score": 0.6,
+                      "then": [
+                          { "type": "click_text", "text": ["守望兔子"], "min_score": 0.6, "delay": 2.5,
+                            "name": "进守望兔子页(家族活动网格入口)",
+                            "_note": "region 免钉: 家族活动网格内唯一含「守望兔子」块, 同页「家族收货礼包」按钮文字不同不误中" }
+                      ],
+                      "else": [] },
+                    { "type": "if_text", "text": ["开始游戏", "今日剩余游戏次数"], "min_score": 0.5,
+                      "need_refine": false,
+                      "_note": "P0 守卫(同矿洞手法): 未确认已在守望兔子页则整段跳过, 不在未知界面点任何东西",
+                      "then": [
+                          { "type": "if_greater", "region_rel": [0.94, 0.965],
+                            "condition": "N>=7200", "min_score": 0.5,
+                            "_note": "第1档 总收获≥7200; parse_count_at 右下角读「5441884」纯数字(2026-10-25 实机验证)",
+                            "then": [
+                                { "type": "click_text", "text": ["7200奖励"], "min_score": 0.5, "delay": 2.0,
+                                  "name": "领7200档(OCR块自身)" },
+                                { "type": "reward_dialog", "wait": 5.0, "tries": 2, "required": false,
+                                  "name": "7200档领取弹窗" }
+                            ],
+                            "else": [] },
+                          { "type": "if_greater", "region_rel": [0.94, 0.965],
+                            "condition": "N>=20000",
+                            "then": [
+                                { "type": "click_text", "text": ["20000奖励"], "min_score": 0.5, "delay": 2.0,
+                                  "name": "领20000档(OCR块自身)" },
+                                { "type": "reward_dialog", "wait": 5.0, "tries": 2, "required": false,
+                                  "name": "20000档领取弹窗" }
+                            ],
+                            "else": [] },
+                          { "type": "if_greater", "region_rel": [0.94, 0.965],
+                            "condition": "N>=72000",
+                            "then": [
+                                { "type": "click_text", "text": ["72000奖励"], "min_score": 0.5, "delay": 2.0,
+                                  "name": "领72000档(OCR块自身)" },
+                                { "type": "reward_dialog", "wait": 5.0, "tries": 2, "required": false,
+                                  "name": "72000档领取弹窗" }
+                            ],
+                            "else": [] },
+                          { "type": "click_template", "template": "mine_close.png", "threshold": 0.97,
+                            "region_rel": [0.92, 0.0, 1.0, 0.12], "delay": 1.5,
+                            "name": "关守望兔子页(右上粉花✕同矿洞)",
+                            "_note": "右上角✕与矿洞页同族粉花✕(页面截图同位 0.9745,0.036); mine_close 模板先试, 未中再 close_dialog 兜底" },
+                          { "type": "close_dialog", "delay": 1.0,
+                            "_note": "兜底: 模板未命中时走关闭注册表探测一次; 最终归位由 4.2 采粉 ensure_home 链接管" }
+                      ],
+                      "else": [] }
+                ],
+                "else": [ { "_note": "非周五~周日: 自动跳过, 不进家族活动页空转" } ] }
           ],
           "else": [] },
-
         { "_note": "===== 4.2 好友采粉（enable_pollin）=====" },
         { "type": "if_config",
           "key": "enable_pollin",

@@ -21,6 +21,7 @@ import numpy as np
 
 # ---------- 单例引擎 ----------
 _engine = None
+_engine_region = None   # 裁片专用实例(小 det limit, zcode-20261031-13; 由配置闸门 det_region_limit 启用)
 
 # RapidOCR 1.2.3 未暴露 ONNX 会话线程数配置(OrtInferSession 内部自建 SessionOptions,
 # 默认吃满全部物理核: 720p 全屏 OCR 实测瞬时占用 ~13 核、CPU 时间 ~5.3s/次,
@@ -70,12 +71,51 @@ def get_engine():
     return _engine
 
 
-def ocr_image(image) -> list[dict]:
+def get_engine_region():
+    """裁片专用 OCR 实例(zcode-20261031-13): det_limit_side_len=32/min —— 小裁片不再被库内
+    默认 min/736 预处理反向放大(短边被拉到 736, 宽扁裁片 det 耗时反而高于全图 —— -9 实证)。
+    离线微基准(_explore_1028/det_region_bench.txt, v9_popup 帧): 标题带 896x216 1329→782ms、
+    页脚带 768x108 1971→445ms, 关键词检出保持。**全图路径不受影响**(仍走 get_engine();
+    实测 960/max 在好友列表丢块, 故全图严禁动 limit —— 本文件 L62 既有结论)。
+    由 ocr_engine 配置闸门 det_region_limit(默认 false)启用; 关闭时本函数不被调用,
+    引擎走 get_engine(), 行为与旧版逐字节一致。线程限制与 get_engine 同型。"""
+    global _engine_region
+    if _engine_region is None:
+        import rapidocr_onnxruntime.utils as _ru
+        from rapidocr_onnxruntime import RapidOCR
+
+        if _thread_limit > 0:
+            _orig_so = _ru.SessionOptions
+            _limit = _thread_limit
+
+            def _limited_session_options_region():
+                so = _orig_so()
+                so.intra_op_num_threads = _limit
+                so.inter_op_num_threads = 1
+                return so
+
+            _ru.SessionOptions = _limited_session_options_region
+        # 传任意 det_* 参数时该库强制读取 det_model_path, 需显式传 None 沿用默认模型路径(同 get_engine)
+        _engine_region = RapidOCR(
+            det_model_path=None,
+            det_limit_side_len=32,
+            det_limit_type="min",
+            det_use_dilation=False,
+            det_thresh=0.2,
+            det_box_thresh=0.3,
+            det_unclip_ratio=1.4,
+        )
+    return _engine_region
+
+
+def ocr_image(image, engine=None) -> list[dict]:
     """对图片执行 OCR。image 可为路径字符串 / Path / numpy 数组 (BGR)。
+    engine=None 时用全局默认实例(与旧版逐字节一致); 裁片路径在配置闸门开启时由调用方传入
+    get_engine_region() 实例(小 limit, 见其 docstring)。调用方不传 = 旧行为。
     返回按 上->下、左->右 排序的文字块列表。
     """
-    engine = get_engine()
-    res, _ = engine(image)
+    eng = engine if engine is not None else get_engine()
+    res, _ = eng(image)
     if not res:
         return []
     out = []

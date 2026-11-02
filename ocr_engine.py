@@ -59,6 +59,13 @@ class StopRequested(BaseException):
     从而一路穿透到最外层 run_flow/run_daily 的统一停止处理。"""
 
 
+class BranchAborted(Exception):
+    """E2(2026-10-27, zcode-20261028-3): 分支内短路 —— 带 `required: true` 的步骤失败时抛出,
+    由 run_steps 捕获后**中止当前 then/else 列表**、继续执行列表之后的步骤。
+    与 FlowFailed(模块级中止, on_fail 处置)的区别: 本异常只放弃"当前分支的剩余步骤"
+    (例如 if_collected.then 里的任务链), 编排与后续模块不受影响; 失败本身已由
+    report_failure 如实登记, 不伪装成功。"""
+
 class FlowFailed(Exception):
     """流程主动判定失败(由流程 JSON 的 `fail_flow` 步骤抛出)。
 
@@ -149,6 +156,10 @@ def _new_ocr_stat() -> dict:
         "split_cache_hit": 0,     # 拆分结果缓存命中(不产生 OCR)
         "split_only_hit": 0,      # 仅子块命中(判断类跳过拆分的安全指标)
         "scene_calls": 0,         # judge_scene 调用次数
+        "miss_silent_n": 0,       # E1: 静默未命中次数(弹窗/启动守卫的常态负判定)
+        "scene_quiet_n": 0,       # P2-5: 被折叠的场景判断次数(轮询内负判定, 由等待汇总替代)
+        "friend_coarse_n": 0, "friend_coarse_hit": 0,   # P2-5③: 社交面板「好友」粗 OCR 探测/命中
+        "friend_fine_n": 0, "friend_fine_hit": 0,       # P2-5③: 粗识失败后的滤色精识兜底 探测/命中
         "by_src": {},             # kind(full/region/split/direct) -> {来源: 次数}
     }
 
@@ -225,6 +236,7 @@ class OCREngine:
         self._scene: str = "未分类"  # 当前界面场景 (流程步骤可声明, 默认未分类)
         self._step_category: str | None = None  # 步骤临时声明的按钮类别(click_text/click_rel 用)
         self._module: str = "未分类"  # 当前模块名 (run_flow/run_module 设置), 供失败登记标注来源
+        self._count_probes: dict[str, int | None] = {}  # 数量计数探针存值(if_count 变化判定用, 2026-10-25)
         # 同帧 OCR 结果复用 (性能长期目标 §11.3-2): 静态画面反复轮询时不再重复全屏 OCR, 见 _ocr_frame
         self._frame_sig: bytes | None = None
         self._frame_cache: tuple | None = None
@@ -255,6 +267,11 @@ class OCREngine:
         # 「同画面未命中折叠」状态(见 _log_ocr_miss): 帧指纹+exact+区域 相同的连续未命中只打首条
         self._miss_sig: tuple | None = None
         self._miss_count = 0
+        # E1(2026-10-22): 静默未命中的末帧证据 —— log_miss=False 时不再逐条打印
+        #   `[OCR未命中]`, 但保留最后一次的 blocks/keywords, 供 reward_dialog 输出
+        #   「无弹窗」摘要与「疑似存在但分数不足」提示。
+        self._last_miss_blocks: list | None = None
+        self._last_miss_keywords = None
         # 相邻定位复用 (性能批 zcode-20261007-16 批B): 上一步(if_text/wait_text)刚 OCR 命中的
         # 点位, 供**紧邻的下一步** click_text 在查询兼容时直接复用, 免去二次截图 + 全图 OCR。
         # _step_seq: run_step 单调递增的步骤序号, 保证"仅紧邻下一步"可复用(中间隔了任何步骤即失效)。
@@ -332,17 +349,28 @@ class OCREngine:
             conds.append({"op": "count", "kws": markers, "min": min_total})
         return conds[0] if len(conds) == 1 else {"op": "and", "conds": conds}
 
-    def _scene_blocks(self, img, min_score: float) -> list:
-        """场景判定的 OCR 块(一次全图识别, 引擎帧缓存复用)。
+    def _scene_blocks(self, img, min_score: float, region_rel=None) -> list:
+        """场景判定的 OCR 块(默认一次全图识别, 引擎帧缓存复用)。
 
         O0(2026-10-21): 把发起处临时标为 scene —— 这样 `[OCR统计]` 能直接量出「场景判断触发了
         多少次全图 OCR / 多少次拆分」。拆分结果(子块)在本函数里**从未被读取**, 该计数也是
         O1「场景判断不做拆分」的基线。
         O1(2026-10-21): 传 need_split=False —— 场景判定只需要 blocks, 拆分纯属浪费。
+        E1(2026-10-27, zcode-20261028-2): 场景级 `region_rel`(scenes.json 场景条目可选字段)——
+        该场景全部判据锚点所在的固定条带(面积须 <=40% 才生效, 否则按 None 走全图)。区域化后
+        **区域 MISS 即最终判定**(场景判据的轮询负判定占调用大头 —— 若未命中回退全图,
+        每次轮询 MISS 变成"裁片+全图"两次识别反而更慢; 与 find_text 的"未命中回退"语义**有意不同**,
+        正确性前提=region 覆盖该场景全部锚点, 由 scenes.json 注明的实机证据与 C 类实机验证保证;
+        `region_ocr: false` 总开关可一键回退全图)。块坐标仍映射回全图, rule 树叶节点自身的
+        region_rel 过滤语义不变。
         """
         prev = self._ocr_src
         self._ocr_src = "scene"
         try:
+            if region_rel and len(region_rel) == 4 and self.config.get("region_ocr", True):
+                r = self._ocr_frame_region(img, region_rel, need_split=False)
+                if r is not None:
+                    return [b for b in r[0] if b.get("score", 1) >= min_score]
             return [b for b in self._ocr_frame(img, need_split=False)[0]
                     if b.get("score", 1) >= min_score]
         finally:
@@ -390,10 +418,16 @@ class OCREngine:
         print(f"[场景判断] 未知条件 op='{op}', 按 MISS")
         return False
 
-    def judge_scene(self, name: str, img=None, min_score: float = 0.4) -> bool:
+    def judge_scene(self, name: str, img=None, min_score: float = 0.4,
+                    quiet: bool = False) -> bool:
         """按 flows/common/scenes.json 注册表判定当前画面是否为指定场景(第三种判定)。
         判定条件 = 注册表里该场景的 rule 条件树(JSON 声明式, 改条件不动代码, ops 见类头注释);
-        旧版简写(markers/any_of/min_total)自动编译为等价条件树。未注册场景按 MISS(不抛错)。"""
+        旧版简写(markers/any_of/min_total)自动编译为等价条件树。未注册场景按 MISS(不抛错)。
+
+        quiet=True(2026-10-24 P2-5): 不打印逐次判定行, 只累加 `scene_quiet_n`。
+        仅用于**轮询/重试循环内的常态负判定**(如等进园时每秒探一次「好友列表」),
+        由调用方的汇总行保留信息; 一次性判定(如 ensure_home)仍应 quiet=False。
+        """
         entry = self._scenes.get("scenes", {}).get(name)
         if not entry:
             print(f"[场景判断] 场景『{name}』未在 scenes.json 注册, 按 MISS")
@@ -403,10 +437,14 @@ class OCREngine:
             return False
         rule = entry.get("rule") or self._compile_legacy_scene(entry)
         self._ocr_stat["scene_calls"] += 1   # O0: 场景判定调用次数(含帧缓存命中)
-        blocks = self._scene_blocks(img, min_score)
+        # E1(2026-10-27): 场景条目可选 region_rel —— 该场景锚点集中的固定条带, 区域化省全图
+        blocks = self._scene_blocks(img, min_score, entry.get("region_rel"))
         hits = self._kw_hits(blocks, self._rule_kws(rule))
         ok = self._eval_rule(rule, blocks)
-        print(f"[场景判断] {name}: 命中{len(hits)}处{sorted(hits)} -> {'HIT' if ok else 'MISS'}")
+        if quiet:
+            self._ocr_stat["scene_quiet_n"] = self._ocr_stat.get("scene_quiet_n", 0) + 1
+        else:
+            print(f"[场景判断] {name}: 命中{len(hits)}处{sorted(hits)} -> {'HIT' if ok else 'MISS'}")
         return ok
 
     # ---- 用户配置 (data/config.json) ----
@@ -1076,8 +1114,20 @@ class OCREngine:
 
         print(f"[OCR来源] 全图: {_fmt('full')}  |  区域: {_fmt('region')}  |  拆分: {_fmt('split')}")
         print(f"[OCR健康] 拆分缓存命中 {st['split_cache_hit']} 次 · 仅子块命中 {st['split_only_hit']} 次 · "
-              f"场景判断 {st['scene_calls']} 次 · 直调 {st['direct_n']} 次 {st['direct_t']:.2f}s "
-              f"({_fmt('direct', 4)})")
+              f"场景判断 {st['scene_calls']} 次(折叠 {st.get('scene_quiet_n', 0)}) · "
+              f"直调 {st['direct_n']} 次 {st['direct_t']:.2f}s "
+              f"({_fmt('direct', 4)}) · 静默未命中 {st.get('miss_silent_n', 0)} 次(弹窗/启动守卫确认无)")
+        cn = st.get("friend_coarse_n", 0)
+        if cn:
+            ch = st.get("friend_coarse_hit", 0)
+            fn = st.get("friend_fine_n", 0)
+            fh = st.get("friend_fine_hit", 0)
+            total_ok = ch + fh
+            total = cn
+            print(f"[粗OCR] 社交面板「好友」: 粗识 {ch}/{cn} ({ch / cn:.0%}) · "
+                  f"精识兜底 {fh}/{fn} ({(fh / fn if fn else 0):.0%}) · "
+                  f"综合 {total_ok}/{total} ({(total_ok / total if total else 0):.0%})"
+                  f"  ← 粗识成功率偏低时优先改进粗 OCR(用户 2026-10-24: 日志保留, 只统计)")
 
     # ---- 采集: dump_text (2026-10-12 每日任务/手账采集, 用户确认方案; 实机原型见协作区 v7/v8) ----
     def _group_task_rows(self, blocks):
@@ -1229,10 +1279,34 @@ class OCREngine:
     #   ③上报(未见/关不掉如实 print, required=true 时登记软失败)。范式取自 pollin.dismiss_reward_popup。
     REWARD_TITLE_KW = "恭喜获得"
     REWARD_FOOTER_KW = "点击任意处关闭"
+    # 性能批 zcode-20261028-9(两段式区域化): 默认搜索带(相对坐标 [x1,y1,x2,y2], 0~1)。
+    # 依据=三源实测落点一致:「恭喜获得」rel(0.499,0.237) —— 10-27 日志「领取成功界面 @(639,171)」
+    # 与 _recon_daily/v9_popup.png (0.499,0.237)、v10_like_popup.png (0.500,0.239);
+    # 「点击任意处关闭」rel(0.500,0.938) —— v9/v10 两帧一致。标题带面积 0.70*0.30=0.21、
+    # 页脚带面积 0.60*0.15=0.09, 均满足批C 区域化闸门(<=0.40, 见 _ocr_frame_region)。
+    # ⚠ 收益重估(离线实测, 证据见本批 evidence/): 本项目 det 固定 rapidocr 默认
+    #   limit_side_len=736/limit_type=min(venv 内 rapidocr_onnxruntime/config.yaml),
+    #   短边<736px 的宽扁裁片会先被**反向放大**再进 det —— 标题带裁片(984x236→约3069x736)
+    #   耗时≈全图的 0.8~0.95 倍(几乎不省), 页脚带裁片(844x113→约5497x736)为全图的
+    #   1.1~2.4 倍(反而更慢); 「小裁片更快」前提不成立, 故加配置闸门 reward_region_ocr
+    #   **默认关闭**, 保持与旧版全图路径逐字节一致, 待实机 A/B(开闸跑一轮看 [OCR统计])
+    #   复核后再定默认值。仅 region_rel=None(调用方未显式限定)时才可能启用;
+    #   显式 region_rel 依旧原样透传不受影响。
+    REWARD_TITLE_REGION = [0.15, 0.10, 0.85, 0.40]
+    REWARD_FOOT_REGION = [0.20, 0.85, 0.80, 1.0]
 
-    def _reward_popup_point(self, img=None, region_rel=None, kws=None, need_refine: bool = True):
+    def _reward_popup_point(self, img=None, region_rel=None, kws=None, need_refine: bool = True,
+                            log_miss: bool = True):
         """定位奖励弹窗的文字块(标题优先, 页脚兜底)。标题落在弹窗内, 点击无穿透风险。
-        O2: `need_refine=False` 供「只判是否存在」的守卫使用(has_reward_popup), 点击路径保持 True。"""
+        O2: `need_refine=False` 供「只判是否存在」的守卫使用(has_reward_popup), 点击路径保持 True。
+        E1: `log_miss=False` 供 required=false 的弹窗守卫静默(见 reward_dialog)。
+        性能批 zcode-20261028-9: region_rel=None 且配置 reward_region_ocr=true 时, 标题/页脚
+        改为在各自搜索带内找(两段式区域化); 闸门默认关=全图路径与旧版逐字节一致(原因见
+        REWARD_*_REGION 注释的收益重估)。其它自定义关键字即便开闸也维持全图(保守, 无实测落点
+        依据不设带)。回退兜底语义(批C find_text): 带区域搜索零命中时自动回退一次全图重试、
+        结果仍按**原 region 过滤** —— 挽回的是「文字确在区域内但裁片 det 失读」的场景, 不扩大
+        搜索面, 故区域化不制造新 MISS(离线已构造出该挽回实例, 见本批 evidence/)。
+        显式传入 region_rel 时行为与旧版逐字节一致。"""
         img = img if img is not None else self.screenshot()
         if img is None:
             return None
@@ -1241,17 +1315,26 @@ class OCREngine:
         order = ([self.REWARD_TITLE_KW] if self.REWARD_TITLE_KW in kws else []) \
             + [k for k in kws if k != self.REWARD_TITLE_KW]
         for kw in order:
-            pt = self.locate([kw], img=img, min_score=0.4, region_rel=region_rel,
-                             need_refine=need_refine)
+            # zcode-20261028-9: 仅「未显式限定 + 闸门开」时按关键字选带; 显式 region_rel
+            # (含空列表)原样透传, 与旧版行为逐字节一致(_ocr_candidates 对非 4 元素区域本就走全图)。
+            kw_region = region_rel
+            if kw_region is None and self.config.get("reward_region_ocr", False):
+                if kw == self.REWARD_TITLE_KW:
+                    kw_region = self.REWARD_TITLE_REGION
+                elif kw == self.REWARD_FOOTER_KW:
+                    kw_region = self.REWARD_FOOT_REGION
+            pt = self.locate([kw], img=img, min_score=0.4, region_rel=kw_region,
+                             need_refine=need_refine, log_miss=log_miss)
             if pt is not None:
                 return pt
         return None
 
     def has_reward_popup(self, img=None, region_rel=None, keywords=None) -> bool:
         """当前画面是否在屏奖励弹窗(标题「恭喜获得」或页脚「点击任意处关闭」)。公开给 pollin 守卫复用。
-        O2: 只判存在 -> 不拆分(拆分的唯一用途是给点击提供精确坐标)。"""
+        O2: 只判存在 -> 不拆分(拆分的唯一用途是给点击提供精确坐标)。
+        E1: 强静默 —— 调用点都是「有弹窗才做事」的高频守卫, 未命中是常态, 不逐条打印。"""
         return self._reward_popup_point(img=img, region_rel=region_rel, kws=keywords,
-                                        need_refine=False) is not None
+                                        need_refine=False, log_miss=False) is not None
 
     def reward_dialog(self, step: dict) -> bool:
         """步骤 reward_dialog / 公开原语: 等待「领取成功界面」出现 -> 关闭 -> 如实上报。
@@ -1259,7 +1342,7 @@ class OCREngine:
         参数: wait(秒, 等弹窗出现的窗口, 默认 2.0; 0=立即判定一次) / interval(轮询间隔, 默认 0.6)
               tries(最多点击关闭次数, 默认 2) / required(true=未见或关不掉时登记软失败)
               region_rel(限定搜索区域, 可选) / name(日志标签) / keywords(识别词, 可选)
-              quiet(true=未见时不打日志, 供"可能本就没有弹窗"的守卫复用)
+              quiet(true=完全静默: 未见时既不打日志也不登记失败, 供"可能本就没有弹窗"的守卫复用)
         返回 True=见到并已关闭 / False=未见或关不掉。
         注意: 判据仍是 OCR 读到弹窗文字。真领到了但 OCR 未读到时 required=true 会误报 ——
         故 required 只挂"点击前已用模板/OCR 确认过领取按钮"的领取链; 浇水/抽奖/签到等守卫用 false。
@@ -1274,18 +1357,38 @@ class OCREngine:
         label = step.get("name") or "领取成功界面"
         mod = getattr(self, "current_module", None) or ""
 
-        # 1) 等弹窗出现(轮询 OCR; wait=0 只判定一次)
+        # 1) 等弹窗出现(轮询 OCR; wait=0 只判定一次)。B1(2026-10-22): 判定/关闭定位一律
+        #    need_refine=False —— 本原语只需“弹窗在不在”(关闭点用标题中心, 页脚横贯全屏),
+        #    10-22 日志 `拆分: reward_dialog 73` 全是白拆(≈60s/轮)。
+        # E1(2026-10-22 方案A): 逐次未命中日志按 required 分流 —— required=true(点击前已 OCR/模板确认
+        #    过领取按钮)保留 [OCR未命中] 全量证据; required=false(抽奖/浇水/时间礼包等「可能本就没有」)
+        #    逐次静默, 整段结束打一行摘要 + 拟低分提示(见 _near_miss_hint), 避免日志被常态负判定淹没。
+        log_miss = bool(required and not quiet)
+        probes = 0
+
+        def _probe():
+            nonlocal probes
+            probes += 1
+            return self._reward_popup_point(region_rel=region, kws=kws, need_refine=False,
+                                           log_miss=log_miss)
+
         deadline = time.time() + wait
-        pt = self._reward_popup_point(region_rel=region, kws=kws)
+        pt = _probe()
         while pt is None and time.time() < deadline:
             if stop_requested():
                 return False
             time.sleep(interval)
-            pt = self._reward_popup_point(region_rel=region, kws=kws)
+            pt = _probe()
         if pt is None:
             if not quiet:
-                print(f"[领取] {label}: 未见到「领取成功」界面(如实上报)")
-            if required:
+                if required:
+                    print(f"[领取] {label}: 未见到「领取成功」界面(如实上报)")
+                else:
+                    print(f"[弹窗] {label}: 无(检查 {probes} 次)")
+                    hint = self._near_miss_hint(kws)
+                    if hint:
+                        print(f"[弹窗] {label}: 疑似低分块 {hint}(低于 0.4 阈值, 未计为命中)")
+            if required and not quiet:
                 report_failure(mod, f"{label}: 未见到「领取成功」界面(点击可能被吞/未达标)")
             return False
         print(f"[领取] {label}: 见到「领取成功」界面 @({pt.x},{pt.y})")
@@ -1294,21 +1397,38 @@ class OCREngine:
         for i in range(1, tries + 1):
             if stop_requested():
                 return False
-            pt = self._reward_popup_point(region_rel=region, kws=kws)
+            pt = _probe()
             if pt is None:
                 print(f"[领取] {label}: 已关闭")
                 return True
             print(f"[领取] {label}: 第{i}次点击关闭 @({pt.x},{pt.y})")
             self.click_abs(pt.x, pt.y)
             time.sleep(1.2)
-        gone = self._reward_popup_point(region_rel=region, kws=kws) is None
+        gone = _probe() is None
         if gone:
             print(f"[领取] {label}: 已关闭")
         else:
             print(f"[领取] {label}: {tries} 次点击后仍在屏, 如实上报")
-            if required:
+            if required and not quiet:
                 report_failure(mod, f"{label}: 成功界面 {tries} 次点击后仍在屏")
         return gone
+
+    def _near_miss_hint(self, kws, lo=0.2, hi=0.4) -> str:
+        """E1: 静默未命中后的一行「疑似低分」提示。
+
+        静默的前提是「画面里确实没有弹窗」；若有块文字与关键字互为子串、但 OCR 分低于 0.4 阈值
+        (弹窗文字被读残/半透明过渡态), 则可能是**漏判真弹窗**。长期观察名单(B9)靠这行发现。
+        只返回前 3 条, 不改变任何判定结果。
+        """
+        out = []
+        for b in (self._last_miss_blocks or []):
+            txt = (b.get("text") or "").strip()
+            sc = float(b.get("score", 0.0) or 0.0)
+            if not txt or not (lo <= sc < hi):
+                continue
+            if any(kw and (kw in txt or (len(txt) >= 4 and txt in kw)) for kw in (kws or [])):
+                out.append(f"'{txt[:10]}'@{sc:.2f}")
+        return " | ".join(out[:3])
 
     def _claim_scroll(self, step: dict) -> None:
         """领取循环(2026-10-12 v2, 每日任务四步闭环①④): 每屏点尽「领取」-> 关奖励弹窗 -> 上滑;
@@ -1379,8 +1499,10 @@ class OCREngine:
                     self.click_abs(int(cc[0]), int(cc[1]))
                     time.sleep(1.5)
                     # 2) 奖励弹窗(D13 统一原语; 全图 OCR——弹窗可覆盖采集区域外)
+                    # A1(2026-10-22): wait 0.5 → 2.0 —— 10-22 日志 L2265-2269 点击后同帧仍读到
+                    #   「领取」, 0.5s 窗口内未见弹窗就登记失败(假失败); 服务端回包+弹窗动画通常需 1~2s。
                     ok = self.reward_dialog({
-                        "wait": 0.5, "tries": 2, "required": True,
+                        "wait": 2.0, "tries": 2, "required": True,
                         "keywords": close_kws, "name": f"{label} 奖励弹窗",
                     })
                     claimed += 1
@@ -1443,6 +1565,92 @@ class OCREngine:
         branch = step.get("then") if ok else step.get("else")
         if branch:
             self.run_steps(branch, indent=indent + 1)
+
+    def click_row_button(self, step: dict, indent: int) -> None:
+        """行级按钮点击(2026-10-25 浏览热卖): 在**当前帧**重新定位目标任务行并点击行内按钮,
+        不写死任何坐标, 不复用历史采集坐标。
+
+        为什么不复用 claim_scroll 采集的行坐标(2026-10-25 E2E 实锤):
+        采集跨屏滚动后, _last_dump 里各行的坐标是「该行首次被看见那屏」的位置;
+        claim_scroll 结束时列表已滚动到底, 当前画面同 y 位置是**另一行任务**
+        (实测: 采集时「查看最新热卖套装」@y435, 点击时 y435 处已是别的任务行)。
+        按陈旧 y 开行带会锚错行 —— 窄行带防误点的设计反而成了「锚错行的精确执行」。
+
+        因此本原子每轮: 截图 → 全图 OCR → 行分组(_group_task_rows) → 按 keywords 子串找
+        目标行 → 用**本帧**该行进度块中心 y 开窄行带 → 带内实时识别 text 按钮词(如「前往」)
+        并点击该按钮自身的本次命中坐标(规则6合规范式①)。行不在当前画面则滑动翻页找:
+        claim_scroll 结束时列表在底部故先向上翻, 连续两屏行集合不变(到边)则反向,
+        最多 max_rounds 轮; 找到行但带内无按钮时**不点击**并存证, 交调用方处置。
+
+        行带几何: 进度块与按钮同 y(五日留档 Δy≤0.003), 相邻行距 Δy≈0.189,
+        半高默认 0.028(≈行距 1/7)不会跨行; find_text 区域过滤保证回退全图重试的
+        结果仍须落回行带内, 窄带 MISS 不会点到其它行的同名按钮。
+        """
+        pad = "  " * indent
+        row_kws = step.get("keywords") or []
+        row_kws = row_kws if isinstance(row_kws, list) else [row_kws]
+        kws = step.get("text") or ["前往"]
+        kws = kws if isinstance(kws, list) else [kws]
+        half_h = float(step.get("row_half_h", 0.028))
+        x1_rel, x2_rel = (float(v) for v in step.get("row_x_range", (0.60, 1.0)))
+        max_rounds = max(1, int(step.get("max_rounds", 8)))
+        settle = float(step.get("settle", 1.5))
+        swipe = step.get("swipe") or [0.68, 0.60, 0.68, 0.35]
+        sx1, sy1, sx2, sy2 = (float(v) for v in swipe[:4])
+        if not self.screen_h:
+            self.screenshot()
+        direction = -1   # claim_scroll 结束时列表在底部: 先向上翻找目标行
+        prev_sig = None
+        for round_no in range(1, max_rounds + 1):
+            self._check_stop()
+            img = self.screenshot()
+            if img is None:
+                print(f"{pad}[click_row_button] 第{round_no}轮截图失败, 如实放弃")
+                return
+            blocks, _subs = self._ocr_frame(img, need_split=False)
+            rows = self._group_task_rows(blocks)
+            hit = None
+            for d, p, c in rows:
+                if any(k in d for k in row_kws):
+                    hit = (d, p, c)
+                    break
+            if hit:
+                d, p, c = hit
+                ry = c[1] / self.screen_h if self.screen_h else 0.0
+                band = [x1_rel, max(0.0, ry - half_h), x2_rel, min(1.0, ry + half_h)]
+                print(f"{pad}[click_row_button] 第{round_no}轮 行'{d}'={p} y={ry:.4f} "
+                      f"行带={[round(v, 3) for v in band]}")
+                pt = self.locate(kws, img=img, min_score=0.4, region_rel=band,
+                                 exclude=step.get("exclude"))
+                if pt is not None:
+                    print(f"{pad}[click_row_button] {kws} -> ({pt.x},{pt.y}) 本帧行内命中, 点击")
+                    self.click_abs(pt.x, pt.y)
+                    time.sleep(step.get("delay", 1.0))
+                    return
+                print(f"{pad}[click_row_button] 行带内未命中{kws}, 不点击")
+                self.dump_full_frame(f"行按钮未命中:{kws[0]}")
+                if step.get("required"):
+                    report_failure(self._module, f"click_row_button 行'{d}'带内未命中{kws}(required)")
+                    raise BranchAborted(f"click_row_button 行内无按钮 {kws}")
+                return
+            sig = frozenset((d, p) for d, p, _c in rows)
+            if sig == prev_sig and sig:
+                direction = -direction
+                print(f"{pad}[click_row_button] 第{round_no}轮 行集合未变化(到边), 反向翻页")
+            else:
+                print(f"{pad}[click_row_button] 第{round_no}轮 当前画面无{row_kws}行, "
+                      f"{'向下' if direction > 0 else '向上'}翻页")
+            prev_sig = sig
+            if direction > 0:   # 向下翻: 手指从下往上滑(同 claim_scroll swipe)
+                self.swipe_rel(sx1, sy1, sx2, sy2, duration_ms=700)
+            else:               # 向上翻: 手指从上往下滑(反向)
+                self.swipe_rel(sx1, sy2, sx2, sy1, duration_ms=700)
+            time.sleep(settle)
+        print(f"{pad}[click_row_button] {max_rounds} 轮未找到含{row_kws}的行, 如实放弃")
+        self.dump_full_frame(f"行未命中:{row_kws[0] if row_kws else '?'}")
+        if step.get("required"):
+            report_failure(self._module, f"click_row_button {max_rounds}轮未找到行{row_kws}(required)")
+            raise BranchAborted(f"click_row_button 未找到行 {row_kws}")
 
     def _refine_wide_block(self, img, block):
         """O3(2026-10-21): **只对命中的合并块**做一次定向精识(替代全帧预拆)。
@@ -1508,7 +1716,7 @@ class OCREngine:
         return False
 
     def find_text(self, keywords, img=None, top_k=3, exact=False, region_rel=None, exclude=None,
-                  need_refine: bool = True):
+                  need_refine: bool = True, log_miss: bool = True):
         """在截图(或给定图)中按关键字找文字块。返回 OCR 块列表 (含坐标)。
         exact=True 要求块文本与关键字完全相等, 避免『家园』误命中『勇气国花园』等。
         region_rel=[x1,y1,x2,y2] (0~1) 时只保留中心落在该区域内的块 (用于区域限定文本判断)。
@@ -1591,7 +1799,15 @@ class OCREngine:
         if hits:
             self._miss_sig = None  # 命中即复位「同画面未命中折叠」(2026-10-03, 见 _log_ocr_miss)
         if not hits:
-            self._log_ocr_miss(keywords, exact, region_rel, blocks)
+            # E1(2026-10-22): log_miss=False 供弹窗/启动状态等“常态负判定”使用 ——
+            #   不再逐次打印 `[OCR未命中]`; 但保留末帧证据 + 汇总计数,
+            #   便于其他调用方(如 reward_dialog)输出一行摘要与“疑似低分”提示。
+            if log_miss:
+                self._log_ocr_miss(keywords, exact, region_rel, blocks)
+            else:
+                self._ocr_stat["miss_silent_n"] += 1
+                self._last_miss_blocks = list(blocks or [])
+                self._last_miss_keywords = keywords if isinstance(keywords, list) else [keywords]
         return hits
 
     def _log_ocr_miss(self, keywords, exact, region_rel, blocks, max_blocks=10):
@@ -1761,13 +1977,14 @@ class OCREngine:
         return b
 
     def locate(self, keywords, img=None, min_score=0.5, exact=False, region_rel=None, exclude=None,
-               need_refine: bool = True):
+               need_refine: bool = True, log_miss: bool = True):
         """返回第一个命中块的中心绝对坐标 Point; 未命中返回 None。
         命中后更新 last_rel 缓存, 并把**实际命中的原始文字**记到 self._last_match_text,
         便于日志区分「命中就是关键字本身」与「命中的是含关键字的更长文字(如已领取)」。
+        E1: `log_miss=False` 透传给 find_text —— 供「确认没有弹窗/不在更新页」这类高频负判定静默。
         """
         blocks = self.find_text(keywords, img=img, exact=exact, region_rel=region_rel, exclude=exclude,
-                                need_refine=need_refine)
+                                need_refine=need_refine, log_miss=log_miss)
         for b in blocks:
             if b.get("score", 1.0) < min_score:
                 continue
@@ -1934,17 +2151,20 @@ class OCREngine:
         return True
 
     def locate_anchor_color(self, anchor_kw, color_cfg: dict, dx_range=(150, 400), dy_tol=60,
-                            img=None, min_score=0.4) -> "Point | None":
+                            img=None, min_score=0.4, quiet: bool = False) -> "Point | None":
         """锚点 + 颜色复合定位: 先 OCR 找锚点文字(如「提示」), 在锚点右侧/某偏移区域按颜色找目标按钮。
         用于弹窗关闭按钮等「有文字作锚点 + 按钮自身无文字」的场景, 比固定绝对坐标更健壮。
         color_cfg 的 region 若未提供, 则由锚点动态计算。
+        quiet=True: 不打印（P1-2 批2 的“点后复检”用, 避免每次关闭都刷常态 MISS）。
         """
         img = img if img is not None else self.screenshot()
         if img is None:
             return None
-        anchor = self.locate([anchor_kw], img=img, min_score=min_score)
+        anchor = self.locate([anchor_kw], img=img, min_score=min_score,
+                             log_miss=not quiet)
         if anchor is None:
-            print(f"[锚点定位] 未找到锚点文字 '{anchor_kw}'")
+            if not quiet:
+                print(f"[锚点定位] 未找到锚点文字 '{anchor_kw}'")
             return None
         import cv2
         import numpy as np
@@ -2204,16 +2424,44 @@ class OCREngine:
             print(f"{pad} --- 逻辑 {i + 1}/{m} ---")
             self.run_steps(step.get("do", []), indent=indent + 1)
 
-    def _locate_close_by_entry(self, entry: dict, img, w, h) -> "Point | None":
-        """按单条『关闭按钮-特殊逻辑』注册项尝试定位, 返回命中 Point 或 None。"""
+    def _pink_ratio_at(self, pt, img, color_cfg: dict, tol: int) -> float:
+        """统计命中点附近小窗口内「粉色」像素占比。
+
+        2026-10-24: 用于『粉色关闭钮』的二次校验。右上角的「收起菜单」是**纯白箭头**(无文字),
+        与 close_corner_pink.png(白圆+粉花) 的背景/白色轮廓相近, 实测能以 0.865 骗过 0.85 阈值,
+        点下去会收起右侧功能菜单 → 手账/在线礼包等按钮消失, 后续模块整段失效。
+        真关闭钮必然带粉色(粉花或粉圆钮), 模板本体实测粉色占比 5.6%;
+        白色箭头窗口内为 0.0%。用该占比做「纯白图标」否决项。
+        """
+        import cv2
+        import numpy as np
+        h, w = img.shape[:2]
+        x1, y1 = max(0, pt.x - tol), max(0, pt.y - tol)
+        x2, y2 = min(w, pt.x + tol), min(h, pt.y + tol)
+        patch = img[y1:y2, x1:x2]
+        if patch.size == 0:
+            return 0.0
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, np.array(color_cfg["hsv_lower"]),
+                           np.array(color_cfg["hsv_upper"]))
+        return float(cv2.countNonZero(mask)) / float(mask.size)
+
+    def _locate_close_by_entry(self, entry: dict, img, w, h, quiet: bool = False):
+        """按单条『关闭按钮-特殊逻辑』注册项尝试定位。
+        返回 `(Point, channel, score)` 或 None；channel ∈ `anchor` / `template` / `color`。
+        score 仅模板通道有值(1−sqdiff)，供 P1-2 批2 在同通道内排序；
+        锚点(靠标题文字自证)与色块(无相似度概念)不参与跨通道比分数。
+        quiet=True: 不打印（点后复检用，避免常态 MISS 刷屏）。
+        """
         t = entry.get("type")
         color = entry.get("color", {})
         if t == "anchor_color":
-            return self.locate_anchor_color(
+            pt = self.locate_anchor_color(
                 entry.get("anchor", "提示"), color,
                 dx_range=entry.get("dx_range", (150, 400)),
                 dy_tol=entry.get("dy_tol", 60),
-                img=img, min_score=entry.get("min_score", 0.4))
+                img=img, min_score=entry.get("min_score", 0.4), quiet=quiet)
+            return (pt, "anchor", None) if pt is not None else None
         if t in ("corner", "corner_white", "corner_pink_small"):
             # region_rel: [x1,y1,x2,y2] 相对坐标(0~1) → 转绝对坐标
             rx = entry.get("region_rel", [0.82, 0.0, 1.0, 0.18])
@@ -2224,35 +2472,63 @@ class OCREngine:
             tpl = entry.get("template")
             if tpl:
                 rr = [rx[0], rx[1], rx[2], rx[3]]
-                pt = self.locate_template(tpl, img=img,
-                                          region_rel=rr,
-                                          threshold=entry.get("template_threshold", 0.8))
+                got = self.locate_template(tpl, img=img,
+                                           region_rel=rr,
+                                           threshold=entry.get("template_threshold", 0.8),
+                                           return_score=True, quiet=quiet)
+                pt, score = got if got is not None else (None, None)
+                # 2026-10-24: 粉色一致性否决 —— 纯白图标(右上角「收起菜单」箭头)会以中等分
+                # 误命中粉色关闭模板; 模板命中点附近没有粉色块时弃用, 交回下面的颜色兜底。
+                if pt is not None and entry.get("verify_pink") and color:
+                    tol = max(20, int(0.05 * h))
+                    ratio = self._pink_ratio_at(pt, img, color, tol)
+                    need = float(entry.get("verify_pink_ratio", 0.02))
+                    if ratio < need:
+                        if not quiet:
+                            print(f"[关闭按钮] '{entry.get('name', '?')}' 模板命中({pt.x},{pt.y})"
+                                  f" 但附近粉色占比 {ratio:.1%} < {need:.0%}, 判为纯白图标, 弃用")
+                        pt = None
                 if pt is not None:
-                    return pt
+                    return (pt, "template", score)
             cfg = dict(color)
             cfg["region"] = region_abs
-            return self.locate_color(cfg, img=img)
+            pt = self.locate_color(cfg, img=img)
+            return (pt, "color", None) if pt is not None else None
         return None
 
-    def find_all_close_buttons(self, img=None) -> list:
+    def find_all_close_buttons(self, img=None, only_types=None) -> list:
         """遍历『关闭按钮-特殊逻辑』注册表, 返回**所有**可定位到的关闭按钮候选。
         每个已注册类型一个条目 `{"name":..., "type":..., "pt": Point}`, 未命中/异常类型不入列。
         支持的特殊逻辑 type:
           - "anchor_color": 以锚点文字(如「提示」)为锚, 在其右侧 dx_range 内按颜色找关闭按钮
           - "corner": 在画面固定相对区域(如右上角)按颜色找关闭按钮
+
+        2026-10-24(P1-1): 新增 only_types —— **遍历前**跳过不在白名单里的条目。
+        原先 close_dialog 是「先全表定位、后按类型过滤」, 指定 only_types 时仍会白跑其它类型的
+        OCR 锚点(实测每个 close_dialog 多打 3 次 `[锚点定位] 未找到…` + 2~4 次无关模板匹配),
+        一轮 31 分钟日志里 `['跳转页签']` 这类无效锚点探测共 30 次。
         """
         img = img if img is not None else self.screenshot()
         w, h = self.screen_w, self.screen_h
+        allowed = None
+        if only_types is not None:
+            allowed = {only_types} if isinstance(only_types, str) else set(only_types)
         hits = []
         for entry in self.close_buttons:
             name = entry.get("name", "?")
+            if allowed is not None and entry.get("type") not in allowed:
+                continue
             try:
-                pt = self._locate_close_by_entry(entry, img, w, h)
+                res = self._locate_close_by_entry(entry, img, w, h)
             except Exception as e:
                 print(f"[关闭按钮] 逻辑 '{name}' 执行异常: {e}")
-                pt = None
-            if pt is not None:
-                hits.append({"name": name, "type": entry.get("type"), "pt": pt})
+                res = None
+            if res is not None:
+                pt, channel, score = res
+                hits.append({"name": name, "type": entry.get("type"), "pt": pt,
+                             "channel": channel, "score": score,
+                             "score_base": entry.get("score_base"),
+                             "rank_last": bool(entry.get("rank_last")), "entry": entry})
         return hits
 
     def find_close_button(self, img=None) -> "Point | None":
@@ -2266,34 +2542,183 @@ class OCREngine:
             return h["pt"]
         return None
 
+    def _verify_close_candidate(self, hit: dict, wait: float) -> bool:
+        """点后复检: 该候选的“存在证据”是否已消失（P1-2 批2）。
+
+        比全屏帧差更准：只复核**该候选自身**，不受无关动画/滚动干扰。
+          · 锚点 → 标题文字/锚点侧按钮不再命中
+          · 模板 → 同模板在同一区域已低于阈值
+          · 色块 → 该区域不再有匹配色块
+        复检走 `quiet=True`，不刷常态 MISS 日志。
+        """
+        time.sleep(max(0.2, float(wait)))
+        img = self.screenshot()
+        if img is None:
+            return False
+        entry = hit.get("entry")
+        if not entry:
+            return False
+        try:
+            res = self._locate_close_by_entry(entry, img, self.screen_w, self.screen_h, quiet=True)
+        except Exception:
+            res = None
+        return res is None
+
     def close_dialog(self, img=None, anchor_kw="提示", dx_range=(150, 400),
-                     dy_tol=60, min_score=0.4, only_types=None) -> bool:
-        """关闭通用弹窗: 遍历『关闭按钮-特殊逻辑』注册表, 取**首个命中候选**(注册表优先级)点击**一次**。
-        P0-2: 原先会「把命中的每个关闭按钮各点一次」, 一次脱困连点 3~4 处(误触); 现改为只点最可信的一个。
-        候选优先级 = 注册表顺序: 明确文字锚点(anchor_color) > 右上角兜底(corner/corner_white/corner_pink_small)。
-        only_types: 可选, 字符串或类型列表; 仅在注册表中挑选指定类型(如 ["corner","corner_white"])定位,
-                   用于退出整屏面板(右上角关闭)时避免误点「提示」锚点弹窗。None 表示全部类型。
+                     dy_tol=60, min_score=0.4, only_types=None,
+                     verify_wait: float = 1.2, max_tries: int = 2) -> bool:
+        """关闭通用弹窗（P1-2 批2 起：语义优先 → 同通道分数 → 点后复检 → 至多 2 次）。
+
+        选择顺序：
+          1) **Tier 1 锚点**（anchor_color）：靠面板标题文字自证，按注册表顺序先试；
+          2) **Tier 2 其余候选**：模板通道内按模板分降序；纯色块用 `score_base`（默认 0.60，
+             `corner_white` 在 JSON 里配 0.70）——**不做跨通道分数比较**；
+          3) 每次点击后用 `_verify_close_candidate` 复核；未关闭才试下一个，最多 `max_tries` 次。
+
+        共享小✕门控（2026-10-24 用户裁定）：`corner_pink_small` 在通用链里仍参与（大多数面板关闭
+        就是这枚 ✕），但当前帧若命中**户外主界面 / 家园界面 / 好友列表**（这些画面有右上角「收起菜单」
+        且没有面板可关）则跳过；调用方**显式 `only_types`** 点名时不受门控。
+
+        only_types: 可选, 字符串或类型列表; 仅在注册表中挑选指定类型, **遍历前**过滤（P1-1）。
         （anchor_kw/dx_range/dy_tol 参数仅为兼容旧调用保留, 实际以注册表为准。）
-        点击写入知识库。返回是否点击了; 未命中返回 False。
+        返回语义保持旧版：**True=至少点击了一次**（不表示“已验证关闭”），False=没有可用候选。
         """
         img = img if img is not None else self.screenshot()
-        hits = self.find_all_close_buttons(img=img)
-        # 按 only_types 过滤
-        if only_types:
-            allowed = [only_types] if isinstance(only_types, str) else list(only_types)
-            hits = [h for h in hits if h["type"] in allowed]
+        hits = self.find_all_close_buttons(img=img, only_types=only_types)
         if not hits:
             print("[关闭弹窗(only_types)] 未定位到匹配类型的关闭按钮")
             return False
-        # P0-2: 只点注册表顺序最靠前的一个候选, 不连点其余(避免一次脱困误触 3~4 处)
-        h = hits[0]
-        pt = h["pt"]
-        skipped = ", ".join(f"{x['name']}({x['type']})" for x in hits[1:])
-        print(f"[关闭弹窗] 选中 '{h['name']}' ({h['type']}) -> {pt.x},{pt.y}"
-              + (f"; 跳过 {len(hits) - 1} 个次要候选: {skipped}" if skipped else ""))
-        self.click_abs(pt.x, pt.y)
-        self._log_click("弹窗关闭", [anchor_kw], pt, "color")
+
+        def _fmt(x):
+            s = x.get("channel") or "?"
+            if x.get("score") is not None:
+                s += f" {x['score']:.3f}"
+            elif x.get("score_base") is not None:
+                s += f" base {float(x['score_base']):.2f}"
+            return f"'{x['name']}' ({x['type']}, {s})"
+
+        # 主界面门控（2026-10-24 用户裁定「这些画面有右上角关闭菜单按键」）：
+        # 共享小✕ 与纯白圆都可能在 户外/家园/好友列表 命中「收起菜单」白箭头/空白，
+        # 通用链整体跳过它们；显式 only_types 视为调用方已确知面板开着，不受门控。
+        # corner(粉色花钮) 不受门控 —— 它已有 verify_pink 保护，且花园上的家族面板需要它。
+        GATE_TYPES = ("corner_pink_small", "corner_white")
+        gated = False
+        if only_types is None and any(x["type"] in GATE_TYPES for x in hits):
+            on_main = any(self.judge_scene(n, img=img, quiet=True)
+                          for n in ("户外主界面", "家园界面", "好友列表"))
+            if on_main:
+                gated = True
+                print("[关闭弹窗] 当前为主界面(户外/家园/好友列表): 共享小✕/纯白圆不参与(防收起菜单/空白误点)")
+                hits = [x for x in hits if x["type"] not in GATE_TYPES]
+                if not hits:
+                    print("[关闭弹窗] 门控后无候选")
+                    return False
+
+        def _eff(x):
+            if x.get("score") is not None:
+                return float(x["score"])
+            return float(x.get("score_base") or 0.60)
+
+        anchors = [x for x in hits if x.get("channel") == "anchor"]
+        # rank_last 条目(共享小✕)永久排在 Tier 2 末尾：它在任意画面都能 0.9x 命中，
+        # 拿原始分与独立关闭钮比较会反客为主（推荐活动页实测 0.911 > corner 色块 0.60）；
+        # 但“大多数面板关闭就是这枚 ✕”仍然成立 —— 它是唯一候选时照常点击。
+        rest = [x for x in hits if x.get("channel") != "anchor"]
+        rest.sort(key=lambda x: (bool(x.get("rank_last")), -_eff(x)))
+        ordered = anchors + rest
+        # 同点去重：不同条目可能定位到同一颗按钮（corner 色块 / corner_white 白圆 / family 色块），
+        # 重复点同一坐标 = 多余点击 + 双击风险 → 只保留排名最高的一个。
+        tol = max(8, int(0.01 * (self.screen_w or 1280)))
+        uniq = []
+        for h in ordered:
+            if any(abs(h["pt"].x - u["pt"].x) <= tol and abs(h["pt"].y - u["pt"].y) <= tol
+                   for u in uniq):
+                continue
+            uniq.append(h)
+        if len(uniq) < len(ordered):
+            print(f"[关闭弹窗] 合并同点候选 {len(ordered) - len(uniq)} 个(防重复点击同一按钮)")
+        ordered = uniq
+        print("[关闭弹窗] 候选: " + " | ".join(_fmt(x) for x in ordered)
+              + ("  (小✕已门控)" if gated else ""))
+
+        tries = max(1, int(max_tries))
+        clicked = 0
+        for i, h in enumerate(ordered[:tries], 1):
+            pt = h["pt"]
+            print(f"[关闭弹窗] 第{i}次选中 {_fmt(h)} -> {pt.x},{pt.y}")
+            self.click_abs(pt.x, pt.y)
+            self._log_click("弹窗关闭", [anchor_kw], pt, "color")
+            clicked += 1
+            if self._verify_close_candidate(h, verify_wait):
+                print(f"[关闭弹窗] 已确认关闭(复检: {h.get('channel')}证据消失, 等待{verify_wait:g}s)")
+                return True
+            if i < min(tries, len(ordered)):
+                print("[关闭弹窗] 未确认关闭 -> 尝试下一候选")
+        print(f"[关闭弹窗] {clicked} 次点击后仍未确认关闭(如实报出; 返回 True=已点击, 交调用方复核)")
         return True
+
+    def ensure_menu_expanded(self, step: dict | None = None) -> bool:
+        """顶部活动菜单被「收起菜单」折叠时, 点右上角白色箭头展开(2026-10-24 P1-3)。
+
+        背景: 2026-10-24 实机日志里 close_dialog 误点右上角「收起菜单」纯白箭头 → 顶部菜单整排
+        收起, `手账`/`在线礼包` 入口消失 → claim 在线礼包静默跳过、daily 手账整模块失败。
+        误点本身已由 close_buttons.json 的 `verify_pink` 拦住; 本方法负责**已处于收起态**时的自愈
+        (人工误点 / 上一轮遗留 / 其它路径收起)。
+
+        判据(全部满足才动作):
+          ① 常驻入口「推荐活动」在屏 → 确认当前有顶部菜单带;
+          ② 「手账」与「在线礼包」都读不到 → 收起态特征(展开态二者必有其一);
+          ③ 右上角 collapse_menu.png 命中(默认阈值 0.95) 且命中点附近**没有粉色**
+             (占比 < 2%) —— 收起态白箭头实测 0.0%; 推荐活动页右上角的粉色✕实测 8.9%/9.1%,
+             会被粉色否决; 且该✕在区域内的模板分更低, 双保险。
+        动作: 点一次箭头 → 等 1.5s → 复检; 仍未展开只告警(返回 False), 不抛错、不登记失败。
+        返回 True=已展开 / 无需动作(含「疑似收起但箭头未确认」——宁可不动);
+        False=点击箭头后仍未能确认展开(只告警)。
+        """
+        step = step or {}
+        region = step.get("region_rel") or [0.94, 0.035, 1.0, 0.10]
+        threshold = float(step.get("threshold", 0.95))
+        pink_max = float(step.get("pink_max", 0.02))
+        wait = float(step.get("wait", 1.5))
+        img = self.screenshot()
+        if img is None:
+            return True
+        hit = self._kw_hits(self._scene_blocks(img, 0.4), ["推荐活动", "手账", "在线礼包"])
+        if "手账" in hit or "在线礼包" in hit:
+            return True                      # 展开态: 入口可见, 不动
+        if "推荐活动" not in hit:
+            return True                      # 不在有顶部菜单的画面, 不动
+        pink_cfg = {"hsv_lower": [150, 80, 90], "hsv_upper": [175, 255, 255]}
+        got = self.locate_template("collapse_menu.png", img=img,
+                                   region_rel=region, threshold=threshold, return_score=True)
+        pt, tpl_score = got if got is not None else (None, None)
+        if pt is None:
+            print("[菜单] 疑似收起(推荐活动在屏/手账与在线礼包均不可见), 但右上角箭头未命中 -> 不动作")
+            return True
+        # 2026-10-26(codex-20261025-7 实机反馈): 收起态的箭头模板分可达 0.982, 但同窗口内的
+        # 邻近粉色装饰会把粉色占比推到 14.9% -> 旧逻辑错误否决、菜单无法自愈。
+        # 高分(≥0.96)已足以确认是 arrow 本体, 跳过粉色否决; 低分候选仍保留否决
+        # (推荐活动页右上角粉色✕的模板分低于箭头, 由阈值+粉色双保险拦住)。
+        if tpl_score is not None and tpl_score >= 0.96:
+            print(f"[菜单] 箭头模板分 {tpl_score:.3f} ≥ 0.96, 跳过粉色否决(高置信白箭头)")
+        else:
+            ratio = self._pink_ratio_at(pt, img, pink_cfg, max(20, int(0.05 * self.screen_h)))
+            if ratio >= pink_max:
+                print(f"[菜单] 右上角候选({pt.x},{pt.y})粉色占比 {ratio:.1%} ≥ {pink_max:.0%}, "
+                      f"判为粉色关闭钮/其它图标(非收起箭头), 不动作")
+                return True
+        print(f"[菜单] 顶部菜单已收起(手账/在线礼包均不可见) -> 点右上角箭头 ({pt.x},{pt.y}) 展开")
+        self.click_abs(pt.x, pt.y)
+        time.sleep(wait)
+        img2 = self.screenshot()
+        if img2 is None:
+            return False
+        hit2 = self._kw_hits(self._scene_blocks(img2, 0.4), ["手账", "在线礼包"])
+        if hit2:
+            print(f"[菜单] 展开成功: {sorted(hit2)} 已可见")
+            return True
+        print("[菜单] 箭头已点击, 但仍未读到手账/在线礼包 -> 如实告警(不判失败, 交后续步骤)")
+        return False
 
     def click_text(self, keywords, img=None, fallback_rel=None, min_score=0.5, exact=False,
                    region_rel=None, exclude=None, no_fallback=False) -> bool:
@@ -2551,11 +2976,13 @@ class OCREngine:
 
     def locate_template(self, template: str, img=None, threshold=0.8,
                         region_rel=None, scale_range=(0.7, 1.0),
-                        metric: str = "sqdiff") -> "Point | None":
+                        metric: str = "sqdiff", return_score: bool = False, quiet: bool = False):
         """模板匹配定位: 在截图中查找与模板图最匹配的位置(多尺度缩放), 返回模板中心 Point。
         借鉴 MAA TemplateMatch, 用于「纯图形(无文字)按钮」如花形关闭钮/折角切换钮等
         颜色或文字难以唯一化的图形。template: 模板文件名(资源根 resource/template/<template>)。
         region_rel: [x1,y1,x2,y2](0~1) 限定搜索区域提速/避干扰。最高分 < threshold 判未命中。
+        return_score(2026-10-24, P1-2 批1): True 时返回 `(Point, score)` —— 供关闭按钮候选
+        按分数比较/打印; False(默认) 行为与旧版逐字节一致。
         尺度自适应(2026-10-03): 模板均从 1280x720 截图裁切, 引擎按 screen_w/1280 把 scale_range
         整体缩放 —— 720p 下行为与旧版完全一致; 1080p 等更高分辨率自动等效放大搜索尺度
         (实测 close_family 在 1080p 需 scale≈1.5, 旧版 0.7~1.0 全部漏检)。
@@ -2621,15 +3048,18 @@ class OCREngine:
                 best = (score, mmloc[0], mmloc[1], tw_r, th_r)
         if best is None or best[0] < threshold:
             top = best[0] if best else 0.0
-            print(f"[模板匹配] {template} 最高分 {top:.3f} < 阈值 {threshold}, 未命中")
+            if not quiet:
+                print(f"[模板匹配] {template} 最高分 {top:.3f} < 阈值 {threshold}, 未命中")
             return None
         mval, mx, my, tw_r, th_r = best
         sw, sh = img.shape[1], img.shape[0]
         cx, cy = mx + tw_r // 2, my + th_r // 2  # 原图模板中心
         cx = max(0, min(sw - 1, cx))
         cy = max(0, min(sh - 1, cy))
-        print(f"[模板匹配] {template} score={mval:.3f} -> ({cx},{cy})")
-        return Point(cx, cy, sw, sh)
+        if not quiet:
+            print(f"[模板匹配] {template} score={mval:.3f} -> ({cx},{cy})")
+        point = Point(cx, cy, sw, sh)
+        return (point, float(mval)) if return_score else point
 
     def locate_template_all(self, template: str, img=None, threshold=0.8,
                             region_rel=None, scale_range=(0.7, 1.0),
@@ -2706,18 +3136,28 @@ class OCREngine:
 
     def click_template(self, template: str, img=None, threshold=0.8,
                        region_rel=None, scale_range=(0.7, 1.0), fallback_rel=None,
-                       no_fallback=False, metric: str = "sqdiff") -> "Point | None":
+                       no_fallback=False, metric: str = "sqdiff",
+                       offset_rel=None) -> "Point | None":
         """模板匹配点击: locate_template 命中则点击并记知识库(method=template)。
         未命中且有 fallback_rel 时回退到该相对坐标点击。返回命中的 Point, 否则 None。
         no_fallback=True 时忽略 fallback_rel: 未命中就如实返回 None, 不用回退坐标盲点
         (高危按钮「切换账号」类, 见 click_text 同名参数)。
         metric: 透传 locate_template("sqdiff"|"ccoeff"), 低对比模板用 ccoeff 防空白假阳性。
+        offset_rel(2026-10-24): 命中后按屏幕相对比例偏移再点, 如 [-0.033,0.033]。
+        用于「先匹配小徽标定位、再点它旁边的实体按钮」——点击点仍由**本次实时命中推导**,
+        不是写死坐标(规则 6 合规); 偏移日志会明确标注。
         """
         pt = self.locate_template(template, img=img, threshold=threshold,
                                   region_rel=region_rel, scale_range=scale_range,
                                   metric=metric)
         if pt is not None:
             self._last_locate_source = "template"
+            if offset_rel:
+                px = int(pt.x + offset_rel[0] * (self.screen_w or 1280))
+                py = int(pt.y + offset_rel[1] * (self.screen_h or 720))
+                print(f"[模板匹配] {template} 命中({pt.x},{pt.y}) + 偏移{offset_rel} "
+                      f"-> ({px},{py}) (偏移点由本次命中推导, 非写死坐标)")
+                pt = Point(px, py, self.screen_w, self.screen_h)
             self.click_abs(pt.x, pt.y)
             self._log_click(template, [template], pt, "template", category=self._step_category)
             return pt
@@ -2740,7 +3180,8 @@ class OCREngine:
         if stop_requested():
             raise StopRequested("收到停止请求, 中断流程")
 
-    def wait_text(self, keywords, timeout=30, interval=1.0):
+    def wait_text(self, keywords, timeout=30, interval=1.0, need_refine: bool = True,
+                  min_score: float = 0.5):
         """轮询等待某文字出现, 返回 Point; 超时返回 None。
 
         超时语义(2026-10-07 用户决策「等待时间不计 OCR」): timeout 只累计**纯等待**
@@ -2748,6 +3189,8 @@ class OCREngine:
         背景: 10-07 22:49 实测登录页轮播动画打死帧缓存, 单轮全图 OCR 5.6s,
         旧墙钟语义下 startup 10s 窗口被 OCR 吃掉 83%(仅 2 次探测), 冷加载误报即此。
         wait_text / wait_text_gone / wait_scene 三处循环骨架同步此语义。
+        O2(2026-10-22): `need_refine=False` 供启动页状态守卫等纯判断调用跳过拆块。
+        2026-10-23: `min_score` 步骤参数接通(此前 JSON 里写 min_score 会被静默忽略, 同 click_text 旧坑)。
         """
         kws = keywords if isinstance(keywords, list) else [keywords]
         waited, probes = 0.0, 0
@@ -2755,7 +3198,7 @@ class OCREngine:
             self._check_stop()
             img = self.screenshot()
             probes += 1
-            pt = self.locate(kws, img=img)
+            pt = self.locate(kws, img=img, min_score=min_score, need_refine=need_refine)
             if pt is not None:
                 # 批B: 登记守卫, 供紧邻下一步 click_text 复用该命中点位(免二次截图+全图 OCR)。
                 self._remember_guard(kws, pt, False, None, 0.5)
@@ -2768,8 +3211,13 @@ class OCREngine:
         report_failure(self._module, f"等待文本 {kws} 超时 纯等待{timeout}s/{probes}次探测")
         return None
 
-    def wait_text_gone(self, keywords, timeout=30, interval=1.0):
-        """轮询等待某文字消失, 返回 True; 超时返回 False。超时语义同 wait_text(纯等待时钟)。"""
+    def wait_text_gone(self, keywords, timeout=30, interval=1.0, require_seen=False):
+        """轮询等待某文字消失, 返回 True; 超时返回 False。超时语义同 wait_text(纯等待时钟)。
+
+        E2(2026-10-27): `require_seen=True` 时, **首次探测即未见** = 该文字从未出现过 ——
+        意味着"已经离开原界面"的前提不成立(前置动作很可能没生效), 返回 False 并如实打印,
+        **不再**打出误导性的"[消失成功]"(2026-10-26 双日志实锤: 行未命中后 wait_text_gone
+        首探即"消失成功", 把链的空转伪装成了正常完成)。缺省 False 保持旧行为。"""
         kws = keywords if isinstance(keywords, list) else [keywords]
         waited, probes = 0.0, 0
         while waited < timeout:
@@ -2777,6 +3225,10 @@ class OCREngine:
             img = self.screenshot()
             probes += 1
             if self.locate(kws, img=img, min_score=0.3, need_refine=False) is None:
+                if require_seen and probes == 1:
+                    print(f"[消失跳过] {kws} (require_seen: 首探即未见=文字从未出现, "
+                          f"前置动作可能未生效, 不假装离开成功)")
+                    return False
                 print(f"[消失成功] {kws} (第{probes}次探测)")
                 return True
             time.sleep(interval)
@@ -2784,6 +3236,179 @@ class OCREngine:
         print(f"[消失超时] {kws} (纯等待{timeout}s, 探测{probes}次)")
         self.dump_full_frame(f"消失超时:{kws}")
         report_failure(self._module, f"等待文本 {kws} 消失超时 纯等待{timeout}s/{probes}次探测")
+        return False
+
+    def wait_update_done(self, step: dict) -> bool:
+        """步骤 wait_update_done: 等待游戏资源更新完成并自动进入登录页。
+
+        实机依据(2026-10-23 用户授权探测, 未做额外点击):
+          - 更新提示: 弹窗「有需要更新的内容，共57个，109.4MB」+「确定」; 提示在屏时先点确定。
+          - 下载期: 底部「开始更新资源..(N/57)」+ 一位小数百分比(20.7%) + 「736KB/S (22.3MB/109.4MB)」。
+          - 下载完成后**自动进入登录页**(「登录」「登录其他账号」「186****61」), 无完成弹窗、无重启。
+          - ⚠ 进度带不能取 0.78~0.93(108px@720p): RapidOCR 检不出; 0.70~0.98(202px) 可稳定读出。
+
+        参数: timeout(墙钟秒, 默认 600) / interval(默认 4)
+              progress_region_rel / prompt_region_rel / done_region_rel
+              prompt_keywords / confirm_keywords / confirm_tries
+              progress_keywords / done_keywords / update_done_keywords / error_keywords
+              max_error_retries / stall_warn / name
+        返回 True=已到登录页 / False=超时、提示点不掉或更新异常(均如实 report_failure)。
+        注意: 本步骤 timeout 是**墙钟**(含 OCR/点击), 与 wait_text 的纯等待时钟不同 ——
+              更新时间不可预估, 且进度/点击本身要算进预算。
+        """
+        timeout = max(1.0, float(step.get("timeout", 600)))
+        interval = max(0.5, float(step.get("interval", 4.0)))
+        progress_region = step.get("progress_region_rel") or [0.0, 0.70, 1.0, 0.98]
+        prompt_region = step.get("prompt_region_rel") or [0.25, 0.24, 0.75, 0.82]
+        done_region = step.get("done_region_rel") or [0.20, 0.30, 0.90, 0.75]
+        prompt_kws = step.get("prompt_keywords") or ["有需要更新的内容"]
+        confirm_kws = step.get("confirm_keywords") or ["确定"]
+        active_kws = step.get("progress_keywords") or ["开始更新资源", "正在检测资源更新"]
+        done_kws = step.get("done_keywords") or ["登录", "点击进入游戏", "进入游戏"]
+        done_more_kws = step.get("update_done_keywords") or ["更新完成", "重启游戏", "重新启动", "更新完毕"]
+        error_kws = step.get("error_keywords") or ["更新失败", "网络异常", "下载失败"]
+        confirm_tries = max(0, int(step.get("confirm_tries", 3)))
+        max_error_retries = max(0, int(step.get("max_error_retries", 2)))
+        stall_warn = max(0.0, float(step.get("stall_warn", 120)))
+        label = step.get("name") or "资源更新"
+        mod = getattr(self, "current_module", None) or ""
+        pct_re = re.compile(r"(\d{1,3}(?:\.\d)?)\s*%")
+        mask_re = re.compile(r"\d{3}\*{4}\d{2}")
+
+        def _text(blocks) -> str:
+            return " ".join(b.get("text", "") for b in blocks)
+
+        deadline = time.time() + timeout
+        confirm_used = confirm_miss = 0
+        error_retries = 0
+        last_pct = None
+        max_pct = -1.0
+        last_change = time.time()
+        unknown_n = 0
+        last_unknown = ""
+        probes = 0
+
+        while time.time() < deadline:
+            self._check_stop()
+            img = self.screenshot()
+            if img is None:
+                time.sleep(min(interval, 1.0))
+                continue
+            probes += 1
+
+            # 1) 更新提示仍在屏 -> 点「确定」(最多 confirm_tries 次; 点不掉如实失败)
+            pb = self._ocr_candidates(img, prompt_region, need_refine=False)[0]
+            if any(k in _text(pb) for k in prompt_kws):
+                if confirm_used >= confirm_tries:
+                    print(f"[更新] {label}: 更新提示仍在屏, 「确定」已点 {confirm_used} 次仍未生效")
+                    self.dump_full_frame(f"更新提示无法关闭:{label}")
+                    report_failure(mod, f"{label}: 更新提示无法关闭(确定点击 {confirm_used} 次未生效)")
+                    return False
+                pt = self.locate(confirm_kws, img=img, min_score=0.5,
+                                 region_rel=prompt_region, need_refine=False)
+                if pt is None:
+                    confirm_miss += 1
+                    print(f"[更新] {label}: 更新提示在屏但未定位到「确定」({confirm_miss}/3)")
+                    if confirm_miss >= 3:
+                        self.dump_full_frame(f"更新提示无确定:{label}")
+                        report_failure(mod, f"{label}: 更新提示在屏但 OCR 定位不到「确定」")
+                        return False
+                    time.sleep(interval)
+                    continue
+                confirm_miss = 0
+                confirm_used += 1
+                print(f"[更新] {label}: 更新提示在屏 -> 第{confirm_used}次点击「确定」@({pt.x},{pt.y})")
+                self.click_abs(pt.x, pt.y)
+                time.sleep(1.5)
+                continue
+
+            # 2) 下载进度带(区域够高, 见 docstring 的 108px 教训)
+            rb = self._ocr_candidates(img, progress_region, need_refine=False)[0]
+            rtext = _text(rb)
+            m = pct_re.search(rtext)
+            pct = float(m.group(1)) if m else None
+            if pct is not None or any(k in rtext for k in active_kws):
+                unknown_n = 0
+                last_unknown = ""
+                if pct is not None:
+                    max_pct = max(max_pct, pct)
+                    if last_pct is None:
+                        print(f"[更新] {label}: 下载中 {pct:g}%")
+                        last_change = time.time()
+                    elif pct != last_pct:
+                        # 2026-10-24(P3-6): 回跳只记「读数变化」, 不伪装成正常进度推进。
+                        # 实机出现过 82.6% -> 8%(疑似识别误差/单文件进度与总进度混读),
+                        # 完成判据用的是登录页, 与进度读数无关。
+                        if pct < last_pct:
+                            print(f"[更新] {label}: 进度读数回跳 {last_pct:g}% -> {pct:g}%"
+                                  f"(识别误差/多进度源, 仅记录, 不改变完成判据)")
+                        else:
+                            print(f"[更新] {label}: 进度 {last_pct:g}% -> {pct:g}%")
+                        last_change = time.time()
+                    last_pct = pct
+                    if stall_warn and time.time() - last_change >= stall_warn:
+                        print(f"[更新] {label}: 进度停滞({pct:g}%, "
+                              f"已 {int(time.time() - last_change)}s 无变化), 继续等待")
+                        last_change = time.time()
+                elif last_pct is None:
+                    print(f"[更新] {label}: 更新进行中")
+                    last_change = time.time()
+                time.sleep(interval)
+                continue
+
+            # 3) 登录页(正向完成判据)
+            db = self._ocr_candidates(img, done_region, need_refine=False)[0]
+            dtext = _text(db)
+            if any(k in dtext for k in done_kws) or mask_re.search(dtext):
+                print(f"[更新] {label}: 已进入登录界面 (探测{probes}次, 最高进度"
+                      f"{f'{max_pct:g}%' if max_pct >= 0 else '未读到'})")
+                return True
+
+            # 4) 底部无进度且未到登录页 -> 每 2 次探测做一次全屏 OCR 判过渡/异常
+            unknown_n += 1
+            if unknown_n >= 2:
+                fb = self._ocr_frame(img, need_split=False)[0]
+                ftext = _text(fb)
+                if ftext != last_unknown:
+                    print(f"[更新] {label}: 过渡画面 -> 全屏 OCR: "
+                          + " | ".join(b.get("text", "") for b in fb[:10]))
+                    last_unknown = ftext
+                if any(k in ftext for k in error_kws):
+                    if error_retries < max_error_retries:
+                        # exact: 「重试」是子串高发词(如「请重试」是说明文字, 不是按钮), 只认等文本块
+                        pt = self.locate(["重试"], img=img, min_score=0.4, exact=True,
+                                         need_refine=False)
+                        if pt is not None:
+                            error_retries += 1
+                            print(f"[更新] {label}: 更新异常 -> 第{error_retries}次点击「重试」"
+                                  f"@({pt.x},{pt.y})")
+                            self.click_abs(pt.x, pt.y)
+                            time.sleep(2.0)
+                            unknown_n = 0
+                            continue
+                    print(f"[更新] {label}: 更新异常且无法重试, 如实上报")
+                    self.dump_full_frame(f"更新异常:{label}")
+                    report_failure(mod, f"{label}: 更新异常(重试 {error_retries} 次仍失败)")
+                    return False
+                if any(k in ftext for k in done_more_kws):
+                    pt = self.locate(confirm_kws, img=img, min_score=0.4, need_refine=False)
+                    if pt is not None:
+                        print(f"[更新] {label}: 出现更新完成提示 -> 点击「确定」@({pt.x},{pt.y})")
+                        self.click_abs(pt.x, pt.y)
+                        time.sleep(2.0)
+                        unknown_n = 0
+                        continue
+                if any(k in ftext for k in done_kws) or mask_re.search(ftext):
+                    print(f"[更新] {label}: 已进入登录界面 (全屏复核)")
+                    return True
+                unknown_n = 0
+
+            time.sleep(interval)
+
+        last = f"{max_pct:g}%" if max_pct >= 0 else "未读到"
+        print(f"[更新] {label}: 等待超时 {timeout:g}s (最后进度 {last}, 探测{probes}次)")
+        self.dump_full_frame(f"更新超时:{label}")
+        report_failure(mod, f"{label}: 资源更新等待超时 {timeout:g}s(最后进度 {last})")
         return False
 
     def detect_scene(self, timeouts: dict) -> str:
@@ -2801,13 +3426,26 @@ class OCREngine:
         return hits[0] if hits else "unknown"
 
     def run_steps(self, steps: list, indent=1):
-        """顺序执行一组 steps, 支持 list 形式的嵌套(用于 loop 子块)。返回达到的最大步骤索引。"""
+        """顺序执行一组 steps, 支持 list 形式的嵌套(用于 loop 子块)。返回达到的最大步骤索引。
+
+        E2(2026-10-27): 步骤抛出 BranchAborted(required 步骤失败)时, 中止**当前这一层列表**
+        的剩余步骤并打印一行短路日志; 上一层的后续步骤照常执行 —— 使「任务链首步失败即放弃整链,
+        不空跑链内收尾步骤」成为流程可声明的能力(required 缺省 False, 既有流程零行为变化)。
+        """
         for step in steps:
             if isinstance(step, list):
                 # 嵌套块列表
-                self.run_steps(step, indent=indent + 1)
+                try:
+                    self.run_steps(step, indent=indent + 1)
+                except BranchAborted:
+                    print("  " * indent + "[分支短路] 子列表被 required 步骤中止, 继续当前列表后续步骤")
                 continue
-            self.run_step(step, indent=indent)
+            try:
+                self.run_step(step, indent=indent)
+            except BranchAborted as e:
+                print("  " * indent + f"[分支短路] required 步骤失败({e or '未附原因'}), "
+                      f"中止当前列表剩余 {len(steps) - steps.index(step) - 1} 步, 继续上层后续步骤")
+                break
         return 0
 
     def run_step(self, step: dict, indent=1):
@@ -2836,7 +3474,32 @@ class OCREngine:
                 s_type in ("click_text", "click_rel", "click_account_tail")):
             self._step_category = step["category"]
         if s_type == "wait_text":
-            self.wait_text(kws, timeout=step.get("timeout", 30), interval=step.get("interval", 1.0))
+            self.wait_text(kws, timeout=step.get("timeout", 30), interval=step.get("interval", 1.0),
+                           need_refine=step.get("need_refine", True),
+                           min_score=step.get("min_score", 0.5))
+        elif s_type == "dump_frame":
+            # G1(2026-10-27, zcode-20261028-7): 手动故障存证步骤 —— 在流程任意位置对当前画面
+            # 做一次全量 OCR + 存证(走引擎 dump_full_frame 既有通道: data/fail_cache/, ASCII slug,
+            # index.jsonl 墓碑)。用途=取证未知弹窗(如花宝道具「购买道具」弹窗)供后续批次定案,
+            # 纯观测零点击。tag 经 slug 化, 中文原文保留在日志与 index。
+            self.dump_full_frame(str(step.get("tag") or "手动存证"))
+        elif s_type == "wait_text_gone":
+            # 等待某文字消失(2026-10-25): 用于「离开原界面」类守卫, 比 wait_text(等新界面文字)
+            # 更抗假阳性 —— 原界面文字消失 = 真的离开了原界面。
+            # E2(2026-10-27): require_seen=首探即未见按失败处理; required=失败即短路当前分支。
+            ok_gone = self.wait_text_gone(kws, timeout=step.get("timeout", 30),
+                                          interval=step.get("interval", 1.0),
+                                          require_seen=bool(step.get("require_seen", False)))
+            if step.get("required") and not ok_gone:
+                report_failure(self._module, f"wait_text_gone {kws} 未确认离开(required)")
+                raise BranchAborted(f"wait_text_gone {kws} 未确认离开")
+        elif s_type == "wait_update_done":
+            # 资源更新守卫(2026-10-23): 提示在屏先点确定 -> 等下载/解压 -> 自动到登录页。
+            # 失败按 abort_on_fail 中止本模块: 更新没完成时继续走登录链只会触发切号 abort / 一串假失败。
+            ok = self.wait_update_done(step)
+            if not ok and step.get("abort_on_fail"):
+                raise FlowFailed(step.get("abort_reason")
+                                 or "资源更新未完成/异常, 按 abort_on_fail 中止本模块")
         elif s_type == "click_text":
             # min_score / region_rel 需要透传: 此前只传 kws/fallback_rel/exact,
             # 导致流程 JSON 里写的 "min_score": 0.4 与 region_rel 被静默忽略。
@@ -2871,6 +3534,7 @@ class OCREngine:
                 fallback_rel=step.get("fallback_rel"),
                 no_fallback=step.get("no_fallback", False),
                 metric=step.get("metric", "sqdiff"),
+                offset_rel=step.get("offset_rel"),
             )
             ok = pt is not None
             print(f"{pad}[click_template] {step.get('template')} -> {'ok' if ok else 'fail'}")
@@ -2929,7 +3593,12 @@ class OCREngine:
             # 支持 region_rel=[x1,y1,x2,y2] (0~1) 限定时只在指定区域做文本判断
             region_rel = step.get("region_rel")
             min_score = step.get("min_score", 0.5)
-            pt = self.locate(kws, min_score=min_score, region_rel=region_rel)
+            # B2/B3/B4(2026-10-22): 纯分支判定可传 need_refine=false 跳过拆块。
+            #   拆块只为「紧邻下一步 click_text 复用命中点」服务(见 _remember_guard/_take_guard_point,
+            #   守卫 seq 只允许紧邻一步); 若 then/else 首步与顶层后继都不点同词, 拆块纯浪费。
+            pt = self.locate(kws, min_score=min_score, region_rel=region_rel,
+                             need_refine=bool(step.get("need_refine", True)),
+                             log_miss=bool(step.get("log_miss", True)))
             hit = pt is not None
             if hit:
                 # 批B: 命中后登记守卫, 供紧邻下一步 click_text 复用该点位(免二次截图+全图 OCR)。
@@ -3078,6 +3747,17 @@ class OCREngine:
             print(f"{pad}[if_time] 当前 {hour} 时, 窗口 {start}-{end} -> {'TRUE' if hit else 'FALSE'}")
             if branch:
                 self.run_steps(branch, indent=indent + 1)
+        elif s_type == "if_weekday":
+            # 星期几分支(2026-10-25 守望兔子): weekday() 0=周一...6=周日, days 列出开放日。
+            # 守望兔子周五~周日开放 => days=[5,6,0]; 非开放日走 else 零开销跳过, 不进家族活动页空转。
+            import datetime
+            days = {int(d) % 7 for d in step.get("days", [5, 6, 0])}
+            today = datetime.datetime.now().weekday()
+            hit = today in days
+            branch = step.get("then") if hit else step.get("else")
+            print(f"{pad}[if_weekday] weekday={today}(0=周一), 开放日{sorted(days)} -> {'TRUE' if hit else 'FALSE'}")
+            if branch:
+                self.run_steps(branch, indent=indent + 1)
         elif s_type == "loop_text":
             # 循环直到找不到某文本: 只要还能识别到 text(领取等动态按钮)就重复执行 do,
             # 识别不到则退出。用于"有'领取'就点, 领完按钮消失即自然停止"的领取循环。
@@ -3170,6 +3850,12 @@ class OCREngine:
             if isinstance(res, dict) and any(v is None for v in res.values()):
                 report_failure(self._module, f"好友采粉: 有类别未跑通(打开好友列表失败) 结果={res}")
             time.sleep(step.get("delay", 1.0))
+        elif s_type == "ensure_menu":
+            # 2026-10-24(P1-3): 顶部活动菜单被「收起菜单」折叠时自愈(点右上角白箭头展开)。
+            # 只做一次探测+至多一次点击, 失败只告警不登记失败。
+            ok = self.ensure_menu_expanded(step)
+            print(f"{pad}[ensure_menu] 顶部菜单 -> {'ok' if ok else '未确认展开(已告警)'}")
+            time.sleep(step.get("delay", 0.5))
         elif s_type == "ensure_home":
             # 归位守卫: 确保回到自己家园主界面(pollin.ensure_home: 关提示框→离开好友花园→
             # 关好友列表→关家族面板→右上角兜底)。用于模块开头, 防止上一模块停在别处导致整段空跑
@@ -3188,6 +3874,87 @@ class OCREngine:
             res = run_community_like(self)
             print(f"{pad}[community_like] 结果 {res}")
             time.sleep(step.get("delay", 1.0))
+        elif s_type == "click_row_button":
+            # 行级按钮点击(2026-10-25 浏览热卖): 手账任务行内按钮, 行锚定 + 行内实时识别,
+            # 见 click_row_button docstring。识别未命中不点击, 交后续步骤处置。
+            self.click_row_button(step, indent)
+        elif s_type == "slide":
+            # 滑动手势(2026-10-25 花宝照顾第三部分): 把选中道具拖到目标上执行使用。
+            # 规则6边界(2026-10-06 用户裁定, swipe 同源): 滑动是**手势动作**, 没有「识别目标」,
+            # start_rel/end_rel 是手势参数(相对比例 0~1)而非被禁的「直接坐标点击」;
+            # 点击类操作仍必须 OCR/template 实时定位。花宝照顾场景: 起点=左栏道具(固定栏位),
+            # 终点=花宝本体(角色区中心); 道具使用成功与否由数量计数复核(见 REPORT)。
+            sx, sy = (float(v) for v in step.get("start_rel", (0, 0)))
+            ex, ey = (float(v) for v in step.get("end_rel", (0, 0)))
+            dur = int(step.get("duration_ms", 600))
+            self.swipe_rel(sx, sy, ex, ey, duration_ms=dur)
+            time.sleep(step.get("delay", 1.5))
+        elif s_type == "count_probe":
+            # 数量计数探针(2026-10-25 花宝照顾, 用户判据): 读 region_rel 中心附近的道具数量数字,
+            # store 到具名变量(step["as"]) 供后续 if_count 变化判定; 供「使用前/使用后」对比。
+            # 复用 parse_count_at(关键字:N/纯数字就近匹配, 607/872 角标实测 0.73/0.75 可读)。
+            n = self.parse_count_at(step.get("region_rel"), tol=int(step.get("tol", 60)))
+            self._count_probes[str(step.get("as", "count"))] = n
+            print(f"{pad}[count_probe] {step.get('as', 'count')} = {n} (region {step.get('region_rel')})")
+            time.sleep(step.get("delay", 0.5))
+        elif s_type == "if_count":
+            # 数量变化判定(2026-10-25 用户判据「数量比点击前少1=使用成功」):
+            # cond 语义: "minus1"=当前比 before 少 1(使用成功), "changed"=当前!=before, "same"=相等。
+            # ⚠ 尾位遮挡(2026-10-25 实测定型): 使用成功后反馈气泡(「挠痒痒/增加N点年龄点数」)
+            #   长期驻留在角标右下, 数字尾位被圆角遮住 → OCR 只读到前缀(如 597→59)。
+            #   故 minus1 判定兼容「前缀」: cur 是 before 的前缀(str 前缀匹配)亦判 TRUE ——
+            #   数量减少只发生在尾位(如 597→596 前缀 59 不变, 597→59 遮挡后前缀匹配),
+            #   未使用时读数恢复完整(596→597 前缀不匹配会误判?) —— 否: 未使用时无气泡,
+            #   读数=完整 before 同值, 不满足前缀条件。取「len(cur)<len(before) 且前缀匹配」。
+            cur = self.parse_count_at(step.get("region_rel"), tol=int(step.get("tol", 60)))
+            before = self._count_probes.get(str(step.get("before", "count")))
+            cond = str(step.get("cond", "minus1"))
+            if cur is None or before is None:
+                ok = bool(step.get("on_unread", False))
+                print(f"{pad}[if_count] 读数失败 cur={cur} before={before} -> {'TRUE(on_unread)' if ok else 'FALSE'}")
+            elif cond == "minus1":
+                sb, sc = str(before), str(cur)
+                ok = (cur == before - 1) or (len(sc) < len(sb) and sb.startswith(sc))
+            elif cond == "changed":
+                ok = (cur != before)
+            elif cond == "same":
+                ok = (cur == before)
+            else:
+                ok = False
+            print(f"{pad}[if_count] {step.get('before')}={before} -> cur={cur} cond='{cond}' -> {'TRUE' if ok else 'FALSE'}")
+            branch = step.get("then") if ok else step.get("else")
+            if branch:
+                self.run_steps(branch, indent=indent + 1)
+        elif s_type == "touch_drag":
+            # 分段慢速拖拽(2026-10-25 花宝照顾第三部分实测定型): 引擎 post_touch_down/move/up
+            # 原语组合 —— 按下 → 0.35s 停顿 → 8 段步进(每段 0.15s) → 0.35s 落点停顿 → 抬起。
+            # 为什么不用 swipe_rel: 实测 A 快速 swipe(200ms)/B 慢速 swipe(2000ms)/C 单次
+            # post_touch_down+move+up 全部无效(数量不变), 仅「分段慢速拖 + 双端停顿」稳定 -1
+            # (pat 3/3, touch 1/1, 2026-10-25 实机)。手势参数(相对比例)非点击坐标(规则6边界,
+            # 2026-10-06 用户裁定); 终点为花宝本体角色区。
+            sx, sy = (float(v) for v in step.get("start_rel", (0, 0)))
+            ex, ey = (float(v) for v in step.get("end_rel", (0, 0)))
+            press_pause = float(step.get("press_pause", 0.35))
+            steps_n = max(2, int(step.get("steps", 8)))
+            step_pause = float(step.get("step_pause", 0.15))
+            end_pause = float(step.get("end_pause", 0.35))
+            if not self.screen_w or not self.screen_h:
+                self.screenshot()
+            x1, y1 = int(sx * self.screen_w), int(sy * self.screen_h)
+            x2, y2 = int(ex * self.screen_w), int(ey * self.screen_h)
+            ctrl = self._ctrl
+            ctrl.post_touch_down(x1, y1).wait()
+            time.sleep(press_pause)
+            for i in range(1, steps_n + 1):
+                xi = x1 + (x2 - x1) * i // steps_n
+                yi = y1 + (y2 - y1) * i // steps_n
+                ctrl.post_touch_move(xi, yi).wait()
+                time.sleep(step_pause)
+            time.sleep(end_pause)
+            ctrl.post_touch_up().wait()
+            print(f"{pad}[touch_drag] ({x1},{y1})->({x2},{y2}) 分段{steps_n}段 "
+                  f"(press {press_pause}s / step {step_pause}s / end {end_pause}s)")
+            time.sleep(step.get("delay", 2.5))
         elif s_type == "fail_flow":
             # 流程主动判失败: 如实中止本模块(不再往下执行, 也不假装成功)。
             # 用于「前置条件不满足, 继续执行会跑出一整轮假结果」的场景——
@@ -3371,7 +4138,14 @@ class OCREngine:
 
             print(f"[{_ts()}] [OCR来源] 整轮 全图: {_tot('full')} | 拆分: {_tot('split')}")
             print(f"[{_ts()}] [OCR健康] 整轮 拆分缓存命中 {t['split_cache_hit']} 次 · "
-                  f"仅子块命中 {t['split_only_hit']} 次 · 场景判断 {t['scene_calls']} 次")
+                  f"仅子块命中 {t['split_only_hit']} 次 · 场景判断 {t['scene_calls']} 次"
+                  f"(折叠 {t.get('scene_quiet_n', 0)}) · "
+                  f"静默未命中 {t.get('miss_silent_n', 0)} 次(弹窗/启动守卫确认无)")
+            if t.get("friend_coarse_n"):
+                cn, ch = t["friend_coarse_n"], t.get("friend_coarse_hit", 0)
+                fn, fh = t.get("friend_fine_n", 0), t.get("friend_fine_hit", 0)
+                print(f"[{_ts()}] [粗OCR] 整轮 社交面板「好友」: 粗识 {ch}/{cn} ({ch / cn:.0%}) · "
+                      f"精识兜底 {fh}/{fn} ({(fh / fn if fn else 0):.0%})")
         print(f"[{_ts()}] ########## 编排结束: ok={len(result['ok'])} skip={len(result['skip'])} fail={len(result['fail'])} ##########")
         return result
 

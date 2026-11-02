@@ -131,20 +131,29 @@ def _log_reset_history() -> None:
 #  ⑤「浏览截图」按钮打开缓存根目录(服务端资源管理器);
 #  ⑥点「保存日志」时把**本次会话**的截图复制到 data/fail_archives/<导出时刻>/ + manifest,
 #    并把归档路径/张数/淘汰情况写进日志头段(日志内 [故障存证] 行已自带文件名, 天然对应)。
+#  ⑦「清除日志」会连缓存像素一起删(里程碑 94), 但若这些像素**已被⑥归档**, 提示文案必须改口径
+#    (2026-10-26 用户反馈: 保存后再清除仍提示"将删除截图缓存/不可恢复", 属误导) ——
+#    故归档时记录文件名集合, 状态接口回传 archived.all; 全部已归档则说明"只删副本, 归档不受影响"。
 _FAIL_CACHE_DIR = BASE / "data" / "fail_cache"
 _FAIL_ARCHIVE_DIR = BASE / "data" / "fail_archives"
 _CACHE_PROMPT_PENDING = True      # 本次服务会话是否还未弹出过缓存提醒(刷新页面不重复弹)
+_LAST_ARCHIVE = None              # 最近一次「保存日志」归档: {ts,count,bytes,files:set(相对路径)}
 
 
 def _fail_cache_stat() -> dict:
-    """统计缓存: 总字节/张数/会话数/最早一张时间(按**文件名内嵌时间戳**, 不用 mtime —— 复制迁移后 mtime 不可靠)。"""
+    """统计缓存: 总字节/张数/会话数/最早一张时间(按**文件名内嵌时间戳**, 不用 mtime —— 复制迁移后 mtime 不可靠)。
+
+    files = 现存像素的相对路径集合(`<会话>/<文件名>`), 供「是否全部已归档」比对(2026-10-26)。
+    """
     total = 0
     count = 0
     sessions = []
+    files = set()
     oldest = None
     try:
         if not _FAIL_CACHE_DIR.exists():
-            return {"bytes": 0, "count": 0, "sessions": 0, "oldest": None, "session": "", "session_files": 0}
+            return {"bytes": 0, "count": 0, "sessions": 0, "oldest": None, "session": "",
+                    "session_files": 0, "files": files}
         for d in sorted(_FAIL_CACHE_DIR.iterdir()):
             if not d.is_dir():
                 continue
@@ -154,6 +163,7 @@ def _fail_cache_stat() -> dict:
                     total += f.stat().st_size
                     count += 1
                     n += 1
+                    files.add(f"{d.name}/{f.name}")
                     ts = f.stem.split("_")[1] if len(f.stem.split("_")) > 2 else None
                     if ts and ts.isdigit() and len(ts) == 8:
                         if oldest is None or ts < oldest:
@@ -168,7 +178,7 @@ def _fail_cache_stat() -> dict:
     if cur and (_FAIL_CACHE_DIR / cur).exists():
         cur_files = sum(1 for f in (_FAIL_CACHE_DIR / cur).iterdir() if f.is_file())
     return {"bytes": total, "count": count, "sessions": len(sessions),
-            "oldest": oldest, "session": cur, "session_files": cur_files}
+            "oldest": oldest, "session": cur, "session_files": cur_files, "files": files}
 
 
 def _fail_cache_clean(mode: str = "all", days: int | None = None) -> dict:
@@ -247,6 +257,7 @@ def _fail_cache_archive(ts: str) -> dict:
     而非仅本次会话(也避免依赖"服务是否已连接引擎"), 一次导出=缓存的一次快照。
     返回 {dir, count, bytes, sessions, session_files, evicted}。
     """
+    global _LAST_ARCHIVE
     import json, shutil
     stat = _fail_cache_stat()
     sess = stat.get("session") or ""
@@ -301,6 +312,9 @@ def _fail_cache_archive(ts: str) -> dict:
         (dst / "manifest.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     except Exception as e:
         log_append(f"[截图归档] 归档异常(不影响日志导出): {e}\n")
+    else:
+        # 记录本次归档覆盖的文件集合: 清除日志时据此判断「缓存像素是否全部已有归档副本」
+        _LAST_ARCHIVE = {"ts": ts, "count": len(copied), "bytes": total, "files": set(copied)}
     return {"dir": str(dst), "count": len(copied), "bytes": total,
             "sessions": len({c.split("/")[0] for c in copied}), "session_files": sess_count,
             "evicted": len([f for f in evicted if f not in copied])}
@@ -414,9 +428,15 @@ def _status() -> dict:
         # webui.html 版本戳: 前端与自身 meta 比对判断页面是否落后于服务端 (2026-10-12)
         "ui_build": _ui_build(),
         # 里程碑 94: 截图缓存(前端状态栏常驻显示 + 首屏超阈值弹提醒)
+        # 2026-10-26: archived.all = 现存缓存像素是否**全部**已有「保存日志」归档副本
+        # (供「清除日志」提示改口径: 已归档则只删副本, 不再警告"不可恢复")
         "fail_cache": {"mb": round(cmb, 2), "count": cst["count"], "sessions": cst["sessions"],
                        "oldest": cst["oldest"], "threshold_mb": thr, "exceed": cmb >= thr,
-                       "prompt": prompt},
+                       "prompt": prompt,
+                       "archived": ({"ts": _LAST_ARCHIVE["ts"], "count": _LAST_ARCHIVE["count"],
+                                     "mb": round(_LAST_ARCHIVE["bytes"] / 1048576, 2),
+                                     "all": bool(cst["files"]) and cst["files"] <= _LAST_ARCHIVE["files"]}
+                                    if _LAST_ARCHIVE else None)},
     }
 
 
@@ -482,21 +502,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"flows": flows})
         if api == "kb" and self.command == "GET":
             return self._send_json(self._kb())
-        if api == "config" and self.command == "GET":
-            eng = get_engine()
-            return self._send_json({
-                "enable_switch": bool(eng.config.get("enable_switch", False)),
-                "target_tail": eng.config.get("target_tail", ""),
-                "claim_online": bool(eng.config.get("claim_online", True)),
-                "claim_party": bool(eng.config.get("claim_party", True)),
-                "enable_shine": bool(eng.config.get("enable_shine", False)),
-                "claim_hb": bool(eng.config.get("claim_hb", False)),
-                "enable_pollin": bool(eng.config.get("enable_pollin", True)),
-                "enable_like": bool(eng.config.get("enable_like", False)),
-                "log_click_pos": bool(eng.config.get("log_click_pos", False)),
-                "use_cache_pos": bool(eng.config.get("use_cache_pos", False)),
-                "fail_cache_prompt_mb": float(eng.config.get("fail_cache_prompt_mb", 100) or 100),
-            })
+        # W1(2026-10-27, zcode-20261028-6): 删除 GET /api/config —— 前端零消费方
+        # (webui.html/tpltool.html 全文 0 引用, codex-20261025-4 已核实并留主 agent 裁量);
+        # 现行设置回显统一走 /api/daily(modules[].settings + 识别设置字段), 保存统一走 /api/set_config。
         if api == "daily" and self.command == "GET":
             return self._daily()
         if api == "run_daily" and self.command == "POST":
@@ -521,10 +529,21 @@ class Handler(BaseHTTPRequestHandler):
                 eng.update_config(enable_pollin=bool(data["enable_pollin"]))
             if "enable_like" in data:
                 eng.update_config(enable_like=bool(data["enable_like"]))
+            if "enable_hot_sale" in data:
+                eng.update_config(enable_hot_sale=bool(data["enable_hot_sale"]))
+            if "enable_baobao" in data:
+                eng.update_config(enable_baobao=bool(data["enable_baobao"]))
             if "log_click_pos" in data:
                 eng.update_config(log_click_pos=bool(data["log_click_pos"]))
             if "use_cache_pos" in data:
                 eng.update_config(use_cache_pos=bool(data["use_cache_pos"]))
+            if "ocr_threads" in data:
+                # W1(2026-10-27): OCR 推理线程数(0=不限制); ONNX 会话级, 改后需重启 webui 生效
+                try:
+                    thr = int(data["ocr_threads"])
+                except (TypeError, ValueError):
+                    thr = 2
+                eng.update_config(ocr_threads=max(0, min(8, thr)))
             # 2026-10-11 补: 里程碑 82 给 ⚙ 面板加 enable_mine/enable_rabbit 时漏了本处理器,
             # 勾选被静默丢弃(config.json 无键, if_config 读 None) —— 用户实测矿洞勾选无效即此因。
             if "enable_mine" in data:
@@ -552,7 +571,9 @@ class Handler(BaseHTTPRequestHandler):
                        f", 矿洞探险={'开' if eng.config.get('enable_mine', False) else '关'}"
                        f", 守望兔子={'开' if eng.config.get('enable_rabbit', False) else '关'}"
                        f", 好友采粉={'开' if eng.config.get('enable_pollin', True) else '关'}"
-                       f", 社区点赞={'开' if eng.config.get('enable_like', False) else '关'}")
+                       f", 社区点赞={'开' if eng.config.get('enable_like', False) else '关'}"
+                       f", 浏览热卖={'开' if eng.config.get('enable_hot_sale', False) else '关'}"
+                       f", 花宝照顾={'开' if eng.config.get('enable_baobao', False) else '关'}")
             log_append(f"[config] 记录按钮位置={'开' if eng.config.get('log_click_pos', False) else '关'}"
                        f", 使用缓存位置={'开' if eng.config.get('use_cache_pos', False) else '关'}"
                        f" (两项默认关闭; 关闭时只认实时识别, 不用历史坐标盲点)")
@@ -804,6 +825,12 @@ class Handler(BaseHTTPRequestHandler):
     def _connect(self):
         eng = get_engine()
         ok = eng.connect()
+        # W1(2026-10-27): 连接结果写入运行日志(此前仅 HTTP 响应, 日志面板无连接记录,
+        # 失败时用户在页面上只能看到按钮状态, 排障缺上下文)
+        if ok:
+            log_append(f"[连接] 手动连接成功 (引擎工作区 {eng.screen_w}x{eng.screen_h})")
+        else:
+            log_append("[连接] 手动连接失败 —— 请检查模拟器/ADB 地址(127.0.0.1:16384)后重试")
         return self._send_json({"ok": ok, **(_status() if ok else {})}, 200 if ok else 502)
 
     # ---- API: 截图 (只回图像, 不做 OCR) ----
@@ -933,6 +960,12 @@ class Handler(BaseHTTPRequestHandler):
                     {"key": "enable_like", "type": "switch", "label": "社区点赞",
                      "desc": "完成手账「为精美搭配献上点赞吧」任务(每期上限 20 次; 任务已完成则跳过)",
                      "value": bool(eng.config.get("enable_like", False))},
+                    {"key": "enable_hot_sale", "type": "switch", "label": "浏览热卖",
+                     "desc": "完成手账「查看最新热卖套装」任务(点行内前往进页浏览即完成, 不碰抽取按钮; 2026-10-27 自社区点赞拆分独立)",
+                     "value": bool(eng.config.get("enable_hot_sale", False))},
+                    {"key": "enable_baobao", "type": "switch", "label": "花宝照顾",
+                     "desc": "完成手账「在花园中照顾小花宝一次」任务(道具手套拖拽, 消耗手套道具; 无库存时购买段见后续批次)",
+                     "value": bool(eng.config.get("enable_baobao", False))},
                 ]
             return []
         if plan and plan.get("modules"):
@@ -948,11 +981,12 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json({
             "name": plan.get("name") if plan else "每日挂机编排",
             "modules": modules,
-            "enable_switch": bool(eng.config.get("enable_switch", False)),
-            "target_tail": eng.config.get("target_tail", ""),
-            # 全局识别设置(默认关; 供右栏「识别设置」面板回显)
+            # W1(2026-10-27): 删除顶层 enable_switch/target_tail —— 消费方(右栏旧「账号切换」面板)
+            # 已由 codex-20261025-4 删除, 现网回显唯一来源=modules[].settings(startup ⚙)。
+            # 全局识别设置(供右栏「识别设置」面板回显); ocr_threads 改后重启生效(ONNX 会话)
             "log_click_pos": bool(eng.config.get("log_click_pos", False)),
             "use_cache_pos": bool(eng.config.get("use_cache_pos", False)),
+            "ocr_threads": int(eng.config.get("ocr_threads", 2)),
         })
 
     # ---- API: 按勾选模块运行每日编排 (使用界面「开始一轮」) ----

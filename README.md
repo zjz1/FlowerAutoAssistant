@@ -31,7 +31,7 @@
 | ③ 颜色特征 | 无文字的纯图形按钮 | HSV 过滤 + 连通区域分析 |
 | ④ 坐标缓存 / 均值点 | 任意已记录按钮 | 知识库 `mean_rel`（按场景累积）→ `rel` 兜底 |
 
-另有独立步骤类型 **`click_template`** 专供纯图形按钮：多尺度（默认 0.7~1.0）模板匹配 `TM_SQDIFF_NORMED`，支持 `region_rel` 限定与 `fallback_rel` 兜底；模板在 `resource/template/`。
+另有独立步骤类型 **`click_template`** 专供纯图形按钮：多尺度（默认 0.7~1.0）模板匹配 `TM_SQDIFF_NORMED`，支持 `region_rel` 限定；`offset_rel`（2026-10-24）表示命中后按屏幕相对比例偏移再点（偏移点仍由**本次实时命中**推导，满足规则 6）；模板在 `resource/template/`。
 
 ---
 
@@ -48,8 +48,8 @@ FlowerAutoAssistant/
 ├── ocr_ui.py            # RapidOCR 单例（模型只初始化一次）
 ├── pollin.py            # 好友采粉闭环模块（引擎步骤 friend_pollin 的实现；可 python pollin.py state|all 单独调试）
 ├── flows/               # 数据驱动流程（改 JSON 不改代码）
-│   ├── daily.json       #   编排：8 大模块按序调度
-│   ├── flow_*.json      #   各模块流程（startup/signin/plant/social/energy/daily_task/claim/idle）
+│   ├── daily.json       #   编排：7 大模块按序调度
+│   ├── flow_*.json      #   各模块流程（startup/plant/social/energy/claim/daily_task/idle）
 │   └── common/entries.json  # 公共导航注册表（navigate 步骤引用）
 ├── tools/               # 项目校验 / 合并闸门
 │   └── check_project.py #   静态校验 JSON + 步骤类型 + 语法（合并前必跑，--map 打印项目地图）
@@ -125,17 +125,16 @@ start_webui.bat            # 或双击：优先用 .venv，启动后自动开浏
 
 ## 模块化编排
 
-[`flows/daily.json`](flows/daily.json) 按序调度 8 大模块，**全部为可选**（`required:false` + `on_fail:skip`）：单个模块失败只跳过，不终止整轮。
+[`flows/daily.json`](flows/daily.json) 按序调度 **7 大模块**（2026-10-06 签到并入 startup；2026-10-12 领取与每日任务换序），**全部为可选**（`required:false` + `on_fail:skip`）：单个模块失败只跳过，不终止整轮。
 
 | 模块 id | 流程 | 说明 |
 |---|---|---|
-| `startup` | flow_startup.json | 开始启动（登录进游戏，内含可选「切换账号」） |
-| `signin` | flow_signin.json | 签到（当日已签自动跳过） |
+| `startup` | flow_startup.json | 开始启动（资源更新守卫 → 登录进游戏 → 可选「切换账号」→ 签到） |
 | `plant` | flow_plant.json | 种植作业 |
-| `social` | flow_social.json | 社交任务 = ①家族活动（4 子任务：摇钱树/矿洞探险/闪耀委托挑战/守望兔子；已实现摇钱树浇水与 `enable_shine` 控制的闪耀委托挑战）②好友采粉（`enable_pollin`）③社区点赞（待开发） |
+| `social` | flow_social.json | 社交任务 = ①家族活动（摇钱树/矿洞探险/闪耀委托挑战/守望兔子）②好友采粉（`enable_pollin`）；社区点赞已于里程碑 90 迁入每日任务 |
 | `energy` | flow_energy.json | 体力任务（闪耀变身循环速通） |
-| `daily` | flow_daily_task.json | 每日任务 |
-| `claim` | flow_claim.json | 领取奖励（在线礼包 `claim_online` / 花灵派对 `claim_party`） |
+| `claim` | flow_claim.json | 领取奖励（在线礼包 `claim_online` / 花灵派对 `claim_party` / 奇妙花宝 `claim_hb`——含奇妙特权三档与**花神之契周/月礼包**） |
+| `daily` | flow_daily_task.json | 每日任务（手账 v2 闭环，含社区点赞） |
 | `idle` | flow_idle.json | 挂机 |
 
 各模块的开关在 `data/config.json`（WebUI 使用界面逐模块 ⚙ 可直接改）。公开仓库中的默认值应为（本地运行时可自行填写目标账号尾号）：
@@ -178,15 +177,15 @@ start_webui.bat            # 或双击：优先用 .venv，启动后自动开浏
 }
 ```
 
-**支持的步骤类型（共 19 种）**
+**支持的步骤类型（共 41 种，2026-10-27 核对）**
 
 | 类别 | 步骤类型 |
 |---|---|
-| 定位/点击 | `click_text`（可 `exact`/`region_rel`/`fallback_rel`/`mark`）、`click_template`、`click_rel`、`click_account_tail` |
-| 等待/停顿 | `wait_text`、`sleep` |
-| 条件分支 | `if_text`、`if_fraction`（读 `a/b` 求值）、`if_greater`（读 `关键字:N`）、`if_config`（读 `config.json`）、`count_text`（文本计数） |
-| 循环 | `loop_text`（识别到就重复，按钮消失即停）、`loop_fraction`（按分数算次数）、`loop_times`（固定次数）、`retry_loop`（脱困重试，`mark` 命中即成功） |
-| 状态/其它 | `store_fraction`（把 `a/b` 分子存入 config，如每日浇水次数）、`close_dialog`（关弹窗，可 `only_types` 过滤）、`navigate`（按公共注册表进入目标界面）、`friend_pollin`（好友采粉闭环：逐页扫可采粉标记→进家园→快捷操作→采粉，实现见 [`pollin.py`](pollin.py)） |
+| 定位/点击 | `click_text`（可 `exact`/`region_rel`/`exclude`/`mark`/`no_fallback`）、`click_template`（可 `metric`/`offset_rel`）、`click_rel`、`click_account_tail`、`click_row_button`（行锚定点击） |
+| 等待/停顿 | `wait_text`、`wait_text_gone`（可 `require_seen`）、`wait_update_done`（资源更新守卫）、`sleep`、`wait_scene`（可传场景列表） |
+| 条件分支 | `if_text`、`if_account_tail`、`if_fraction`、`if_greater`、`if_config`、`if_time`、`if_weekday`、`if_scene`、`count_text`、`if_color_count`、`if_collected`、`if_count` |
+| 循环 | `loop_text`、`loop_fraction`、`loop_times`、`retry_loop` |
+| 状态/其它 | `store_fraction`、`close_dialog`、`ensure_menu`、`ensure_home`、`navigate`、`friend_pollin`、`community_like`、`claim_scroll`、`dump_text`、`reward_dialog`、`count_probe`、`touch_drag`、`slide`、`dump_frame`（手动故障存证）、`fail_flow` |
 
 - **公共导航**：`navigate` 引用 [`flows/common/entries.json`](flows/common/entries.json) 的 target（已登记 家族活动 / 闪耀变身 / 花灵派对），把"归位→逐层导航→目标命中→脱困重试"收敛到一处，避免各流程重复内嵌进入链。
 - **知识库自动积累**：每次点击成功即写入 `data/click_log.json`（按 `scene` 场景 + `category` 类别分组，`ocr`/`color` 命中还会累积 `mean_rel` 均值样本），越用越稳。

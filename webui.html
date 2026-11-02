@@ -205,19 +205,8 @@
 
     <!-- 右栏: 账号 + 连接 -->
     <div style="display:flex;flex-direction:column;gap:14px">
-      <div class="maa-panel">
-        <h2>账号切换</h2>
-        <div class="cfg-row account-row">
-          <span class="lbl">切换账号</span>
-          <label class="cfg-hint"><input type="checkbox" id="maa-switch-chk"> 启用</label>
-        </div>
-        <div class="cfg-row account-row">
-          <span class="lbl">目标账号</span>
-          <input id="maa-switch-tail" type="text" maxlength="4" placeholder="账号尾号" style="width:72px">
-          <button id="maa-switch-go" class="primary">立即切换</button>
-        </div>
-        <p class="maa-note">勾选启用后, 「开始一轮」会在登录前先切换到此账号。</p>
-      </div>
+      <!-- 账号切换设置已并入「开始启动」模块的 ⚙ 面板(2026-10-25 用户裁定:
+           切换账号归属 startup 模块, 全局侧面板为早期残留, 双入口回显互不同步)。 -->
 
       <div class="maa-panel">
         <h2>连接设置</h2>
@@ -251,10 +240,16 @@
           <span class="lbl">使用缓存位置</span>
           <label class="cfg-hint"><input type="checkbox" id="maa-cachepos-chk"> 启用</label>
         </div>
+        <div class="cfg-row">
+          <span class="lbl">OCR 线程数</span>
+          <label class="cfg-hint"><input type="number" id="maa-octhr-input" min="0" max="8" step="1" style="width:52px"> (0=不限制)</label>
+        </div>
         <p class="maa-note"><b>两项默认关闭。</b>关闭时只认本次实时识别（OCR/模板/锚点/颜色），
           认不到就如实失败，绝不用知识库里的历史坐标盲点 —— 2026-10-03「切换账号」误登录正是回退历史坐标所致。
           「使用缓存位置」只管<b>自动学到的</b>历史坐标；流程里人工写死的兜底坐标仍生效。
-          手动采集/标注不受「记录按钮位置」影响；改动即时保存，下次「开始一轮」生效。</p>
+          手动采集/标注不受「记录按钮位置」影响；改动即时保存，下次「开始一轮」生效。
+          「OCR 线程数」为 RapidOCR 每 ONNX 会话的推理线程数（默认 2；0=不限制即吃满全部物理核；
+          数值越大识别越快但越吃 CPU），<b>改后需重启服务生效</b>（会话在引擎启动时创建）。</p>
       </div>
 
       <div class="maa-panel">
@@ -665,10 +660,10 @@ async function refreshMaa(){
   try{
     const d = await api("/api/daily");
     maaTasks = (d.modules||[]).map(m=>({id:m.id, name:m.name, flow:m.flow, settings:m.settings||[], checked:true}));
-    $("maa-switch-chk").checked = !!d.enable_switch;
-    $("maa-switch-tail").value = d.target_tail || "";
     $("maa-logpos-chk").checked = !!d.log_click_pos;
     $("maa-cachepos-chk").checked = !!d.use_cache_pos;
+    const octhr = $("maa-octhr-input");
+    if (octhr && document.activeElement !== octhr) octhr.value = (d.ocr_threads ?? 2);
     renderMaaTasks();
   }catch(e){}
 }
@@ -749,21 +744,6 @@ $("maa-all").onclick = ()=>{ maaTasks.forEach(t=>t.checked=true); renderMaaTasks
 $("maa-clear").onclick = ()=>{ maaTasks.forEach(t=>t.checked=false); renderMaaTasks(); };
 $("maa-invert").onclick = ()=>{ maaTasks.forEach(t=>t.checked=!t.checked); renderMaaTasks(); };
 
-// 使用界面: 立即切换账号
-$("maa-switch-go").onclick = async ()=>{
-  const tail = $("maa-switch-tail").value;
-  if(!tail){ alert("请选择目标账号"); return; }
-  await api("/api/set_config", {method:"POST", body:JSON.stringify({
-    enable_switch:true, target_tail: String(tail)
-  })});
-  $("maa-status").textContent = "配置已保存(目标尾部=" + tail + ")。开始一轮时自动切换。";
-};
-$("maa-switch-chk").onchange = async (ev)=>{
-  // 仅持久化开关; 目标账号仍需在开始一轮时的配置生效
-  await api("/api/set_config", {method:"POST", body:JSON.stringify({
-    enable_switch: ev.target.checked
-  })});
-};
 // 使用界面: 识别设置两项开关(记录按钮位置 / 使用缓存位置), 即时持久化
 $("maa-logpos-chk").onchange = async (ev)=>{
   await api("/api/set_config", {method:"POST", body:JSON.stringify({
@@ -773,6 +753,13 @@ $("maa-logpos-chk").onchange = async (ev)=>{
 $("maa-cachepos-chk").onchange = async (ev)=>{
   await api("/api/set_config", {method:"POST", body:JSON.stringify({
     use_cache_pos: ev.target.checked
+  })});
+};
+$("maa-octhr-input").onchange = async (ev)=>{
+  const v = Math.max(0, Math.min(8, parseInt(ev.target.value, 10) || 0));
+  ev.target.value = v;
+  await api("/api/set_config", {method:"POST", body:JSON.stringify({
+    ocr_threads: v
   })});
 };
 // 使用界面: 界面设置(关闭页面确认), 即时持久化
@@ -903,10 +890,23 @@ $("log-save").onclick = saveLog;
 $("log-clear").onclick = clearLog;
 
 async function clearLog(){
-  if(!confirm("确定清除日志？\n\n将清空服务端日志缓冲与磁盘备份，本页显示也一并清空；\n同时删除截图缓存 "
-    + ((failCacheInfo && failCacheInfo.count) || 0) + " 张 / "
-    + ((failCacheInfo && failCacheInfo.mb) || 0).toFixed(1) + " MB"
-    + "（截图存证记录仍保留在 index.jsonl）。\n不可恢复，如需留档请先点「保存日志」（保存会同时归档截图）。")) return;
+  // 2026-10-26 修正: 若当前缓存像素已全部被「保存日志」归档, 提示不得再写"不可恢复/请先保存"
+  // (用户反馈: 保存后再清除仍提示"将删除截图缓存", 与事实不符 —— 归档副本本就不受影响)。
+  const fc = failCacheInfo || {};
+  const arch = fc.archived || null;
+  const n = fc.count || 0, mb = (fc.mb || 0).toFixed(1);
+  let msg = "确定清除日志？\n\n将清空服务端日志缓冲与磁盘备份，本页显示也一并清空。\n";
+  if(n && arch && arch.all){
+    msg += "\n截图缓存 " + n + " 张 / " + mb + " MB 已归档到 data/fail_archives/" + arch.ts
+         + "（归档 " + arch.count + " 张）。\n本次只删除缓存副本，归档副本不受影响。\n";
+  }else if(n){
+    msg += "\n同时删除截图缓存 " + n + " 张 / " + mb + " MB（截图存证记录仍保留在 index.jsonl）。\n";
+    if(arch) msg += "最近一次归档 " + arch.ts + "（" + arch.count + " 张）之后新增的截图尚未归档。\n";
+    msg += "不可恢复，如需留档请先点「保存日志」（保存会同时归档截图）。\n";
+  }else{
+    msg += "\n当前无截图缓存。\n";
+  }
+  if(!confirm(msg)) return;
   try{
     const d = await api("/api/log_clear", {method:"POST"});
     logCursor = d.next || 0;      // 服务端下标已归零, 必须同步复位(失败时不复位, 保持原游标)
@@ -915,6 +915,7 @@ async function clearLog(){
   }
   logChunks.length = 0;
   $("log").innerHTML = '<span class="muted">暂无日志</span>';
+  await refreshStatus();          // 清空后缓存/归档状态已变, 顶栏与后续提示按新状态刷新
 }
 
 function _logStamp(){
@@ -938,6 +939,7 @@ async function saveLog(){
     const r = await fetch("/api/log_download");
     if(r.ok){
       _downloadBlob(await r.blob(), `faa_log_${_logStamp()}.txt`);
+      await refreshStatus();   // 服务端已完成截图归档 → 立即刷新 archived 状态(供「清除日志」提示用)
       return;
     }
   }catch(e){ /* 服务不可达 → 落到下面的页面快照 */ }
