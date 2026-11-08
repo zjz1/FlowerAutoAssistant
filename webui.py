@@ -533,6 +533,9 @@ class Handler(BaseHTTPRequestHandler):
                 eng.update_config(enable_hot_sale=bool(data["enable_hot_sale"]))
             if "enable_baobao" in data:
                 eng.update_config(enable_baobao=bool(data["enable_baobao"]))
+            if "enable_baobao_buy" in data:
+                # G1 v2(2026-11-03): 花宝道具自动补货开关(缺键默认 true, 与 config.example 一致)
+                eng.update_config(enable_baobao_buy=bool(data["enable_baobao_buy"]))
             if "log_click_pos" in data:
                 eng.update_config(log_click_pos=bool(data["log_click_pos"]))
             if "use_cache_pos" in data:
@@ -573,7 +576,8 @@ class Handler(BaseHTTPRequestHandler):
                        f", 好友采粉={'开' if eng.config.get('enable_pollin', True) else '关'}"
                        f", 社区点赞={'开' if eng.config.get('enable_like', False) else '关'}"
                        f", 浏览热卖={'开' if eng.config.get('enable_hot_sale', False) else '关'}"
-                       f", 花宝照顾={'开' if eng.config.get('enable_baobao', False) else '关'}")
+                       f", 花宝照顾={'开' if eng.config.get('enable_baobao', False) else '关'}"
+                       f", 花宝补货={'开' if eng.config.get('enable_baobao_buy', True) else '关'}")
             log_append(f"[config] 记录按钮位置={'开' if eng.config.get('log_click_pos', False) else '关'}"
                        f", 使用缓存位置={'开' if eng.config.get('use_cache_pos', False) else '关'}"
                        f" (两项默认关闭; 关闭时只认实时识别, 不用历史坐标盲点)")
@@ -964,8 +968,11 @@ class Handler(BaseHTTPRequestHandler):
                      "desc": "完成手账「查看最新热卖套装」任务(点行内前往进页浏览即完成, 不碰抽取按钮; 2026-10-27 自社区点赞拆分独立)",
                      "value": bool(eng.config.get("enable_hot_sale", False))},
                     {"key": "enable_baobao", "type": "switch", "label": "花宝照顾",
-                     "desc": "完成手账「在花园中照顾小花宝一次」任务(道具手套拖拽, 消耗手套道具; 无库存时购买段见后续批次)",
+                     "desc": "完成手账「在花园中照顾小花宝一次」任务(道具手套拖拽, 消耗手套道具)",
                      "value": bool(eng.config.get("enable_baobao", False))},
+                    {"key": "enable_baobao_buy", "type": "switch", "label": "花宝自动补货",
+                     "desc": "挠痒痒 0 库存时受控购买 22 仙豆/个(单轮最多 1 次; 余额低于 10000 停止; 确认框全文核对+差额复核)",
+                     "value": bool(eng.config.get("enable_baobao_buy", True))},
                 ]
             return []
         if plan and plan.get("modules"):

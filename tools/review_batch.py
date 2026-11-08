@@ -183,7 +183,7 @@ def main():
     tier = "T0"
     if any(r.endswith(T2_MARKERS) for r, _ in files):
         tier = "T2"
-    elif all(r.endswith(".json") and (r.startswith("flows/") or r.startswith("data/")) for r, _ in files):
+    elif any(r.startswith(("flows/", "data/", "resource/template/")) for r, _ in files):
         tier = "T1"
 
     file_rows, results = [], []
@@ -193,7 +193,7 @@ def main():
         repo_p = REPO / rel
         d_md5, r_md5 = md5_of(delivered), md5_of(repo_p)
         state = "新文件" if not repo_p.exists() else ("已落位" if r_md5 == d_md5 else "未落位")
-        bmatch = (r_md5.lower() in rep_md5) if r_md5 else False
+        bmatch = (r_md5.lower() in rep_md5) if r_md5 else True   # 新文件不计基线
         if not bmatch:
             baseline_ok = False
         file_rows.append({"path": rel, "repo_md5": r_md5, "delivered_md5": d_md5,
@@ -244,6 +244,9 @@ def main():
                          f"{rel} 语义差异 {len(d)} 处" +
                          "".join(f"\n      {k} {p}" for k, p, _a, _b in shown))
         else:
+            if delivered.suffix.lower() not in (".py", ".html", ".md", ".txt", ".bat", ".css", ".js"):
+                add_rule(results, "R10", "INFO", True, f"{rel} 二进制/资源文件，仅指纹核对")
+                continue
             added, removed = text_diff_stats(repo_p, delivered)
             if any('"click_rel"' in ln or '"fallback_rel"' in ln for ln in added):
                 add_rule(results, "R2", "FAIL", False, f"{rel} 新增直坐标键")
@@ -262,9 +265,12 @@ def main():
     tpl_files = [(r, p) for r, p in files if "resource/template/" in r]
     for rel, delivered in tpl_files:
         repo_p = REPO / rel
-        ok = repo_p.exists() and md5_of(repo_p) == md5_of(delivered)
+        if not repo_p.exists():
+            add_rule(results, "R5", "WARN", False, f"{rel} 新模板待落位（合并后必须存在且 md5 一致）")
+            continue
+        ok = md5_of(repo_p) == md5_of(delivered)
         add_rule(results, "R5", "FAIL", ok,
-                 f"{rel} 已落位且 md5 一致" if ok else f"{rel} 未落位或 md5 不一致")
+                 f"{rel} 已落位且 md5 一致" if ok else f"{rel} 仓库版本与交付 md5 不一致")
 
     # R6 主仓库 flow 模板引用存在性
     tpl_dir = REPO / "resource" / "template"

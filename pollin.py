@@ -20,7 +20,8 @@ import subprocess
 import sys
 import time
 
-from ocr_engine import OCREngine, ADB_ADDRESS, ADB_PATH, stop_requested
+from ocr_engine import (OCREngine, ADB_ADDRESS, ADB_PATH, stop_requested,
+                        report_failure)
 
 # ---------------- 常量（全部相对坐标/相对区域，分辨率无关） ----------------
 TPL_GREEN = "friend_pollin"                      # 可采粉绿花角标(纯图形)
@@ -40,9 +41,18 @@ DELEGATE_CLOSE_TH = 0.90
 TPL_SHELL_CLOSE = "shell_close.png"              # 家族外壳右上角花形✕(源图0.995/异图0.766)
 SHELL_CLOSE_REGION = [0.93, 0.0, 1.0, 0.12]
 SHELL_CLOSE_TH = 0.90
-TPL_FRIENDLIST_EXIT = "friendlist_exit.png"      # 好友列表左缘中央 » 抽屉钮(源图0.999/异图0.939→阈值取中)
+TPL_FRIENDLIST_EXIT = "friendlist_exit.png"      # 好友列表左缘中央 » 抽屉钮
 FRIENDLIST_EXIT_REGION = [0.37, 0.35, 0.52, 0.60]
-FRIENDLIST_EXIT_TH = 0.95
+# 阈值 0.95 曾把真实出口卡死(2026-11-07 运行日志: 24 次调用/48 次尝试一次未点中, 实帧恒 0.941)
+# 2026-11-07 用真实存证帧重定标(引擎原算法: 全图匹配 + 该区域取峰, 尺度 0.7~1.0 四档):
+#   正样本 26 帧(24 张 escape_fail_friendlist_* 同画面 + ann_1_15768 + ann_1_44654) 最低 0.9411
+#     (失败帧 0.9411 @(548,336) 尺度 0.9; ann_1_15768 0.9824 尺度 1.0; ann_1_44654 0.9494)
+#   负样本(非好友列表整屏, 同区域)最高 0.9071(世界聊天面板, 该处是同一枚 » 但箭头朝左) ;
+#     花宝页/购买弹窗 0.8403~0.8900, 家园过场 _enter_garden_fail 0.8960
+#   => 阈值 0.92: 正样本余量 +0.0211, 负样本余量 -0.0129(需低 0.013 才误命中)
+# 未改模板: 重裁 44x62/52x70 紧框后正样本升到 0.99+, 但花宝页同分升到 0.958~0.960(分离度反而变差),
+#   故保留带少量背景的 83x83 原型 —— 0.941 是背景差异造成的分数下移, 不是模板漂移。
+FRIENDLIST_EXIT_TH = 0.92
 TPL_NUM_BAR = "num_bar.png"                      # 跳转页签对话框数字条(源图0.999/异图0.987→仅对话框上下文使用)
 NUM_BAR_REGION = [0.35, 0.38, 0.72, 0.55]
 NUM_BAR_TH = 0.90
@@ -800,8 +810,11 @@ def leave_friend_list(eng):
       恰好点在「密友」页签(1216,57)上, 等于切页签而非关闭。
       真实出口 = 列表面板**左缘中央**的「粉色凸出小抽屉钮 + 白色向右双箭头»」(纯图形, OCR 不可达):
       实测点击 → 列表收起回社交面板视图(frame_diff 0.31)。2026-10-04 合规改造: 该钮已模板化
-      (friendlist_exit.png), 不再使用直坐标; 次路径保留底部栏「离开」;
-      两轮都失败仍如实报出并存证 escape_fail_friendlist_*.png。
+      (friendlist_exit.png), 不再使用直坐标。
+    ⚠ 2026-11-07 删除旧的次路径「OCR ['离开'] @[0.7,0.88,1.0,1.0]」: 该区域在好友列表里只有
+      「删除好友 / 好友设置 / 添加好友」, 全项目从无「离开」二字 —— 这条兜底结构上永不可能命中,
+      留着只会每次白等 5s 再空搜一次(日志 48 次 leave_miss 全由此产生)。现改为: 模板未命中即
+      如实说明并按新帧重试一轮, 两轮都不中则报失败并存证, 不留假路径。
     """
     for i in range(1, 3):
         if stop_requested():
@@ -811,23 +824,16 @@ def leave_friend_list(eng):
             return True
         pt = eng.locate_template(TPL_FRIENDLIST_EXIT, img=img,
                                  threshold=FRIENDLIST_EXIT_TH, region_rel=FRIENDLIST_EXIT_REGION)
-        if pt is not None:
-            print(f"  [列表] 第{i}次关闭好友列表: 模板命中»钮 ({pt.x},{pt.y})")
-            eng.click_abs(pt.x, pt.y)
-        else:
-            print(f"  [列表] 第{i}次: »钮模板未命中(friendlist_exit), 直接试底部栏「离开」")
+        if pt is None:
+            print(f"  [列表] 第{i}次: »钮模板未命中(friendlist_exit, 阈值{FRIENDLIST_EXIT_TH}), 不盲点, 重截一帧重试")
+            continue
+        print(f"  [列表] 第{i}次关闭好友列表: 模板命中»钮 ({pt.x},{pt.y})")
+        eng.click_abs(pt.x, pt.y)
         if wait_until(eng, lambda: not in_list(eng, quiet=True), 5, desc=f"关闭好友列表(第{i}次)"):
             return True
-        img = eng.screenshot()
-        pt = eng.locate(["离开"], img=img, region_rel=[0.70, 0.88, 1.0, 1.0], min_score=0.5)
-        if pt is not None:
-            print(f"  [列表] 底部栏定位「离开」({pt.x},{pt.y})")
-            eng.click_abs(pt.x, pt.y)
-            if wait_until(eng, lambda: not in_list(eng, quiet=True), 5, desc=f"离开好友列表(第{i}次)"):
-                return True
     ok = not in_list(eng)
     if not ok:
-        print("  [列表] 如实报出: 两轮均未确认离开好友列表")
+        print(f"  [列表] 如实报出: 两轮均未确认离开好友列表(模板阈值 {FRIENDLIST_EXIT_TH})")
         save_escape_evidence(eng, "friendlist")
     return ok
 
@@ -1353,7 +1359,8 @@ def run_category(eng, cat, max_pages=30):
 
 
 def run_friend_pollin(eng) -> dict:
-    """好友采粉闭环入口。返回 {'密友': n, '好友': m}（打开列表失败该类别记 None）。"""
+    """好友采粉闭环入口。返回 {'密友': n, '好友': m, '_home_ok': bool}
+    （打开列表失败该类别记 None）。"""
     print("[好友采粉] 开始闭环: 密友 + 好友 两类逐页采集, 无可采粉则回自己家园")
     ensure_home(eng)
     summary = {}
@@ -1362,7 +1369,14 @@ def run_friend_pollin(eng) -> dict:
         if stop_requested():
             break
     print(f"[好友采粉] 闭环结束: {summary}")
-    print(f"[好友采粉] 回自己家园 -> {ensure_home(eng)}")
+    # 2026-11-07: 收尾归位结果必须如实登记 —— 旧版把 ensure_home 的 False 直接丢弃, 模块仍记
+    # 「完成」, 于是 energy/claim/daily 三个模块被同一个卡死画面连累空跑(日志 1180 行起)。
+    home_ok = ensure_home(eng)
+    print(f"[好友采粉] 回自己家园 -> {home_ok}")
+    summary["_home_ok"] = home_ok
+    if not home_ok:
+        report_failure(getattr(eng, "_module", None) or "社交任务",
+                       "好友采粉收尾未确认回到自己家园(后续模块可能被同一画面连累)")
     return summary
 
 

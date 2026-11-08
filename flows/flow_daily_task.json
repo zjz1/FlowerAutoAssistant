@@ -1,6 +1,6 @@
 {
     "name": "每日任务",
-    "description": "每日任务(手账)v2.8 四步闭环(2026-10-12 用户构思; 2026-10-25 增浏览热卖+花宝照顾; 2026-10-27 位置修订): ①开手账→领取+采集(claim_scroll, save=daily_tasks); ①.5浏览热卖+花宝照顾两链改在手账仍开时执行(2026-10-26 双日志实锤: 原位置在 community_like 归位后手账已关, click_row_button 空滑 8 轮必然行未命中; 花宝链首加重开守卫, 结尾加第二层关闭+归位前有界关闭, 治「花宝/资料叠层页卡死→④段被跳过」); ②关手账条件化(手账仍在才点 ✕)→社区点赞(enable_like)·浏览热卖(enable_hot_sale)·花宝照顾(enable_baobao) 三开关独立(2026-10-27 用户工作流批准拆分; ⚙ 面板/白名单/config.example 三方一致), 各链仍以对应行 a<b 门控; 链内 click_row_button/wait_text_gone 带 required+require_seen(2026-10-27 E2: 行未命中/未确认离开即短路当前链, 不空跑收尾步, 引擎 BranchAborted 机制, 治 10-26『行未命中后链继续空转+假消失成功』); ④再开手账→领取新完成奖励+二次采集留档(save=daily_tasks_after)。claim_scroll 仍只点「领取」与弹窗关闭词; 行级「前往」由 click_row_button 原子执行(行锚定+行内实时识别, 无写死坐标); 道具手套=模板+数量角标判据(minus1 前缀兼容), touch_drag=手势(规则6边界); 道具页无货态(「购买道具」在屏) v1=dump_frame 取证+跳过手套段, 不成交(购买弹窗未采样, 货币守卫待 v2)。道具无库存(2026-10-26 实锤: 手套模板 MISS+画面出现「购买道具」)应走购买 —— 购买弹窗结构未经实机采集, 本版不做盲实现, 留待采样后另批开发(见 REPORT 提案)。神秘订单不展开。编排位置=倒数第二(idle 之前)。",
+    "description": "每日任务(手账)v2.8 四步闭环(2026-10-12 用户构思; 2026-10-25 增浏览热卖+花宝照顾; 2026-10-27 位置修订): ①开手账→领取+采集(claim_scroll, save=daily_tasks); ①.5浏览热卖+花宝照顾两链改在手账仍开时执行(2026-10-26 双日志实锤: 原位置在 community_like 归位后手账已关, click_row_button 空滑 8 轮必然行未命中; 花宝链首加重开守卫, 结尾加第二层关闭+归位前有界关闭, 治「花宝/资料叠层页卡死→④段被跳过」); ②关手账条件化(手账仍在才点 ✕)→社区点赞(enable_like)·浏览热卖(enable_hot_sale)·花宝照顾(enable_baobao) 三开关独立(2026-10-27 用户工作流批准拆分; ⚙ 面板/白名单/config.example 三方一致), 各链仍以对应行 a<b 门控; 链内 click_row_button/wait_text_gone 带 required(2026-10-27 E2: 行未命中/未确认离开即短路当前链, 不空跑收尾步, 引擎 BranchAborted 机制, 治 10-26『行未命中后链继续空转+假消失成功』; 2026-10-31 修订: 两处 wait_text_gone 删 require_seen —— 10-31 日志实锤点「前往」后立即过场使文字先于首探消失, require_seen 误判『文字从未出现』致 required 误报 fail=1, 而点击被吞的真失败仍由『seen→超时』路径抓出); ④再开手账→领取新完成奖励+二次采集留档(save=daily_tasks_after)。claim_scroll 仍只点「领取」与弹窗关闭词; 行级「前往」由 click_row_button 原子执行(行锚定+行内实时识别, 无写死坐标); 道具手套=模板+数量角标判据(minus1 前缀兼容), touch_drag=手势(规则6边界); 道具页无货态(「购买道具」在屏) v1=dump_frame 取证+跳过手套段, 不成交(购买弹窗未采样, 货币守卫待 v2)。道具无库存(2026-10-26 实锤: 手套模板 MISS+画面出现「购买道具」)应走购买 —— 购买弹窗结构未经实机采集, 本版不做盲实现, 留待采样后另批开发(见 REPORT 提案)。【D21 修订 2026-11-01】11-01 实锤链中缺口: touch 段误触 0 库存挠痒痒图标触发购买弹窗(22 仙豆), G1 v1 只在链首判一次、链中无判定, ensure_home 不识别该弹窗 13 轮循环 → 修改: pat/touch 数量未-1 后各加链中二次判定(「购买道具」在屏 → dump_frame 取证 + buy_popup_close 模板关闭 ✕(32x32 自 11-01 取证帧 124943_005 裁切) + 如实继续收尾); 误点主防线=if_text 前置限定弹窗在屏。G1 v2(2026-11-03) 已落地受控真实购买(buy_item: 确认框全文核对+余额差额复核+单轮上限1次, 开关 enable_baobao_buy 缺键默认 true), 见 docs/FLOWS.md §7.5。神秘订单不展开。编排位置=倒数第二(idle 之前)。",
     "status": "v2.8_cycle",
     "steps": [
         {
@@ -121,8 +121,7 @@
                             ],
                             "timeout": 8,
                             "_note": "手账消失=真离开手账(2026-10-25 E2E: 等「最新热卖」假阳性实锤——手账描述块本身含「最新热卖」四字, 点「前往」失败时 wait_text 仍 HIT)。新页无固定文字判据前, 以「手账页判据消失」为在页证据。",
-                            "required": true,
-                            "require_seen": true
+                            "required": true
                         },
                         {
                             "type": "close_dialog",
@@ -221,8 +220,7 @@
                             ],
                             "timeout": 8,
                             "_note": "手账消失=真离开手账(同浏览热卖手法; 「前往」点击后回主界面或直达目标页均使手账判据消失)",
-                            "required": true,
-                            "require_seen": true
+                            "required": true
                         },
                         {
                             "type": "if_text",
@@ -310,7 +308,7 @@
                                                 {
                                                     "type": "click_template",
                                                     "template": "tpl_pat_glove.png",
-                                                    "threshold": 0.9,
+                                                    "threshold": 0.95,
                                                     "region_rel": [
                                                         0.05,
                                                         0.12,
@@ -390,7 +388,7 @@
                                                         {
                                                             "type": "click_template",
                                                             "template": "tpl_pat_glove.png",
-                                                            "threshold": 0.9,
+                                                            "threshold": 0.95,
                                                             "region_rel": [
                                                                 0.05,
                                                                 0.12,
@@ -463,6 +461,36 @@
                                                             "else": [
                                                                 {
                                                                     "_note": "抚摸重试仍未成功, 如实转点击道具兜底"
+                                                                },
+                                                                {
+                                                                    "type": "if_text",
+                                                                    "text": [
+                                                                        "购买道具"
+                                                                    ],
+                                                                    "min_score": 0.4,
+                                                                    "need_refine": false,
+                                                                    "_note": "D21(2026-11-01): 数量未-1 后判定购买弹窗是否被误触(0 库存图标/拖拽误触, 11-01 日志实锤 touch 触发弹窗→无出口→ensure_home 13 轮循环)。G1 v1 只在链首判一次, 此为链中二次判定; 先关弹窗再转下方点击兜底, 避免点击段在弹窗遮挡下乱跑。误点主防线=本 if_text 前置限定弹窗在屏(✕模板自身两态间隔仅 0.036, 负样本最高 0.964)。",
+                                                                    "then": [
+                                                                        {
+                                                                            "type": "dump_frame",
+                                                                            "tag": "花宝道具购买弹窗取证(链中)",
+                                                                            "_note": "G1 v2(2026-11-03): 本分支只取证+关闭(抚摸/点击链失败点的兜底), 不在此成交; 真实购买仅发生在 touch 段的两道购买门。"
+                                                                        },
+                                                                        {
+                                                                            "type": "click_template",
+                                                                            "template": "buy_popup_close.png",
+                                                                            "threshold": 0.97,
+                                                                            "delay": 1.5,
+                                                                            "_note": "关闭购买弹窗(✕ 32x32 自 11-01 取证帧 124943_005 裁切, md5 5f16a055dd835d78079dfec834ac4b0b, 源位 (923,157) rel(0.721,0.218)); 阈值 0.97 为第二道防线。关闭后交既有 handbook_close/伙伴页出口/ensure_home 收尾。 【主 agent 修订 2026-11-03】模板两态间隔仅 0.036(负样本 0.9599>0.95), 全屏匹配有误点其它粉色✕风险;按实测✕ rel(0.721,0.218) 收紧 region [0.66,0.17,0.78,0.27](区内负样本最高 0.9467<0.95), 并 no_fallback 禁缓存回退。 【阈值修订 0.97】真实引擎(含 scale_range 0.9-1.1)在 region 内负样本最高 0.9504, 0.95 无余量; 0.97 下正例 1.0 命中、负例全 MISS。",
+                                                                            "region_rel": [
+                                                                                0.66,
+                                                                                0.17,
+                                                                                0.78,
+                                                                                0.27
+                                                                            ],
+                                                                            "no_fallback": true
+                                                                        }
+                                                                    ]
                                                                 }
                                                             ]
                                                         }
@@ -471,7 +499,7 @@
                                                 {
                                                     "type": "click_template",
                                                     "template": "tpl_touch_glove.png",
-                                                    "threshold": 0.9,
+                                                    "threshold": 0.95,
                                                     "region_rel": [
                                                         0.05,
                                                         0.12,
@@ -486,82 +514,168 @@
                                                     "name": "选点击手套(872, 食指上指)"
                                                 },
                                                 {
-                                                    "type": "count_probe",
-                                                    "region_rel": [
-                                                        0.125,
-                                                        0.372
+                                                    "type": "if_text",
+                                                    "text": [
+                                                        "购买道具"
                                                     ],
-                                                    "tol": 60,
-                                                    "as": "touch_before",
-                                                    "delay": 0.5,
-                                                    "name": "记录点击道具使用前数量(872 角标)"
-                                                },
-                                                {
-                                                    "type": "touch_drag",
-                                                    "start_rel": [
-                                                        0.121,
-                                                        0.545
-                                                    ],
-                                                    "end_rel": [
-                                                        0.5,
-                                                        0.52
-                                                    ],
-                                                    "delay": 2.5,
-                                                    "name": "点击手套拖到花宝身上(手势)"
-                                                },
-                                                {
-                                                    "type": "reward_dialog",
-                                                    "wait": 5.0,
-                                                    "tries": 2,
-                                                    "required": false,
-                                                    "name": "点击奖励弹窗(若有)"
-                                                },
-                                                {
-                                                    "type": "count_probe",
-                                                    "region_rel": [
-                                                        0.125,
-                                                        0.372
-                                                    ],
-                                                    "tol": 60,
-                                                    "as": "touch_after",
-                                                    "delay": 0.5,
-                                                    "name": "记录点击道具使用后数量"
-                                                },
-                                                {
-                                                    "type": "if_count",
-                                                    "before": "touch_before",
-                                                    "cond": "minus1",
-                                                    "region_rel": [
-                                                        0.125,
-                                                        0.372
-                                                    ],
-                                                    "tol": 60,
+                                                    "min_score": 0.4,
+                                                    "need_refine": false,
+                                                    "_note": "G1 v2(2026-11-03): 点击挠痒痒图标后先判一次「购买道具」(入口已开弹窗的守卫, 命中即受控购买); 未命中则进入使用段 —— 实机确认 0 库存时拖拽后才弹购买框, 故在 touch_drag 后再判一次(见 else 内第二道门)。",
                                                     "then": [
                                                         {
-                                                            "_note": "点击道具 -1 = 使用成功(用户判据)"
+                                                            "type": "if_config",
+                                                            "key": "enable_baobao_buy",
+                                                            "value": true,
+                                                            "default": true,
+                                                            "_note": "自动补货开关(缺键按 true; 关=仅关闭弹窗并跳过本道具分支, 不拖拽不误点)。",
+                                                            "then": [
+                                                                {
+                                                                    "type": "buy_item",
+                                                                    "name": "购买挠痒痒(受控)",
+                                                                    "item_keywords": [
+                                                                        "挠痒痒"
+                                                                    ],
+                                                                    "price": 22,
+                                                                    "qty": 1,
+                                                                    "dialog_region_rel": [
+                                                                        0.22,
+                                                                        0.17,
+                                                                        0.78,
+                                                                        0.82
+                                                                    ],
+                                                                    "balance_region_rel": [
+                                                                        0.858,
+                                                                        0.038
+                                                                    ],
+                                                                    "qty_region_rel": [
+                                                                        0.33,
+                                                                        0.52,
+                                                                        0.67,
+                                                                        0.6
+                                                                    ],
+                                                                    "price_region_rel": [
+                                                                        0.42,
+                                                                        0.62,
+                                                                        0.6,
+                                                                        0.68
+                                                                    ],
+                                                                    "balance_tol": 80,
+                                                                    "desc_keywords": [
+                                                                        "可使用5次",
+                                                                        "增加3点年龄点数"
+                                                                    ],
+                                                                    "balance_floor": 10000,
+                                                                    "max_per_run": 1,
+                                                                    "_note": "G1 v2(2026-11-03, 用户授权真实花费): 确认框 OCR 全文 AND 核对(标题/商品名/消耗/仙豆/说明)+数量/价格分区域纯数字; 开跑读 B0, 低于 10000 或不足 22 即停; OCR 点「购买」(exact+区域+no_fallback); 点击后 0.12s 起快照读 B1, 差额必须 -22 才算 PASS, 不可读则 balance_unverified WARN(不伪造); 单轮上限 1 次, 失败关弹窗并中止本分支。弹窗区域按 11-01 取证帧实测(标题 380,148 / 数量 625,423 / 价格 647,469 / 按钮 634,526 / 余额 1084,27)。"
+                                                                },
+                                                                {
+                                                                    "type": "reward_dialog",
+                                                                    "wait": 3.0,
+                                                                    "tries": 1,
+                                                                    "required": false,
+                                                                    "name": "购买后奖励弹窗(若有)"
+                                                                },
+                                                                {
+                                                                    "type": "if_text",
+                                                                    "text": [
+                                                                        "购买道具"
+                                                                    ],
+                                                                    "min_score": 0.4,
+                                                                    "need_refine": false,
+                                                                    "_note": "到货复核A: 购买后弹窗仍在 = 未生效; 关弹窗并如实中止本模块(不追加购买)。",
+                                                                    "then": [
+                                                                        {
+                                                                            "type": "click_template",
+                                                                            "template": "buy_popup_close.png",
+                                                                            "threshold": 0.97,
+                                                                            "delay": 1.5,
+                                                                            "_note": "D21 关闭钮(32x32 自 11-01 取证帧 124943_005 裁切); region 收紧 [0.66,0.17,0.78,0.27] + no_fallback + 0.97(区内负样本最高 0.9504)。",
+                                                                            "region_rel": [
+                                                                                0.66,
+                                                                                0.17,
+                                                                                0.78,
+                                                                                0.27
+                                                                            ],
+                                                                            "no_fallback": true
+                                                                        },
+                                                                        {
+                                                                            "type": "fail_flow",
+                                                                            "reason": "购买后「购买道具」弹窗仍在, 未到货/未生效, 停止购买"
+                                                                        }
+                                                                    ],
+                                                                    "else": []
+                                                                },
+                                                                {
+                                                                    "type": "click_template",
+                                                                    "template": "tpl_touch_glove.png",
+                                                                    "threshold": 0.95,
+                                                                    "region_rel": [
+                                                                        0.05,
+                                                                        0.12,
+                                                                        0.2,
+                                                                        0.62
+                                                                    ],
+                                                                    "scale_range": [
+                                                                        0.9,
+                                                                        1.1
+                                                                    ],
+                                                                    "delay": 1.0,
+                                                                    "name": "到货复核: 重选点击手套(0.95 + 区域 + no_fallback)",
+                                                                    "_note": "购买成功后重选图标; 若仍弹购买框, 到货复核B 会关闭并如实失败。保留原 region/scale。"
+                                                                },
+                                                                {
+                                                                    "type": "if_text",
+                                                                    "text": [
+                                                                        "购买道具"
+                                                                    ],
+                                                                    "min_score": 0.4,
+                                                                    "need_refine": false,
+                                                                    "_note": "到货复核B: 重选后仍弹购买框 = 库存未到账; 关弹窗并如实中止本模块。",
+                                                                    "then": [
+                                                                        {
+                                                                            "type": "click_template",
+                                                                            "template": "buy_popup_close.png",
+                                                                            "threshold": 0.97,
+                                                                            "delay": 1.5,
+                                                                            "_note": "D21 关闭钮(32x32 自 11-01 取证帧 124943_005 裁切); region 收紧 [0.66,0.17,0.78,0.27] + no_fallback + 0.97(区内负样本最高 0.9504)。",
+                                                                            "region_rel": [
+                                                                                0.66,
+                                                                                0.17,
+                                                                                0.78,
+                                                                                0.27
+                                                                            ],
+                                                                            "no_fallback": true
+                                                                        },
+                                                                        {
+                                                                            "type": "fail_flow",
+                                                                            "reason": "购买后重选仍弹出购买框, 到货复核失败, 停止购买"
+                                                                        }
+                                                                    ],
+                                                                    "else": []
+                                                                }
+                                                            ],
+                                                            "else": [
+                                                                {
+                                                                    "type": "click_template",
+                                                                    "template": "buy_popup_close.png",
+                                                                    "threshold": 0.97,
+                                                                    "delay": 1.5,
+                                                                    "_note": "D21 关闭钮(32x32 自 11-01 取证帧 124943_005 裁切); region 收紧 [0.66,0.17,0.78,0.27] + no_fallback + 0.97(区内负样本最高 0.9504)。",
+                                                                    "region_rel": [
+                                                                        0.66,
+                                                                        0.17,
+                                                                        0.78,
+                                                                        0.27
+                                                                    ],
+                                                                    "no_fallback": true
+                                                                },
+                                                                {
+                                                                    "_note": "enable_baobao_buy=false: 已关闭购买弹窗, 跳过本道具使用段(不拖拽、不误点)。"
+                                                                }
+                                                            ]
                                                         }
                                                     ],
                                                     "else": [
-                                                        {
-                                                            "_note": "点击道具数量未减 = 第一拖未成功或驻留气泡致误读, 同样有界重试一轮(重选-重读-再拖-再判)"
-                                                        },
-                                                        {
-                                                            "type": "click_template",
-                                                            "template": "tpl_touch_glove.png",
-                                                            "threshold": 0.9,
-                                                            "region_rel": [
-                                                                0.05,
-                                                                0.12,
-                                                                0.2,
-                                                                0.62
-                                                            ],
-                                                            "scale_range": [
-                                                                0.9,
-                                                                1.1
-                                                            ],
-                                                            "delay": 1.0,
-                                                            "name": "重选点击手套(恢复选中态)"
-                                                        },
                                                         {
                                                             "type": "count_probe",
                                                             "region_rel": [
@@ -570,8 +684,8 @@
                                                             ],
                                                             "tol": 60,
                                                             "as": "touch_before",
-                                                            "delay": 1.0,
-                                                            "name": "重读点击道具数量(避开气泡误读)"
+                                                            "delay": 0.5,
+                                                            "name": "记录点击道具使用前数量(872 角标)"
                                                         },
                                                         {
                                                             "type": "touch_drag",
@@ -584,50 +698,324 @@
                                                                 0.52
                                                             ],
                                                             "delay": 2.5,
-                                                            "name": "点击手套重试拖拽"
+                                                            "name": "点击手套拖到花宝身上(手势)"
                                                         },
                                                         {
-                                                            "type": "reward_dialog",
-                                                            "wait": 5.0,
-                                                            "tries": 2,
-                                                            "required": false,
-                                                            "name": "点击重试弹窗(若有)"
-                                                        },
-                                                        {
-                                                            "type": "count_probe",
-                                                            "region_rel": [
-                                                                0.125,
-                                                                0.372
+                                                            "type": "if_text",
+                                                            "text": [
+                                                                "购买道具"
                                                             ],
-                                                            "tol": 60,
-                                                            "as": "touch_after",
-                                                            "delay": 0.5,
-                                                            "name": "点击重试后数量"
-                                                        },
-                                                        {
-                                                            "type": "if_count",
-                                                            "before": "touch_before",
-                                                            "cond": "minus1",
-                                                            "region_rel": [
-                                                                0.125,
-                                                                0.372
-                                                            ],
-                                                            "tol": 60,
+                                                            "min_score": 0.4,
+                                                            "need_refine": false,
+                                                            "_note": "实机修订(2026-11-03): 0 库存时首次点击只选中, 拖拽到花宝后才弹出「购买道具」(角标 0)。故购买门在 touch_drag 之后判定; 命中→受控购买并跳过使用段, 未命中→正常使用段(reward/计数/复核)。",
                                                             "then": [
                                                                 {
-                                                                    "_note": "点击重试 -1 = 使用成功"
+                                                                    "type": "if_config",
+                                                                    "key": "enable_baobao_buy",
+                                                                    "value": true,
+                                                                    "default": true,
+                                                                    "_note": "自动补货开关(缺键按 true; 关=仅关闭弹窗并跳过本道具分支, 不拖拽不误点)。",
+                                                                    "then": [
+                                                                        {
+                                                                            "type": "buy_item",
+                                                                            "name": "购买挠痒痒(受控)",
+                                                                            "item_keywords": [
+                                                                                "挠痒痒"
+                                                                            ],
+                                                                            "price": 22,
+                                                                            "qty": 1,
+                                                                            "dialog_region_rel": [
+                                                                                0.22,
+                                                                                0.17,
+                                                                                0.78,
+                                                                                0.82
+                                                                            ],
+                                                                            "balance_region_rel": [
+                                                                                0.858,
+                                                                                0.038
+                                                                            ],
+                                                                            "qty_region_rel": [
+                                                                                0.33,
+                                                                                0.52,
+                                                                                0.67,
+                                                                                0.6
+                                                                            ],
+                                                                            "price_region_rel": [
+                                                                                0.42,
+                                                                                0.62,
+                                                                                0.6,
+                                                                                0.68
+                                                                            ],
+                                                                            "balance_tol": 80,
+                                                                            "desc_keywords": [
+                                                                                "可使用5次",
+                                                                                "增加3点年龄点数"
+                                                                            ],
+                                                                            "balance_floor": 10000,
+                                                                            "max_per_run": 1,
+                                                                            "_note": "G1 v2(2026-11-03, 用户授权真实花费): 确认框 OCR 全文 AND 核对(标题/商品名/消耗/仙豆/说明)+数量/价格分区域纯数字; 开跑读 B0, 低于 10000 或不足 22 即停; OCR 点「购买」(exact+区域+no_fallback); 点击后 0.12s 起快照读 B1, 差额必须 -22 才算 PASS, 不可读则 balance_unverified WARN(不伪造); 单轮上限 1 次, 失败关弹窗并中止本分支。弹窗区域按 11-01 取证帧实测(标题 380,148 / 数量 625,423 / 价格 647,469 / 按钮 634,526 / 余额 1084,27)。"
+                                                                        },
+                                                                        {
+                                                                            "type": "reward_dialog",
+                                                                            "wait": 3.0,
+                                                                            "tries": 1,
+                                                                            "required": false,
+                                                                            "name": "购买后奖励弹窗(若有)"
+                                                                        },
+                                                                        {
+                                                                            "type": "if_text",
+                                                                            "text": [
+                                                                                "购买道具"
+                                                                            ],
+                                                                            "min_score": 0.4,
+                                                                            "need_refine": false,
+                                                                            "_note": "到货复核A: 购买后弹窗仍在 = 未生效; 关弹窗并如实中止本模块(不追加购买)。",
+                                                                            "then": [
+                                                                                {
+                                                                                    "type": "click_template",
+                                                                                    "template": "buy_popup_close.png",
+                                                                                    "threshold": 0.97,
+                                                                                    "delay": 1.5,
+                                                                                    "_note": "D21 关闭钮(32x32 自 11-01 取证帧 124943_005 裁切); region 收紧 [0.66,0.17,0.78,0.27] + no_fallback + 0.97(区内负样本最高 0.9504)。",
+                                                                                    "region_rel": [
+                                                                                        0.66,
+                                                                                        0.17,
+                                                                                        0.78,
+                                                                                        0.27
+                                                                                    ],
+                                                                                    "no_fallback": true
+                                                                                },
+                                                                                {
+                                                                                    "type": "fail_flow",
+                                                                                    "reason": "购买后「购买道具」弹窗仍在, 未到货/未生效, 停止购买"
+                                                                                }
+                                                                            ],
+                                                                            "else": []
+                                                                        },
+                                                                        {
+                                                                            "type": "click_template",
+                                                                            "template": "tpl_touch_glove.png",
+                                                                            "threshold": 0.95,
+                                                                            "region_rel": [
+                                                                                0.05,
+                                                                                0.12,
+                                                                                0.2,
+                                                                                0.62
+                                                                            ],
+                                                                            "scale_range": [
+                                                                                0.9,
+                                                                                1.1
+                                                                            ],
+                                                                            "delay": 1.0,
+                                                                            "name": "到货复核: 重选点击手套(0.95 + 区域 + no_fallback)",
+                                                                            "_note": "购买成功后重选图标; 若仍弹购买框, 到货复核B 会关闭并如实失败。保留原 region/scale。"
+                                                                        },
+                                                                        {
+                                                                            "type": "if_text",
+                                                                            "text": [
+                                                                                "购买道具"
+                                                                            ],
+                                                                            "min_score": 0.4,
+                                                                            "need_refine": false,
+                                                                            "_note": "到货复核B: 重选后仍弹购买框 = 库存未到账; 关弹窗并如实中止本模块。",
+                                                                            "then": [
+                                                                                {
+                                                                                    "type": "click_template",
+                                                                                    "template": "buy_popup_close.png",
+                                                                                    "threshold": 0.97,
+                                                                                    "delay": 1.5,
+                                                                                    "_note": "D21 关闭钮(32x32 自 11-01 取证帧 124943_005 裁切); region 收紧 [0.66,0.17,0.78,0.27] + no_fallback + 0.97(区内负样本最高 0.9504)。",
+                                                                                    "region_rel": [
+                                                                                        0.66,
+                                                                                        0.17,
+                                                                                        0.78,
+                                                                                        0.27
+                                                                                    ],
+                                                                                    "no_fallback": true
+                                                                                },
+                                                                                {
+                                                                                    "type": "fail_flow",
+                                                                                    "reason": "购买后重选仍弹出购买框, 到货复核失败, 停止购买"
+                                                                                }
+                                                                            ],
+                                                                            "else": []
+                                                                        }
+                                                                    ],
+                                                                    "else": [
+                                                                        {
+                                                                            "type": "click_template",
+                                                                            "template": "buy_popup_close.png",
+                                                                            "threshold": 0.97,
+                                                                            "delay": 1.5,
+                                                                            "_note": "D21 关闭钮(32x32 自 11-01 取证帧 124943_005 裁切); region 收紧 [0.66,0.17,0.78,0.27] + no_fallback + 0.97(区内负样本最高 0.9504)。",
+                                                                            "region_rel": [
+                                                                                0.66,
+                                                                                0.17,
+                                                                                0.78,
+                                                                                0.27
+                                                                            ],
+                                                                            "no_fallback": true
+                                                                        },
+                                                                        {
+                                                                            "_note": "enable_baobao_buy=false: 已关闭购买弹窗, 跳过本道具使用段(不拖拽、不误点)。"
+                                                                        }
+                                                                    ]
                                                                 }
                                                             ],
                                                             "else": [
                                                                 {
-                                                                    "_note": "两轮均未减量: 任一道具成功即完成(用户裁定), 未成功不假装成功, 关页后手账进度如实反映"
+                                                                    "type": "reward_dialog",
+                                                                    "wait": 5.0,
+                                                                    "tries": 2,
+                                                                    "required": false,
+                                                                    "name": "点击奖励弹窗(若有)"
+                                                                },
+                                                                {
+                                                                    "type": "count_probe",
+                                                                    "region_rel": [
+                                                                        0.125,
+                                                                        0.372
+                                                                    ],
+                                                                    "tol": 60,
+                                                                    "as": "touch_after",
+                                                                    "delay": 0.5,
+                                                                    "name": "记录点击道具使用后数量"
+                                                                },
+                                                                {
+                                                                    "type": "if_count",
+                                                                    "before": "touch_before",
+                                                                    "cond": "minus1",
+                                                                    "region_rel": [
+                                                                        0.125,
+                                                                        0.372
+                                                                    ],
+                                                                    "tol": 60,
+                                                                    "then": [
+                                                                        {
+                                                                            "_note": "点击道具 -1 = 使用成功(用户判据)"
+                                                                        }
+                                                                    ],
+                                                                    "else": [
+                                                                        {
+                                                                            "_note": "点击道具数量未减 = 第一拖未成功或驻留气泡致误读, 同样有界重试一轮(重选-重读-再拖-再判)"
+                                                                        },
+                                                                        {
+                                                                            "type": "click_template",
+                                                                            "template": "tpl_touch_glove.png",
+                                                                            "threshold": 0.95,
+                                                                            "region_rel": [
+                                                                                0.05,
+                                                                                0.12,
+                                                                                0.2,
+                                                                                0.62
+                                                                            ],
+                                                                            "scale_range": [
+                                                                                0.9,
+                                                                                1.1
+                                                                            ],
+                                                                            "delay": 1.0,
+                                                                            "name": "重选点击手套(恢复选中态)"
+                                                                        },
+                                                                        {
+                                                                            "type": "count_probe",
+                                                                            "region_rel": [
+                                                                                0.125,
+                                                                                0.372
+                                                                            ],
+                                                                            "tol": 60,
+                                                                            "as": "touch_before",
+                                                                            "delay": 1.0,
+                                                                            "name": "重读点击道具数量(避开气泡误读)"
+                                                                        },
+                                                                        {
+                                                                            "type": "touch_drag",
+                                                                            "start_rel": [
+                                                                                0.121,
+                                                                                0.545
+                                                                            ],
+                                                                            "end_rel": [
+                                                                                0.5,
+                                                                                0.52
+                                                                            ],
+                                                                            "delay": 2.5,
+                                                                            "name": "点击手套重试拖拽"
+                                                                        },
+                                                                        {
+                                                                            "type": "reward_dialog",
+                                                                            "wait": 5.0,
+                                                                            "tries": 2,
+                                                                            "required": false,
+                                                                            "name": "点击重试弹窗(若有)"
+                                                                        },
+                                                                        {
+                                                                            "type": "count_probe",
+                                                                            "region_rel": [
+                                                                                0.125,
+                                                                                0.372
+                                                                            ],
+                                                                            "tol": 60,
+                                                                            "as": "touch_after",
+                                                                            "delay": 0.5,
+                                                                            "name": "点击重试后数量"
+                                                                        },
+                                                                        {
+                                                                            "type": "if_count",
+                                                                            "before": "touch_before",
+                                                                            "cond": "minus1",
+                                                                            "region_rel": [
+                                                                                0.125,
+                                                                                0.372
+                                                                            ],
+                                                                            "tol": 60,
+                                                                            "then": [
+                                                                                {
+                                                                                    "_note": "点击重试 -1 = 使用成功"
+                                                                                }
+                                                                            ],
+                                                                            "else": [
+                                                                                {
+                                                                                    "_note": "两轮均未减量: 任一道具成功即完成(用户裁定), 未成功不假装成功, 关页后手账进度如实反映"
+                                                                                },
+                                                                                {
+                                                                                    "type": "if_text",
+                                                                                    "text": [
+                                                                                        "购买道具"
+                                                                                    ],
+                                                                                    "min_score": 0.4,
+                                                                                    "need_refine": false,
+                                                                                    "_note": "D21(2026-11-01): 最终失败点的链中二次判定(同抚摸侧; 11-01 实锤 touch 误触 0 库存挠痒痒触发购买弹窗且 ensure_home 无出口 13 轮循环)。误点主防线=本 if_text 前置限定弹窗在屏。",
+                                                                                    "then": [
+                                                                                        {
+                                                                                            "type": "dump_frame",
+                                                                                            "tag": "花宝道具购买弹窗取证(链中)",
+                                                                                            "_note": "G1 v2(2026-11-03): 本分支只取证+关闭(抚摸/点击链失败点的兜底), 不在此成交; 真实购买仅发生在 touch 段的两道购买门。"
+                                                                                        },
+                                                                                        {
+                                                                                            "type": "click_template",
+                                                                                            "template": "buy_popup_close.png",
+                                                                                            "threshold": 0.97,
+                                                                                            "delay": 1.5,
+                                                                                            "_note": "关闭购买弹窗(✕ 32x32 自 11-01 取证帧 124943_005 裁切, md5 5f16a055dd835d78079dfec834ac4b0b); 关闭后交既有 handbook_close/伙伴页出口/ensure_home 收尾, 任务当日如实未完成。 【主 agent 修订 2026-11-03】模板两态间隔仅 0.036(负样本 0.9599>0.95), 全屏匹配有误点其它粉色✕风险;按实测✕ rel(0.721,0.218) 收紧 region [0.66,0.17,0.78,0.27](区内负样本最高 0.9467<0.95), 并 no_fallback 禁缓存回退。 【阈值修订 0.97】真实引擎(含 scale_range 0.9-1.1)在 region 内负样本最高 0.9504, 0.95 无余量; 0.97 下正例 1.0 命中、负例全 MISS。",
+                                                                                            "region_rel": [
+                                                                                                0.66,
+                                                                                                0.17,
+                                                                                                0.78,
+                                                                                                0.27
+                                                                                            ],
+                                                                                            "no_fallback": true
+                                                                                        }
+                                                                                    ]
+                                                                                }
+                                                                            ]
+                                                                        }
+                                                                    ]
                                                                 }
                                                             ]
                                                         }
                                                     ]
                                                 }
                                             ],
-                                            "_note": "G1 v1(2026-10-27): 道具页无货态分支 —— 「购买道具」在屏=手套无库存(2026-10-26 实锤: 手套模板 MISS+计数读到其它道具+购买道具@(380,148))。在库(else)才执行手套段。v1 只取证不成交; v2 待弹窗采样后实现受守卫的购买。"
+                                            "_note": "G1(2026-10-27 起, v2 2026-11-03): 道具页无货态分支 —— 「购买道具」已在屏=手套无库存(2026-10-26 实锤: 手套模板 MISS+计数读到其它道具+购买道具@(380,148))。在库(else)才执行手套段。v2 真实购买: 链首门(入口已开弹窗直接购买) + touch_drag 后第二道门(实机: 0 库存首点击只选中, 拖拽后才弹框); 两门共用受控 buy_item。"
                                         },
                                         {
                                             "type": "click_template",
