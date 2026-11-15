@@ -2786,6 +2786,46 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 - **未处理（需实机/样本）**：W1-005（`claim_scroll` 是否命中「已领取」）、W2-006（community_like 1280 绝对像素）、
   W3-001（`b1_switch_down=0.8` / `close_online_small=0.85` 正负样本）、W5-002（历史 `back()`/`click_rel` 死代码）。
 
+## 2026-11-16 · 合并试验性 OCR 引擎包化重构 + 原生 WPF UI（里程碑 116）
+
+**前置**：第二轮实机复跑（native UI 启动，后端 8766，配置同上一轮：不跑 plant/idle、`enable_switch=false`、
+`use_cache_pos=false`）。03:26–04:01，**ok=5 / skip=0 / fail=0**：startup 89s · social 23m55s（好友两栏 24 页、
+采集 11 次）· energy 82s · claim 3m17s · daily 5m11s。上一轮 claim「花灵派对」软失败未复现（判据与正式版同源，
+属游戏状态）；社交有 1 个好友行点击被吞，3 次重试后如实跳过（未登记失败）；本轮未出现「没有花粉」弹窗。
+故判定**无重要缺陷**，执行合并。
+
+### 116.1 OCR 引擎包化（E01）
+
+- 根 `ocr_engine.py` 改为 CLI shim + 全量符号再导出；新增 `ocr_engine/` 包（26 个 `.py`，Mixin 纵切：
+  `engine/_core` / `_ocr` / `_findtext` / `_template` / `_steps` / `_orchestrate` / `_reward` 等），
+  `import ocr_engine` 与 `STEP_TYPES`（42 种）不变。
+- 新增 `metrics_recorder.py`（每轮度量落盘）与 `tools/api_contract_selftest.py`、`tools/collect_frames.py`。
+- 三方合并（base `714a919`）解析并保留里程碑 114 审查修复：`webui.py` 采用重构包 `_try_claim_running`
+  （锁内换轨 + connect 失败回滚）并保留线程启动 try/except；`webui.html` 保留重构 `appendLogLines` 并补回
+  20000 分片/DOM 上限；`pollin.py` 采用 lab 的「连续 2 轮关框失败如实放弃」；`ocr_ui.py` 采用 Q02 单例补丁
+  + 双检锁；`webui_app.py` 保留 `save_file` basename + 扩展名白名单；`check_project/review_batch` 合并
+  `ocr_engine/` 与 `native/` 覆盖，同时保留 `webui_app/main` T2 口径。
+- flows/requirements 自动合并零冲突，`default:true` 与手套 0.95 均保留。
+
+### 116.2 原生 WPF UI（壳 2）
+
+- `native/FAA.WpfGui/`（53 源文件）+ `native/FAA.WpfGui.Tests/`（6 文件）+ `native/README.md` 入仓；
+  根新增 `start_faa_native.bat`。`dist/`（154MB）本地复制可用但按 `.gitignore` 不入库。
+- 实机链路：`--api-base http://127.0.0.1:8766` → 勾选 5 模块 → 开始一轮 → SSE 日志实时刷新 →
+  `ok=5/fail=0` → 回空闲。连接徽标固定显示缺省 8765（实际请求走 `--api-base`），列为已知显示瑕疵。
+
+### 116.3 验证
+
+- `tools/check_project.py`：**exit 0**，JSON 15/15、步骤类型 42 种/371 处/未知 0、语法 **39/39**；
+  webui 契约（面板键 ⊆ set_config、POST 分派 15↔15、WPF SetConfigKeys 22 键一致）；native csproj/sln 存在；
+  dotnet 不在 PATH → 构建硬判降级 WARN。
+- 导入冒烟：`import ocr_engine/pollin/ocr_ui/metrics_recorder/webui/webui_app` OK，`STEP_TYPES=42`；
+  `main.py --list` 8 个流程正常。
+- 正式版 8765 冒烟：`/api/status`、`/api/daily`（7 模块）、`/api/stream` SSE、`/api/connect`（1920×1080 /
+  工作区 1280×720）、`/api/shutdown` 全部正常，端口已释放。
+- 无花粉守卫离线桩测：正式版 / `_lab` / 上游重构包三份 PASS。
+- **未验证**：WPF 关窗停服与 `finish_action=close_client`；dotnet build（本机 PATH 无 dotnet，闸门降级 WARN）。
+
 ## 2026-11-16 · 实机发现「没有花粉」提示框吞点击（里程碑 115）
 
 **来源**：lab 试验包实机跑 social（8766）在好友花园点「采粉」后中止。存证帧 OCR（`_lab/ocr/reports/abort_ocr_20261116_020434.json`）

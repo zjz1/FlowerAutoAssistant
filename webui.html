@@ -188,7 +188,7 @@
         <label>完成后</label>
         <select id="maa-finish">
           <option value="none">无动作</option>
-          <option value="close">关闭客户端</option>
+          <option value="close_client">关闭客户端</option>
         </select>
       </div>
       <button id="maa-start" class="start-btn">开始一轮</button>
@@ -244,12 +244,30 @@
           <span class="lbl">OCR 线程数</span>
           <label class="cfg-hint"><input type="number" id="maa-octhr-input" min="0" max="8" step="1" style="width:52px"> (0=不限制)</label>
         </div>
+        <div class="cfg-row">
+          <span class="lbl">OCR 执行后端</span>
+          <label class="cfg-hint"><select id="maa-ocrprov-sel" style="width:72px">
+            <option value="cpu">cpu</option>
+            <option value="dml">dml</option>
+            <option value="cuda">cuda</option>
+          </select></label>
+        </div>
+        <div class="cfg-row">
+          <span class="lbl">OCR 方向分类</span>
+          <label class="cfg-hint"><input type="checkbox" id="maa-cls-chk"> 启用</label>
+        </div>
         <p class="maa-note"><b>两项默认关闭。</b>关闭时只认本次实时识别（OCR/模板/锚点/颜色），
           认不到就如实失败，绝不用知识库里的历史坐标盲点 —— 2026-10-03「切换账号」误登录正是回退历史坐标所致。
           「使用缓存位置」只管<b>自动学到的</b>历史坐标；流程里人工写死的兜底坐标仍生效。
           手动采集/标注不受「记录按钮位置」影响；改动即时保存，下次「开始一轮」生效。
           「OCR 线程数」为 RapidOCR 每 ONNX 会话的推理线程数（默认 2；0=不限制即吃满全部物理核；
-          数值越大识别越快但越吃 CPU），<b>改后需重启服务生效</b>（会话在引擎启动时创建）。</p>
+          数值越大识别越快但越吃 CPU），<b>改后需重启服务生效</b>（会话在引擎启动时创建）。
+          「OCR 执行后端」选择推理执行档（默认 cpu，与历史行为逐字节一致）：dml=DirectML（兼容任意
+          DX12 GPU 含核显/集显）；cuda=NVIDIA CUDA（P2E 实验链独立 venv）。GPU 档构建失败（venv
+          缺位/驱动缺失/拔卡）会<b>自动回退 cpu 并在日志如实记录</b>，绝不静默；<b>改后需重启服务生效</b>。
+          「OCR 方向分类」为 RapidOCR 文字方向分类器（cls）开关（默认启用=与历史行为逐字节一致）；
+          关闭后每个识别裁片少跑一次方向分类，但低分块可能恢复并接近 0.5 判定线 —— 是否默认关闭
+          以 det736 口径配对 A/B 数据为准（实验批次另行判定），<b>改后需重启服务生效</b>。</p>
       </div>
 
       <div class="maa-panel">
@@ -359,6 +377,10 @@ const el = {};
 let autoTimer = null;
 let logCursor = 0;
 let logPolling = true;    // 关闭服务后置 false: 服务已退出, 继续轮询只会不断抛错
+let sseActive = false;    // W02(batch-04): SSE 推送激活中 —— log/status/failures 三事件走
+                          // /api/stream 推送, 对应轮询挂起; 断线回退轮询(见 startSSE)
+let es = null;            // EventSource 实例; 断线即 close 并回退轮询(不自动重连 —— 重连会
+                          // 从游标 0 全量重放日志造成重复, 回退轮询按既有游标无缝续拉)
 const logChunks = [];     // 服务端返回的**原始分片**(与 _LOGS 元素一一对应, 2026-10-01)
                           // 离线导出必须用它 join("") 才能与服务端 "".join(_LOGS) 等价:
                           // print("abc\n") 会产生 2 个分片, 按 div 拼行会多出空行/断行错位。
@@ -431,6 +453,8 @@ $("shutdown-btn").onclick = async ()=>{
     const d = await api("/api/shutdown", {method:"POST", body:"{}"});
     shutdownDone = true;   // 仅在服务端确认成功后豁免; 请求失败仍照常确认(服务可能还在运行)
     logPolling = false;         // 服务即将退出, 停掉日志轮询(否则每 800ms 对死服务空转)
+    if(es){ es.close(); es = null; }   // W02: 一并断开 SSE 推送(onerror 据此不再回退轮询)
+    sseActive = false;
     clearInterval(autoTimer);   // 停掉截屏/状态自动刷新
     alert((d.message || "服务已关闭") + "。此页面将失效。");
     document.body.innerHTML = "<div style='padding:40px;text-align:center;color:var(--muted);font-size:15px'>" +
@@ -443,60 +467,70 @@ $("shutdown-btn").onclick = async ()=>{
 async function refreshStatus(){
   try{
     const s = await api("/api/status");
-    runningFlag = !!s.running;
-    currentRunningModule = s.current_module || null;
-    confirmPageClose = (s.confirm_page_close !== false);
-    // 页面版本过期检测(2026-10-12): 服务端 webui.html 已更新而本页是旧版 → 顶部横幅提示刷新。
-    // 只提示不强刷: 流程运行中用户可能正在盯实时画面/日志, 强刷会打断监控。
-    if(!staleBannerShown && MY_UI_BUILD && s.ui_build && s.ui_build !== MY_UI_BUILD){
-      staleBannerShown = true;
-      const b = $("ui-stale-banner");
-      if(b) b.style.display = "flex";
+    applyStatus(s);
+    // W02: SSE 激活时失败清单走推送事件, 不随状态轮询搭车(请求对拍口径的三通道之一);
+    // 轮询兜底期/页面初始一次照旧拉取。
+    if(!sseActive) refreshFailures();
+  }catch(e){}
+}
+
+// W02(batch-04): /api/status 载荷应用逻辑 —— 轮询与 SSE status 事件共用同一处理函数,
+// 两条通道对 UI 的效果完全一致。fc.prompt 一次性字段在此单次消费: 服务端 _status() 首读
+// 即翻转 _CACHE_PROMPT_PENDING(webui.py), 页面初始轮询与 SSE 首帧谁先读到谁弹一次,
+// fcModalShown 客户端守卫兜底 —— 不重复弹(本批 W02 验收项)。
+function applyStatus(s){
+  runningFlag = !!s.running;
+  currentRunningModule = s.current_module || null;
+  confirmPageClose = (s.confirm_page_close !== false);
+  // 页面版本过期检测(2026-10-12): 服务端 webui.html 已更新而本页是旧版 → 顶部横幅提示刷新。
+  // 只提示不强刷: 流程运行中用户可能正在盯实时画面/日志, 强刷会打断监控。
+  if(!staleBannerShown && MY_UI_BUILD && s.ui_build && s.ui_build !== MY_UI_BUILD){
+    staleBannerShown = true;
+    const b = $("ui-stale-banner");
+    if(b) b.style.display = "flex";
+  }
+  if(currentRunningModule !== _prevRunMod){ _prevRunMod = currentRunningModule; renderMaaTasks(); if(maaActiveMod) showModuleSettings(maaActiveMod); }
+  if(confirmPageClose !== _prevConfirm){ _prevConfirm = confirmPageClose; const c=$("ui-close-confirm-chk"); if(c) c.checked = confirmPageClose; }
+  try{
+    $("run-btn").disabled = runningFlag;
+    $("maa-start").disabled = runningFlag;
+  }catch(e){}
+  const c = !!s.connected;
+  $("conn-badge").textContent = c ? "已连接" : "未连接";
+  $("conn-badge").className = "badge " + (c?"on":"off");
+  $("mode-badge").textContent = s.debug_click ? "测试模式" : "使用模式";
+  $("mode-badge").className = "badge " + (s.debug_click?"":"on");
+  $("screen-size").textContent = s.screen ? s.screen.join("×")
+                                          : (c ? "读取中…" : "待读取");
+  if(s.screen && s.work && s.screen.join("×") !== s.work.join("×"))
+      $("screen-size").title = "引擎工作区 " + s.work.join("×") +
+                               "（MAA 截图长边缩放, 相对坐标不受影响）";
+  else
+      $("screen-size").removeAttribute("title");
+  if(c) $("screen-hint").style.display = "none";
+  else $("screen-hint").style.display = "flex";
+  // 截图缓存(里程碑 94): 顶栏常驻显示; 首次加载超阈值弹提醒(服务端记录, 刷新不重复弹)
+  const fc = s.fail_cache || null;
+  if(fc){
+    failCacheInfo = fc;
+    const b = $("fail-cache-badge");
+    if(b){
+      b.textContent = `截图缓存 ${fc.mb.toFixed(1)}MB`;
+      b.style.color = fc.exceed ? "#c0392b" : "";
+      b.style.fontWeight = fc.exceed ? "600" : "";
+      b.title = `故障存证截图缓存 ${fc.mb.toFixed(1)} MB / ${fc.count} 张 / ${fc.sessions} 个会话`
+              + `${fc.oldest ? '，最早 ' + fc.oldest : ''}（提醒阈值 ${fc.threshold_mb} MB）`
+              + `\n出错现场的全量 OCR + 截图（当场写盘, 不占运行内存; 跨重启保留）。`
+              + `\n点右侧「浏览截图」打开缓存目录。`;
     }
-    if(currentRunningModule !== _prevRunMod){ _prevRunMod = currentRunningModule; renderMaaTasks(); if(maaActiveMod) showModuleSettings(maaActiveMod); }
-    if(confirmPageClose !== _prevConfirm){ _prevConfirm = confirmPageClose; const c=$("ui-close-confirm-chk"); if(c) c.checked = confirmPageClose; }
-    try{
-      $("run-btn").disabled = runningFlag;
-      $("maa-start").disabled = runningFlag;
-    }catch(e){}
-    const c = !!s.connected;
-    $("conn-badge").textContent = c ? "已连接" : "未连接";
-    $("conn-badge").className = "badge " + (c?"on":"off");
-    $("mode-badge").textContent = s.debug_click ? "测试模式" : "使用模式";
-    $("mode-badge").className = "badge " + (s.debug_click?"":"on");
-    $("screen-size").textContent = s.screen ? s.screen.join("×")
-                                            : (c ? "读取中…" : "待读取");
-    if(s.screen && s.work && s.screen.join("×") !== s.work.join("×"))
-        $("screen-size").title = "引擎工作区 " + s.work.join("×") +
-                                 "（MAA 截图长边缩放, 相对坐标不受影响）";
-    else
-        $("screen-size").removeAttribute("title");
-    if(c) $("screen-hint").style.display = "none";
-    else $("screen-hint").style.display = "flex";
-    // 截图缓存(里程碑 94): 顶栏常驻显示; 首次加载超阈值弹提醒(服务端记录, 刷新不重复弹)
-    const fc = s.fail_cache || null;
-    if(fc){
-      failCacheInfo = fc;
-      const b = $("fail-cache-badge");
-      if(b){
-        b.textContent = `截图缓存 ${fc.mb.toFixed(1)}MB`;
-        b.style.color = fc.exceed ? "#c0392b" : "";
-        b.style.fontWeight = fc.exceed ? "600" : "";
-        b.title = `故障存证截图缓存 ${fc.mb.toFixed(1)} MB / ${fc.count} 张 / ${fc.sessions} 个会话`
-                + `${fc.oldest ? '，最早 ' + fc.oldest : ''}（提醒阈值 ${fc.threshold_mb} MB）`
-                + `\n出错现场的全量 OCR + 截图（当场写盘, 不占运行内存; 跨重启保留）。`
-                + `\n点右侧「浏览截图」打开缓存目录。`;
-      }
-      const inp = $("fc-prompt-mb");
-      if(inp && document.activeElement !== inp) inp.value = fc.threshold_mb;
-      if(fc.prompt && !fcModalShown){ fcModalShown = true; showFcModal(fc); }
-    }
-    $("maa-connect").textContent = c ? "已连接" : "连接";
-    try{
-      $("connect-btn").textContent = c ? "已连接" : "连接";
-      $("connect-btn").classList.toggle("primary", c);
-    }catch(e){}
-    refreshFailures();          // 顺带轮询失败清单 → 有新失败即弹窗
+    const inp = $("fc-prompt-mb");
+    if(inp && document.activeElement !== inp) inp.value = fc.threshold_mb;
+    if(fc.prompt && !fcModalShown){ fcModalShown = true; showFcModal(fc); }
+  }
+  $("maa-connect").textContent = c ? "已连接" : "连接";
+  try{
+    $("connect-btn").textContent = c ? "已连接" : "连接";
+    $("connect-btn").classList.toggle("primary", c);
   }catch(e){}
 }
 
@@ -561,9 +595,15 @@ let failSeen = 0;          // 已提示到的失败 id 游标
 async function refreshFailures(){
   try{
     const d = await api("/api/failures?after=" + failSeen);
-    if(d.next != null) failSeen = d.next;
-    if(d.items && d.items.length) showFailPopup(d.items);
+    onFailuresData(d);
   }catch(e){}
+}
+
+// W02: 失败清单载荷应用(轮询与 SSE failures 事件共用)。SSE 通道会从游标 0 回放既有失败,
+// 调用方负责按 failSeen 过滤已消费条目(onFailuresData 本身只认 next 游标与条目渲染)。
+function onFailuresData(d){
+  if(d.next != null) failSeen = d.next;
+  if(d.items && d.items.length) showFailPopup(d.items);
 }
 
 function showFailPopup(items){
@@ -667,6 +707,10 @@ async function refreshMaa(){
     $("maa-cachepos-chk").checked = !!d.use_cache_pos;
     const octhr = $("maa-octhr-input");
     if (octhr && document.activeElement !== octhr) octhr.value = (d.ocr_threads ?? 2);
+    const ocrprov = $("maa-ocrprov-sel");
+    if (ocrprov && document.activeElement !== ocrprov) ocrprov.value = (d.ocr_execution_provider ?? "cpu");
+    const uac = $("maa-cls-chk");
+    if (uac && document.activeElement !== uac) uac.checked = !!(d.use_angle_cls ?? true);
     renderMaaTasks();
   }catch(e){}
 }
@@ -765,6 +809,19 @@ $("maa-octhr-input").onchange = async (ev)=>{
     ocr_threads: v
   })});
 };
+// OCR 执行后端三档开关(OCR3 batch-08): cpu=默认(零行为)/dml/cuda; 改后重启服务生效
+$("maa-ocrprov-sel").onchange = async (ev)=>{
+  await api("/api/set_config", {method:"POST", body:JSON.stringify({
+    ocr_execution_provider: ev.target.value
+  })});
+};
+// OCR 方向分类器开关(OCR2 batch-10): 默认启用=现状逐字节等价; 关=跳过 cls(是否默认关
+// 以 det736 配对 A/B 数据为准, batch-12 判定); 改后重启服务生效
+$("maa-cls-chk").onchange = async (ev)=>{
+  await api("/api/set_config", {method:"POST", body:JSON.stringify({
+    use_angle_cls: ev.target.checked
+  })});
+};
 // 使用界面: 界面设置(关闭页面确认), 即时持久化
 $("ui-close-confirm-chk").onchange = async (ev)=>{
   confirmPageClose = ev.target.checked;
@@ -829,8 +886,17 @@ $("maa-start").onclick = async ()=>{
     if(!sel.length){ alert("请至少勾选一个任务"); return; }
     $("maa-start").disabled = true;
     $("maa-status").textContent = "已提交 " + sel.length + " 个任务, 后台运行中...";
-    const d = await api("/api/run_daily", {method:"POST", body:JSON.stringify({selected:sel, mode:"use"})});
+    // W01(batch-04): 「完成后」下拉接线 —— 控件自页面上线起 JS 零引用(04_webui 实查),
+    // 且 option 值 `close` ≠ 服务端白名单 `close_client`, 浏览器轨「完成后关闭客户端」
+    // 从未生效(即使 set_config 已持久化, 一轮开始也会被 body 缺省覆盖)。现取选中值入
+    // body.finish_action; 缺省 none 时 body **不含该键**(与旧行为逐字节等价, 服务端按
+    // 缺省 none 处理); 非法值由服务端 400 兜底(alert 呈现)。
+    const finish = $("maa-finish").value;
+    const body = {selected:sel, mode:"use"};
+    if(finish && finish !== "none") body.finish_action = finish;
+    const d = await api("/api/run_daily", {method:"POST", body:JSON.stringify(body)});
     $("maa-status").textContent = "开始: " + d.started + " (" + d.count + " 个任务)。查看运行日志请到测试界面或终端。";
+    setTimeout(refreshStatus, 2500);   // W02: 启动后一次对账 —— 秒退(连接失败回滚)时按钮/状态最迟 2.5s 复位
   }catch(e){ $("maa-start").disabled = false; alert("无法运行: " + e.message); }
 };
 
@@ -868,7 +934,7 @@ $("ocr-chk").onchange = refreshBoxes;      // 勾选时才取一次文字框(按
 $("auto-chk").onchange = ()=>{
   clearInterval(autoTimer);
   if($("auto-chk").checked && !document.hidden)
-    autoTimer = setInterval(()=>{ refreshScreen(); refreshStatus(); }, 1500);
+    autoTimer = setInterval(steadyTick, 1500);   // W02: steadyTick = 画面轮询 + (非SSE时)状态轮询
 };
 $("run-btn").onclick = async ()=>{
   try{
@@ -877,6 +943,7 @@ $("run-btn").onclick = async ()=>{
     $("log").innerHTML = "";   // 只清显示, 不重置 cursor/chunks: cursor=0 会把服务端全量历史重新拉回, 清空无效
     await api("/api/run", {method:"POST", body:JSON.stringify({flow, mode:"use"})});
     pollLog();
+    setTimeout(refreshStatus, 2500);   // W02: 启动后一次对账(与 maa-start 同款, 秒退自愈)
   }catch(e){ $("run-btn").disabled = false; alert("无法运行: "+e.message); }
 };
 // ---- 保存日志 (2026-10-01 改造) ----
@@ -957,32 +1024,97 @@ async function saveLog(){
                 `faa_log_snapshot_${_logStamp()}.txt`);
 }
 
+// W02(batch-04): 日志分片渲染抽取 —— 轮询(/api/log)与 SSE log 事件共用同一渲染路径
+// (logChunks 留存原始分片供离线导出, 与服务端 "".join(_LOGS) 等价的契约不变)。
+function appendLogLines(lines){
+  if(!lines || !lines.length) return;
+  const box = $("log");
+  const isBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  for(const line of lines){
+    logChunks.push(line);   // 留存原始分片供离线导出
+    const div = document.createElement("div");
+    div.textContent = line.replace(/\n$/,"");
+    div.className = /异常|失败|错误/.test(line) ? "l-fail" : (/ok|成功/.test(line) ? "" : "");
+    box.appendChild(div);
+  }
+  // W2-002: 前端缓冲与 DOM 同步设上限，长时间挂机不再无限增长
+  if(logChunks.length > LOG_MAX_CHUNKS){
+    logChunks.splice(0, logChunks.length - LOG_MAX_CHUNKS);
+  }
+  while(box.childElementCount > LOG_MAX_CHUNKS){
+    box.removeChild(box.firstElementChild);
+  }
+  if(isBottom) box.scrollTop = box.scrollHeight;
+}
+
 async function pollLog(){
   if(!logPolling) return;   // 关闭服务后由 shutdown 置 false, 主动结束自续链
+  if(sseActive) return;     // W02: 推送激活时日志走 SSE(0.2s 粒度), 轮询链挂起; 断线回退重启
   if(document.hidden){ setTimeout(pollLog, 1500); return; }   // 后台标签页降频(省 CPU)
   try{
     const d = await api("/api/log?after="+logCursor);
     if(d.lines && d.lines.length){
       logCursor = d.next;
-      const box = $("log");
-      const isBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-      for(const line of d.lines){
-        logChunks.push(line);   // 留存原始分片供离线导出
-        if(logChunks.length > LOG_MAX_CHUNKS){
-          logChunks.splice(0, logChunks.length - LOG_MAX_CHUNKS);
-        }
-        const div = document.createElement("div");
-        div.textContent = line.replace(/\n$/,"");
-        div.className = /异常|失败|错误/.test(line) ? "l-fail" : (/ok|成功/.test(line) ? "" : "");
-        box.appendChild(div);
-      }
-      while(box.childElementCount > LOG_MAX_CHUNKS){
-        box.removeChild(box.firstElementChild);
-      }
-      if(isBottom) box.scrollTop = box.scrollHeight;
+      appendLogLines(d.lines);
     }
   }catch(e){}
   setTimeout(pollLog, 800);
+}
+
+// ---- W02(batch-04): SSE 推送通道(推送优先 + 轮询回退) ----
+// 服务端 GET /api/stream(批 22 已就绪, 事件契约见 webui._stream docstring)推送:
+//   log      —— _LOGS 游标增量(data 与 GET /api/log 同形; log_clear 后服务端以末分片指纹
+//               检测缓冲整体替换 → 游标归零重放, 客户端同步 d.next 复位游标即可续上);
+//   status   —— /api/status 载荷变更才推(连接即推首帧), 与轮询同形 → 共用 applyStatus;
+//   failures —— 失败游标增量(连接即回放既有失败, 客户端按 failSeen 过滤防重复弹)。
+// 画面预览保留 /api/screen 1.5s 轮询 —— 服务端 SSE 故意不主动截帧(空闲期引擎不产新帧),
+// 勿接 frames=1, 否则空闲预览冻结(W02 验收项)。
+// 断线: EventSource close + 回退轮询(steadyTick 恢复 status 轮询、pollLog 按既有游标续拉),
+// 不自动重连 —— 重连会从游标 0 全量重放造成日志重复显示。
+let _sseTickN = 0;
+function steadyTick(){
+  refreshScreen();
+  if(!sseActive) refreshStatus();          // SSE 激活时 status 走推送; 轮询只兜底/回退期
+  // W02: 推送优先 + 低频对账兜底(每 ~22.5s 一次 /api/status)。服务端 status 事件按
+  // 1.5s 采样"变更才推", 秒级瞬态(如 /api/run 连接失败秒退 → running true→false)可能
+  // 整段被错过而不推送 —— 低频对账让按钮/模块锁等状态最迟 22.5s 自愈, 三通道请求降幅
+  // 仍 >95%(9300/h → 状态 160/h + 失败/日志 0)。
+  else if(++_sseTickN % 15 === 0) refreshStatus();
+}
+
+function startSSE(){
+  if(es) es.close();
+  let src;
+  try{ src = new EventSource("/api/stream"); }catch(e){ return; }   // 不支持 EventSource → 轮询
+  es = src;
+  src.onopen = ()=>{ sseActive = true; };
+  src.addEventListener("log", (ev)=>{
+    try{
+      const d = JSON.parse(ev.data);
+      if(d.next != null) logCursor = d.next;   // log_clear 归零重放: 服务端 next 复位游标
+      appendLogLines(d.lines);
+    }catch(e){}
+  });
+  src.addEventListener("status", (ev)=>{
+    try{ applyStatus(JSON.parse(ev.data)); }catch(e){}
+  });
+  src.addEventListener("failures", (ev)=>{
+    try{
+      const d = JSON.parse(ev.data);
+      const seen = failSeen;                    // 连接即回放既有失败 → 滤掉初始轮询已消费条目
+      if(d.next != null) failSeen = d.next;
+      const fresh = (d.items||[]).filter(it=>typeof it.id === "number" && it.id > seen);
+      if(fresh.length) showFailPopup(fresh);
+    }catch(e){}
+  });
+  src.onerror = ()=>{
+    src.close();
+    if(es === src) es = null;
+    if(!sseActive) return;      // 未曾激活(如服务未起) → 初始轮询链已在跑, 无需处理
+    sseActive = false;
+    if(!logPolling) return;     // 关服后不回退轮询(shutdown 已置 false)
+    setTimeout(pollLog, 500);   // 断线回退: status 由 steadyTick(间隔已在跑)恢复, 日志续拉
+  };
 }
 
 $("screen-wrap").addEventListener("click", async (ev)=>{
@@ -1013,7 +1145,7 @@ document.addEventListener("visibilitychange", ()=>{
   if(document.hidden) return;
   refreshScreen(); refreshStatus(); refreshFailures();
   if($("auto-chk").checked)
-    autoTimer = setInterval(()=>{ refreshScreen(); refreshStatus(); }, 1500);
+    autoTimer = setInterval(steadyTick, 1500);
 });
 
 // 初始化
@@ -1024,9 +1156,11 @@ document.addEventListener("visibilitychange", ()=>{
   await refreshFlows();
   await refreshKb();
   clearInterval(autoTimer);
-  autoTimer = setInterval(()=>{ refreshScreen(); refreshStatus(); }, 1500);
+  autoTimer = setInterval(steadyTick, 1500);
   $("auto-chk").checked = true;
   setTimeout(pollLog, 500);
+  startSSE();                 // W02: 推送优先 —— 成功则 status/log/failures 走事件(轮询挂起),
+                              // 失败/断线自动回退轮询; 画面 /api/screen 轮询始终保留
   switchView("use");
 })();
 }

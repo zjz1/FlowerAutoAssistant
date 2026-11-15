@@ -1,0 +1,317 @@
+<UserControl x:Class="FAA.WpfGui.Views.HomePage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:FAA.WpfGui.ViewModels">
+    <!--
+      主页 = webui.html「使用界面」: 左=每日挂机任务列表(勾选/⚙/全选/清空/反选/完成后/开始一轮/停止),
+      右=模块设置面板(⚙ 展开即时保存) + 连接设置组。
+      契约1: 运行中模块的勾选/⚙/面板锁定 + 面板顶部锁定横幅。
+      「完成后」下拉(批 21): 复活原页「完成后:关闭客户端」死控件 —— none=无动作 / close_client=完成后关闭客户端;
+        开始一轮随 body.finish_action 提交(收尾方案 A1 键名对齐批 22), 变更即时 set_config(finish_action)
+        (旧后端静默忽略, 引擎批 22 合并后生效)。
+      「今日小提示」(收尾方案 A5, 原 NP2 承接登记②): 右栏静态信息卡已补, 内容逐字对齐 webui.html:270-276,
+        纯静态呈现(不绑数据源, Mock/真实实例下均可见)。
+    -->
+    <UserControl.Resources>
+        <!-- 模块设置面板的一行(switch/text 双形态, 按 Type 触发器切换可见性) -->
+        <DataTemplate DataType="{x:Type vm:SettingVm}">
+            <Grid Margin="0,5">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="{Binding Label}" Foreground="{StaticResource TextBrush}"
+                               FontWeight="SemiBold" TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding Desc}" Style="{StaticResource MutedText}" Margin="0,1,8,0"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- switch 形态: 勾选框 + 开/关 文案 -->
+                    <StackPanel Orientation="Horizontal" x:Name="SwPanel" VerticalAlignment="Center">
+                        <CheckBox IsChecked="{Binding BoolValue, Mode=TwoWay}" VerticalAlignment="Center"/>
+                        <TextBlock Text="{Binding SwitchText}" Margin="5,0,0,0" VerticalAlignment="Center"
+                                   Foreground="{StaticResource SubBrush}"/>
+                    </StackPanel>
+                    <!-- text 形态: 输入框(LostFocus 提交=webui change 语义) -->
+                    <TextBox x:Name="TxtBox" Width="110" Style="{StaticResource DarkTextBox}"
+                             Text="{Binding TextValue, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                             Visibility="Collapsed" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Grid>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding Type}" Value="switch">
+                    <Setter TargetName="TxtBox" Property="Visibility" Value="Collapsed"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Type}" Value="text">
+                    <Setter TargetName="SwPanel" Property="Visibility" Value="Collapsed"/>
+                    <Setter TargetName="TxtBox" Property="Visibility" Value="Visible"/>
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <Grid Margin="16,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="14"/>
+                <ColumnDefinition Width="360"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ======== 左栏: 每日挂机任务 ======== -->
+            <Border Style="{StaticResource CardBorder}">
+                <StackPanel>
+                    <DockPanel Margin="0,0,0,6">
+                        <TextBlock Text="每日挂机任务" Style="{StaticResource SectionTitle}" Margin="0"/>
+                        <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                   Style="{StaticResource MutedText}" Text="勾选本轮要执行的任务 · 点 ⚙ 设置"/>
+                    </DockPanel>
+
+                    <!-- 任务列表 -->
+                    <ItemsControl ItemsSource="{Binding Modules}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border x:Name="RowBd" Background="{StaticResource Panel2Brush}" CornerRadius="4"
+                                        Padding="10,7" Margin="0,0,0,6" BorderBrush="{StaticResource LineBrush}" BorderThickness="1">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay}"
+                                                  IsEnabled="{Binding CanToggle}" VerticalAlignment="Center"
+                                                  ToolTipService.ShowOnDisabled="True">
+                                            <CheckBox.Style>
+                                                <Style TargetType="CheckBox">
+                                                    <Setter Property="ToolTip" Value=""/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsRunningModule}" Value="True">
+                                                            <Setter Property="ToolTip" Value="流程运行中, 暂不可修改"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </CheckBox.Style>
+                                        </CheckBox>
+                                        <StackPanel Grid.Column="1" Margin="8,0" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextBrush}"/>
+                                            <TextBlock Text="{Binding Flow}" Style="{StaticResource MutedText}" FontFamily="Consolas"/>
+                                        </StackPanel>
+                                        <Button Grid.Column="2" Content="⚙" Style="{StaticResource GearButton}"
+                                                IsEnabled="{Binding GearEnabled}"
+                                                ToolTipService.ShowOnDisabled="True"
+                                                Command="{Binding DataContext.OpenModuleCommand,
+                                                          RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                CommandParameter="{Binding}">
+                                            <Button.ToolTip>
+                                                <TextBlock>
+                                                    <Run Text="{Binding Flow, Mode=OneWay}"/>
+                                                    <Run Text="{Binding GearTip, Mode=OneWay}"/>
+                                                </TextBlock>
+                                            </Button.ToolTip>
+                                        </Button>
+                                    </Grid>
+                                </Border>
+                                <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding IsRunningModule}" Value="True">
+                                        <Setter TargetName="RowBd" Property="BorderBrush" Value="{StaticResource WarnBrush}"/>
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <!-- 全选/清空/反选 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,10">
+                        <Button Content="全选" Style="{StaticResource DarkButton}" Command="{Binding SelectAllCommand}"/>
+                        <Button Content="清空" Style="{StaticResource DarkButton}" Margin="8,0,0,0" Command="{Binding ClearAllCommand}"/>
+                        <Button Content="反选" Style="{StaticResource DarkButton}" Margin="8,0,0,0" Command="{Binding InvertSelectionCommand}"/>
+                    </StackPanel>
+
+                    <!-- 完成后动作(批 21): 一轮跑完后的收尾; none=无动作 / close_client=完成后关闭客户端 -->
+                    <Grid Margin="0,2,0,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="完成后" Style="{StaticResource RowLabel}" VerticalAlignment="Center"
+                                   Margin="0,0,12,0"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource DarkComboBox}" MinWidth="190"
+                                  HorizontalAlignment="Left" MinHeight="30"
+                                  SelectedValuePath="Tag" SelectedValue="{Binding FinishAction, Mode=TwoWay}"
+                                  ToolTip="一轮全部任务跑完后的动作。选择即时保存(finish_action); 开始一轮时随请求携带,
+                                           引擎支持后自动生效(旧版服务端会忽略此设置)。">
+                            <ComboBoxItem Content="无动作" Tag="none"/>
+                            <ComboBoxItem Content="完成后关闭客户端" Tag="close_client"/>
+                        </ComboBox>
+                    </Grid>
+
+                    <!-- 开始一轮 / 停止 -->
+                    <Button Content="开始一轮" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Stretch"
+                            Command="{Binding StartCommand}"/>
+                    <Button Content="⏹ 停止当前流程" Style="{StaticResource DangerButton}" HorizontalAlignment="Stretch"
+                            Margin="0,8,0,0" Command="{Binding StopCommand}"/>
+
+                    <TextBlock Text="{Binding StatusText}" Style="{StaticResource MutedText}" Margin="0,10,0,0"/>
+                </StackPanel>
+            </Border>
+
+            <!-- ======== 右栏: 模块设置面板 + 连接设置 ======== -->
+            <StackPanel Grid.Column="2">
+
+                <!-- 模块设置(⚙ 面板) -->
+                <Border Style="{StaticResource CardBorder}">
+                    <StackPanel>
+                        <TextBlock Text="模块设置" Style="{StaticResource SectionTitle}"/>
+
+                        <!-- 未选中模块时的占位(webui: 点击左侧任一任务的 ⚙ 查看其设置) -->
+                        <TextBlock Margin="0,4"
+                                   Text="点击左侧任一任务的 ⚙ 查看其设置">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasSelectedModule}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+
+                        <!-- 选中模块后的面板内容 -->
+                        <StackPanel>
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasSelectedModule}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
+
+                            <!-- 契约1: 锁定横幅(运行中模块的面板顶部提示) -->
+                            <Border CornerRadius="4" Padding="8,6" Margin="0,0,0,8"
+                                    BorderBrush="{StaticResource WarnBrush}" BorderThickness="1"
+                                    Background="#33F2B04C">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding SelectedModule.IsRunningModule}" Value="True">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <TextBlock Text="{Binding LockBannerText}" TextWrapping="Wrap"
+                                           Foreground="{StaticResource WarnBrush}"/>
+                            </Border>
+
+                            <TextBlock Margin="0,0,0,4">
+                                <Run Text="{Binding SelectedModule.Name, Mode=OneWay}" Foreground="{StaticResource TextBrush}"/>
+                                <Run Text=" · " Foreground="{StaticResource SubBrush}"/>
+                                <Run Text="{Binding SelectedModule.Flow, Mode=OneWay}" Foreground="{StaticResource SubBrush}"/>
+                            </TextBlock>
+
+                            <!-- 设置行容器: 运行中整体禁用(契约1: 面板全部锁定) -->
+                            <ItemsControl ItemsSource="{Binding SelectedModule.Settings}">
+                                <ItemsControl.Style>
+                                    <Style TargetType="ItemsControl">
+                                        <Setter Property="IsEnabled" Value="True"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding SelectedModule.IsRunningModule}" Value="True">
+                                                <Setter Property="IsEnabled" Value="False"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ItemsControl.Style>
+                            </ItemsControl>
+
+                            <TextBlock Margin="0,6,0,0" Text="模块「所选」暂无独立子功能。">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding SelectedModule.HasSettings}" Value="False"/>
+                                                    <Condition Binding="{Binding HasSelectedModule}" Value="True"/>
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+
+                            <!-- 保存状态 + 固定提示(webui: 改动即时保存, 无需手动确认); 失败显红色 -->
+                            <DockPanel Margin="0,8,0,0">
+                                <TextBlock DockPanel.Dock="Right" Style="{StaticResource MutedText}"
+                                           Text="改动即时保存, 无需手动确认"/>
+                                <TextBlock Text="{Binding SaveStatusText}" Margin="0,0,8,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                                            <Setter Property="Foreground" Value="{StaticResource OkBrush}"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SaveStatusIsError}" Value="True">
+                                                    <Setter Property="Foreground" Value="{StaticResource ErrBrush}"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </DockPanel>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- 连接设置组(静态展示 + 连接按钮, 与 webui.html:216-233 一致) -->
+                <Border Style="{StaticResource CardBorder}">
+                    <StackPanel>
+                        <TextBlock Text="连接设置" Style="{StaticResource SectionTitle}"/>
+                        <Grid Margin="0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="110"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="30"/>
+                                <RowDefinition Height="30"/>
+                                <RowDefinition Height="30"/>
+                                <RowDefinition Height="40"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="连接配置" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Grid.Column="1" Text="{Binding ConnConfig}" Style="{StaticResource RowValue}"/>
+                            <TextBlock Grid.Row="1" Text="ADB 路径" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding AdbPath}" Style="{StaticResource RowValue}"/>
+                            <TextBlock Grid.Row="2" Text="连接地址" Style="{StaticResource RowLabel}"/>
+                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding ConnectAddr}" Style="{StaticResource RowValue}"/>
+                            <TextBlock Grid.Row="3" Text="连接状态" Style="{StaticResource RowLabel}"/>
+                            <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button Content="{Binding ConnectButtonText}" Style="{StaticResource DarkButton}"
+                                        MinWidth="110" Command="{Binding ConnectCommand}"/>
+                                <TextBlock Text="{Binding ResolutionText}" Style="{StaticResource RowValue}" Margin="10,0,0,0"/>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 今日小提示(收尾方案 A5): 静态信息卡, 内容逐字对齐 webui.html:270-276
+                     (webui 使用界面右栏末位同位面板; 纯静态, Mock 数据下可见, 不绑任何数据源) -->
+                <Border Style="{StaticResource CardBorder}">
+                    <StackPanel>
+                        <TextBlock Text="今日小提示" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Style="{StaticResource MutedText}" Margin="0,4,0,0" LineHeight="26" TextWrapping="Wrap">
+                            <Run Text="· 种植箱「一键种植」入库量基准"/><LineBreak/>
+                            <Run Text="· 体力优先级：闪耀变身 → 星光偶像"/><LineBreak/>
+                            <Run Text="· 知识库现收录按钮见「测试界面」知识库面板"/>
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Grid>
+    </ScrollViewer>
+</UserControl>

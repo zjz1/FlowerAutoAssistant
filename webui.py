@@ -47,8 +47,18 @@ def _running() -> bool:
         return _RUNNING
 
 
-def _try_start_running() -> bool:
-    """原子占用运行位: 检查与置 True 在同一把锁内, 避免两个请求同时通过 _running() 检查。"""
+def _try_claim_running() -> bool:
+    """原子 check-and-set(Q01, batch-04): 空闲则置 running=True 并返回 True; 已运行返回 False。
+
+    改前两个运行入口(/api/run 与 /api/run_daily)在 HTTP 线程 `_running()` 判定 → 200 返回 →
+    job 子线程 `eng.connect()`(数秒) 之后才 `_set_running(True)` —— 判定与置位之间是无锁窗口。
+    载体 ThreadingHTTPServer 每请求一线程, 前端仅点击时 disable + 1.5s 轮询回传 running,
+    双击/双按钮/双入口并发即可同时穿过窗口各起一份 job, 两线程并发驱动同一引擎单例
+    (ENGINE_LOCK 只保护创建): ①交替点击模拟器; ②花宝购买硬上限 self._buy_count(单轮 1 次
+    防烧仙豆)并发下失效 = 真实金钱资源; ③失败登记/OCR 统计交叉污染。
+    现判定与置位在同一把 _RUNNING_LOCK 临界区内完成, 第二请求必 409 —— 事故从
+    「偶发难复现」变「结构性不可能」。
+    """
     global _RUNNING
     with _RUNNING_LOCK:
         if _RUNNING:
@@ -505,6 +515,236 @@ def _set_mode(mode: str) -> None:
         eng._click_seq = getattr(eng, "_click_seq", 0)
 
 
+# ---- F06+W03(batch-04, 2026-11-14): set_config 键元数据表 —— 单一事实来源 ----
+# 背景(评估报告 R3/R8): 新增 1 个配置键此前要同步改 4-5 处 —— ①set_config 白名单 if-chain、
+# ②[config] 日志文案、③set_config 响应回显、④⚙面板 _module_settings meta、⑤WPF
+# FaaProxy.SetConfigKeys(FaaProxy.cs:241-251, 不改 C#) —— 里程碑 82/87「勾选被静默丢弃」
+# 两次事故均因 if-chain 漏键(事故注释曾钉在原 if-chain 内: 82=enable_mine/enable_rabbit
+# 漏处理器致矿洞勾选无效; 87=fail_cache_prompt_mb「必进白名单」教训)。
+# 本表把 webui 侧①~④全部改为由同一张表生成: 新增键 = 表内加一行 + (如需 ⚙ 面板)
+# _MODULE_SETTINGS 归组; ⑤由 tools/check_project.py webui 契约段对账提取比对(漂移即 WARN)。
+# 字段:
+#   type        bool/text/int/float/enum —— set_config 入参解析方式;
+#   bad_int     int 键解析失败回退值;  clamp (lo,hi) —— int 键钳制;
+#   min_v       float 键下限(解析失败跳过不落盘);
+#   enum_values/enum_error —— enum 键合法值集 / 白名单外 400 文案(拒收不落配置不静默改默认);
+#   log_line    [config] 日志行号(1/2/3); log_fmt: "sw"=开/关, "sw2"=启用/关闭(空格分隔),
+#               "raw"=原值; log_default: 缺省值, _NO_DEFAULT 表示 .get 不带默认值(逐字节保持
+#               改前形态); log_cond="switch_now"=仅切换账号启用时渲染;
+#               log_value="now"=取应用后的 enable_switch 现值; 整键 None=不出现在日志文案;
+#   echo        回显缺省(None=不回显; "post"=回显应用后的 enable_switch 现值;
+#               "enum_none"=str(get(key,'none') or 'none'); 布尔值=bool(get(key, 该值)));
+#   meta        (面板label, 面板desc), None=不在 ⚙ 面板; meta_default=面板回显缺省。
+# 表内键序 = set_config 应用顺序(与改前 if-chain 逐键一致; finish_action 的 400 中断位次
+# 亦与改前一致: 已应用键保持已应用, 其后键不再处理 —— 表内其后果真无键)。
+# 注意: 日志文案键序 ≠ 应用键序(见 _CONFIG_LOG_ORDER) —— enable_water/mine/rabbit 是
+# 后补进 if-chain 的, 历史文案顺序不随其后补位次改变。
+_NO_DEFAULT = object()   # 哨兵: 日志 .get 不带默认值(区别于缺省 False)
+
+_CONFIG_KEYS: dict[str, dict] = {
+    # 切换账号(startup ⚙): 日志行1 用应用后现值渲染(改前即 now 局部变量语义)
+    "enable_switch": dict(
+        type="bool", log_line=1, log_label="切换账号功能", log_fmt="sw2", log_value="now",
+        echo="post", meta=("切换账号", "登录前自动切换到目标账号"), meta_default=False),
+    "target_tail": dict(
+        type="text", log_line=1, log_label="目标尾部", log_fmt="raw", log_cond="switch_now",
+        meta=("目标账号尾部", "匹配 abc****de 的末尾数字"), meta_default=""),
+    # claim ⚙ 三键: 日志 .get 不带默认值(改前原形态; 缺键时 None → 「关」)
+    "claim_online": dict(
+        type="bool", log_line=2, log_label="领取奖励功能1在线礼包", log_fmt="sw",
+        log_default=_NO_DEFAULT, echo=True,
+        meta=("功能1 · 在线礼包", "抽奖耗尽次数 + 时间档位领取"), meta_default=True),
+    "claim_party": dict(
+        type="bool", log_line=2, log_label="功能2花灵派对", log_fmt="sw",
+        log_default=_NO_DEFAULT, echo=True,
+        meta=("功能2 · 花灵派对", "进入派对并领取 6 个在线时长礼包"), meta_default=True),
+    "claim_hb": dict(
+        type="bool", log_line=2, log_label="功能3奇妙花宝", log_fmt="sw",
+        log_default=_NO_DEFAULT, echo=True,
+        meta=("功能3 · 奇妙花宝", "家园→奇妙花宝→奇妙特权，领奇妙礼包每日/每周/每月三档"), meta_default=False),
+    "enable_shine": dict(
+        type="bool", log_line=2, log_label="闪耀委托挑战", log_fmt="sw",
+        log_default=_NO_DEFAULT, echo=True,
+        meta=("闪耀委托挑战", "家族活动 4.1.2 · 每日 10-21 时开放时段内执行"), meta_default=False),
+    "enable_pollin": dict(
+        type="bool", log_line=2, log_label="好友采粉", log_fmt="sw",
+        log_default=True, echo=True,
+        meta=("好友采粉", "4.2 · 密友+好友逐页采集花粉, 无可采则回自己家园"), meta_default=True),
+    "enable_like": dict(
+        type="bool", log_line=2, log_label="社区点赞", log_fmt="sw",
+        log_default=False, echo=True,
+        meta=("社区点赞", "完成手账「为精美搭配献上点赞吧」任务(每期上限 20 次; 任务已完成则跳过)"),
+        meta_default=False),
+    "enable_hot_sale": dict(
+        type="bool", log_line=2, log_label="浏览热卖", log_fmt="sw",
+        log_default=False,
+        meta=("浏览热卖", "完成手账「查看最新热卖套装」任务(点行内前往进页浏览即完成, 不碰抽取按钮; "
+              "2026-10-27 自社区点赞拆分独立)"), meta_default=False),
+    "enable_baobao": dict(
+        type="bool", log_line=2, log_label="花宝照顾", log_fmt="sw",
+        log_default=False,
+        meta=("花宝照顾", "完成手账「在花园中照顾小花宝一次」任务(道具手套拖拽, 消耗手套道具)"),
+        meta_default=False),
+    # G1 v2(2026-11-03): 花宝道具自动补货开关(缺键默认 true, 与 config.example 一致)
+    "enable_baobao_buy": dict(
+        type="bool", log_line=2, log_label="花宝补货", log_fmt="sw", log_default=True,
+        meta=("花宝自动补货", "挠痒痒 0 库存时受控购买 22 仙豆/个(单轮最多 1 次; 余额低于 10000 停止; "
+              "确认框全文核对+差额复核)"), meta_default=True),
+    "log_click_pos": dict(
+        type="bool", log_line=3, log_label="记录按钮位置", log_fmt="sw", log_default=False,
+        echo=False, meta=None),
+    "use_cache_pos": dict(
+        type="bool", log_line=3, log_label="使用缓存位置", log_fmt="sw", log_default=False,
+        echo=False, meta=None),
+    # W1(2026-10-27): OCR 推理线程数(0=不限制); ONNX 会话级, 改后需重启 webui 生效
+    "ocr_threads": dict(type="int", bad_int=2, clamp=(0, 8), meta=None),
+    # 2026-10-11 补: 里程碑 82 给 ⚙ 面板加 enable_mine/enable_rabbit 时漏了本处理器,
+    # 勾选被静默丢弃(config.json 无键, if_config 读 None) —— 用户实测矿洞勾选无效即此因。
+    "enable_mine": dict(
+        type="bool", log_line=2, log_label="矿洞探险", log_fmt="sw", log_default=False,
+        meta=("矿洞探险", "家族活动 4.1.3 · 每日礼包领取/次日「明日再来」跳过"), meta_default=False),
+    "enable_rabbit": dict(
+        type="bool", log_line=2, log_label="守望兔子", log_fmt="sw", log_default=False,
+        meta=("守望兔子", "家族活动 4.1.4 · 占位待开发, 开启暂无实际动作"), meta_default=False),
+    "enable_water": dict(
+        type="bool", log_line=2, log_label="摇钱树浇水", log_fmt="sw", log_default=True,
+        meta=("摇钱树浇水", "家族活动 4.1.1 · 每日浇水 X/3(含生效复核: 点击被吞自动重试 1 次)"),
+        meta_default=True),
+    "confirm_page_close": dict(type="bool", meta=None),
+    # 里程碑 94: 截图缓存提醒阈值(MB) —— 必进白名单, 否则 WebUI 保存被静默丢弃(里程碑 87 教训)
+    "fail_cache_prompt_mb": dict(type="float", min_v=1.0, meta=None),
+    # 完成动作(2026-11-10, 完成后关闭客户端): 仅接受 none/close_client 二值, 之外一律 400
+    # 拒收(不落配置, 不静默改成默认); 合法值经 eng.update_config 落内存+持久化, 供 run_daily
+    # 无编排级动作时兜底读取。
+    "finish_action": dict(
+        type="enum", enum_values=("none", "close_client"),
+        enum_error="finish_action 仅接受 none/close_client, 收到: {v!r}",
+        echo="enum_none", meta=None),
+    # OCR3(batch-08, 2026-11-14): 执行后端三档开关(cpu/dml/cuda, 默认 cpu=零行为)。
+    # enum 白名单外 400 拒收(finish_action 同型); **无回显键、无 [config] 日志行** ——
+    # set_config 响应键面(SET_CONFIG_ECHO_KEYS)与 [config] 三行文案是逐字节契约(api_contract_selftest
+    # 钉住), 本键只经 /api/daily 识别设置回显 + webui.html 右栏下拉落键。改后重启生效
+    # (ocr_ui 单例按首次 get_engine 时的档位构建; GPU 档构建失败自动回退 cpu 并在日志如实记录)。
+    "ocr_execution_provider": dict(
+        type="enum", enum_values=("cpu", "dml", "cuda"),
+        enum_error="ocr_execution_provider 仅接受 cpu/dml/cuda, 收到: {v!r}", meta=None),
+    # OCR2(batch-10, 2026-11-15): cls 方向分类器开关(RapidOCR use_angle_cls 构造参数透传,
+    # 默认 true = 改动前行为逐字节等价)。bool 键; **无回显键、无 [config] 日志行**(键面/
+    # 文案逐字节契约不动), 经 /api/daily 识别设置回显 + webui.html 右栏勾选落键。改后重启
+    # 生效(ocr_ui 单例按首次 get_engine 时的值构建)。默认 true 是本批终态: det736 配对
+    # A/B(实机授权, batch-12)落盘且过 0 退化门才允许默认翻 false —— 不得凭 det32/64
+    # 数字默认关(负清单 N8); 速度口径标签: cls 关 median 快 11.0~11.3% 为 det32/64 实验口径,
+    # det736 生产口径待本批 A/B。
+    "use_angle_cls": dict(type="bool", meta=None),
+}
+
+# ⚙ 面板各模块键归属与顺序(_module_settings 渲染顺序; 键文案/缺省在 _CONFIG_KEYS.meta):
+# 2026-10-07 用户反馈: ⚙ 只有 startup/claim 可点, 其余模块被 disabled —— 补齐 social 的
+# 真实 if_config 开关(与 flow_social.json §4.1.1~4.1.4/4.2/4.3 一一对应, 默认值与
+# data/config.example.json 一致)。plant/energy/daily/idle 四个流程无任何 if_config,
+# 返回 [] → ⚙ 可点开面板显示「暂无独立子功能」说明。2026-10-11: 新增浇水开关
+# enable_water(4.1.1, 默认 true)。2026-10-12: 社区点赞自社交模块迁入每日任务(daily 按
+# 手账「献上点赞」行进度 a<b 门控执行, 已完成/行缺失跳过)。
+_MODULE_SETTINGS: dict[str, tuple[str, ...]] = {
+    "claim": ("claim_online", "claim_party", "claim_hb"),
+    "startup": ("enable_switch", "target_tail"),
+    "social": ("enable_water", "enable_shine", "enable_mine", "enable_rabbit", "enable_pollin"),
+    "daily": ("enable_like", "enable_hot_sale", "enable_baobao", "enable_baobao_buy"),
+}
+
+# [config] 日志行键序(与改前文案逐字节一致; 故意 ≠ 表的应用键序 —— 后补键不打乱历史顺序):
+_CONFIG_LOG_ORDER: dict[int, tuple[str, ...]] = {
+    1: ("enable_switch", "target_tail"),
+    2: ("claim_online", "claim_party", "claim_hb", "enable_shine", "enable_water",
+        "enable_mine", "enable_rabbit", "enable_pollin", "enable_like",
+        "enable_hot_sale", "enable_baobao", "enable_baobao_buy"),
+    3: ("log_click_pos", "use_cache_pos"),
+}
+_CONFIG_LOG_SUFFIX: dict[int, str] = {
+    3: " (两项默认关闭; 关闭时只认实时识别, 不用历史坐标盲点)",
+}
+
+
+def _apply_config_key(eng: OCREngine, key: str, spec: dict, value) -> str | None:
+    """按表规格校验并落一个配置键(eng.update_config = 内存+data/config.json 双写)。
+
+    返回 None=成功; str=400 错误文案(enum 键白名单外: 拒收不落配置, 且中断本请求后续
+    处理 —— 已应用键保持已应用, 与改前 finish_action 分支原语义一致)。
+    """
+    t = spec["type"]
+    if t == "bool":
+        eng.update_config(**{key: bool(value)})
+    elif t == "text":
+        eng.update_config(**{key: str(value)})
+    elif t == "int":
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            n = spec["bad_int"]                    # ocr_threads: 解析失败回 2(改前原语义)
+        lo, hi = spec["clamp"]
+        n = max(lo, min(hi, n))                    # ocr_threads: max(0, min(8, thr))(改前原语义)
+        eng.update_config(**{key: n})
+    elif t == "float":
+        try:
+            eng.update_config(**{key: max(spec["min_v"], float(value))})
+        except (TypeError, ValueError):
+            pass                                   # fail_cache_prompt_mb: 坏值跳过不落盘(改前原语义)
+    elif t == "enum":
+        v = str(value or "")
+        if v not in spec["enum_values"]:
+            return spec["enum_error"].format(v=v)
+        eng.update_config(**{key: v})
+    return None
+
+
+def _config_log_segment(eng: OCREngine, key: str, spec: dict, now: bool) -> str | None:
+    """生成一个键的 [config] 日志片段; None=本行不渲染该键(如 target_tail 在切换账号关时)。"""
+    if spec.get("log_cond") == "switch_now" and not now:
+        return None
+    if spec["log_fmt"] == "raw":
+        return f"{spec['log_label']}={eng.config.get(key)}"
+    if spec.get("log_value") == "now":
+        v = now
+    elif spec.get("log_default") is _NO_DEFAULT:
+        v = eng.config.get(key)
+    else:
+        v = eng.config.get(key, spec["log_default"])
+    if spec["log_fmt"] == "sw2":
+        return f"{spec['log_label']} {'启用' if v else '关闭'}"
+    return f"{spec['log_label']}={'开' if v else '关'}"
+
+
+def _config_log_lines(eng: OCREngine, now: bool) -> list[str]:
+    """生成 set_config 的 [config] 日志行(固定 3 行, 无论本请求改了哪些键 —— 与改前一致)。
+
+    文案/键序/.get 缺省形态与改前逐字节一致(键序见 _CONFIG_LOG_ORDER)。
+    """
+    out: list[str] = []
+    for ln in (1, 2, 3):
+        segs = [s for s in (_config_log_segment(eng, k, _CONFIG_KEYS[k], now)
+                            for k in _CONFIG_LOG_ORDER[ln]) if s is not None]
+        line = "[config] " + segs[0] + "".join(", " + s for s in segs[1:]) \
+            + _CONFIG_LOG_SUFFIX.get(ln, "")
+        out.append(line)
+    return out
+
+
+def _config_echo(eng: OCREngine, now: bool, pre: bool) -> dict:
+    """set_config 响应。回显键集/键序/缺省形态与改前逐字节一致(键序 = 表序过滤 echo≠None)。"""
+    out: dict = {"ok": True, "changed": pre != now}
+    for key, spec in _CONFIG_KEYS.items():
+        e = spec.get("echo")
+        if e is None:
+            continue
+        if e == "post":
+            out[key] = now
+        elif e == "enum_none":
+            out[key] = str(eng.config.get(key, "none") or "none")
+        else:
+            out[key] = bool(eng.config.get(key, e))
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "FAA WebUI/1.0"
 
@@ -568,85 +808,21 @@ class Handler(BaseHTTPRequestHandler):
             data = self._read_json()
             eng = get_engine()
             pre = bool(eng.config.get("enable_switch", False))
-            if "enable_switch" in data:
-                eng.update_config(enable_switch=bool(data["enable_switch"]))
-            if "target_tail" in data:
-                eng.update_config(target_tail=str(data["target_tail"]))
-            if "claim_online" in data:
-                eng.update_config(claim_online=bool(data["claim_online"]))
-            if "claim_party" in data:
-                eng.update_config(claim_party=bool(data["claim_party"]))
-            if "claim_hb" in data:
-                eng.update_config(claim_hb=bool(data["claim_hb"]))
-            if "enable_shine" in data:
-                eng.update_config(enable_shine=bool(data["enable_shine"]))
-            if "enable_pollin" in data:
-                eng.update_config(enable_pollin=bool(data["enable_pollin"]))
-            if "enable_like" in data:
-                eng.update_config(enable_like=bool(data["enable_like"]))
-            if "enable_hot_sale" in data:
-                eng.update_config(enable_hot_sale=bool(data["enable_hot_sale"]))
-            if "enable_baobao" in data:
-                eng.update_config(enable_baobao=bool(data["enable_baobao"]))
-            if "enable_baobao_buy" in data:
-                # G1 v2(2026-11-03): 花宝道具自动补货开关(缺键默认 true, 与 config.example 一致)
-                eng.update_config(enable_baobao_buy=bool(data["enable_baobao_buy"]))
-            if "log_click_pos" in data:
-                eng.update_config(log_click_pos=bool(data["log_click_pos"]))
-            if "use_cache_pos" in data:
-                eng.update_config(use_cache_pos=bool(data["use_cache_pos"]))
-            if "ocr_threads" in data:
-                # W1(2026-10-27): OCR 推理线程数(0=不限制); ONNX 会话级, 改后需重启 webui 生效
-                try:
-                    thr = int(data["ocr_threads"])
-                except (TypeError, ValueError):
-                    thr = 2
-                eng.update_config(ocr_threads=max(0, min(8, thr)))
-            # 2026-10-11 补: 里程碑 82 给 ⚙ 面板加 enable_mine/enable_rabbit 时漏了本处理器,
-            # 勾选被静默丢弃(config.json 无键, if_config 读 None) —— 用户实测矿洞勾选无效即此因。
-            if "enable_mine" in data:
-                eng.update_config(enable_mine=bool(data["enable_mine"]))
-            if "enable_rabbit" in data:
-                eng.update_config(enable_rabbit=bool(data["enable_rabbit"]))
-            if "enable_water" in data:
-                eng.update_config(enable_water=bool(data["enable_water"]))
-            if "confirm_page_close" in data:
-                eng.update_config(confirm_page_close=bool(data["confirm_page_close"]))
-            # 里程碑 94: 截图缓存提醒阈值(MB) —— 必进白名单, 否则 WebUI 保存被静默丢弃(里程碑 87 教训)
-            if "fail_cache_prompt_mb" in data:
-                try:
-                    eng.update_config(fail_cache_prompt_mb=max(1.0, float(data["fail_cache_prompt_mb"])))
-                except (TypeError, ValueError):
-                    pass
+            # F06+W03(batch-04): 全部键由 _CONFIG_KEYS 元数据表驱动(白名单/校验/日志/回显/
+            # ⚙meta 五处同源, 表见模块级定义与历史事故注释)。键序与改前 if-chain 逐键一致;
+            # enum 键白名单外 400 中断(已应用键保持已应用, 改前 finish_action 原语义);
+            # 三种特殊校验器逐字节保持: ocr_threads 钳制(max(0,min(8)), 解析失败回 2) /
+            # fail_cache_prompt_mb 下限 1.0(解析失败跳过不落盘) / finish_action 400 拒收不落配置。
+            for key, spec in _CONFIG_KEYS.items():
+                if key not in data:
+                    continue
+                err = _apply_config_key(eng, key, spec, data[key])
+                if err is not None:
+                    return self._send_json({"error": err}, 400)
             now = bool(eng.config.get("enable_switch", False))
-            log_append(f"[config] 切换账号功能 {'启用' if now else '关闭'}"
-                       + (f", 目标尾部={eng.config.get('target_tail')}" if now else ""))
-            log_append(f"[config] 领取奖励功能1在线礼包={'开' if eng.config.get('claim_online') else '关'}"
-                       f", 功能2花灵派对={'开' if eng.config.get('claim_party') else '关'}"
-                       f", 功能3奇妙花宝={'开' if eng.config.get('claim_hb') else '关'}"
-                       f", 闪耀委托挑战={'开' if eng.config.get('enable_shine') else '关'}"
-                       f", 摇钱树浇水={'开' if eng.config.get('enable_water', True) else '关'}"
-                       f", 矿洞探险={'开' if eng.config.get('enable_mine', False) else '关'}"
-                       f", 守望兔子={'开' if eng.config.get('enable_rabbit', False) else '关'}"
-                       f", 好友采粉={'开' if eng.config.get('enable_pollin', True) else '关'}"
-                       f", 社区点赞={'开' if eng.config.get('enable_like', False) else '关'}"
-                       f", 浏览热卖={'开' if eng.config.get('enable_hot_sale', False) else '关'}"
-                       f", 花宝照顾={'开' if eng.config.get('enable_baobao', False) else '关'}"
-                       f", 花宝补货={'开' if eng.config.get('enable_baobao_buy', True) else '关'}")
-            log_append(f"[config] 记录按钮位置={'开' if eng.config.get('log_click_pos', False) else '关'}"
-                       f", 使用缓存位置={'开' if eng.config.get('use_cache_pos', False) else '关'}"
-                       f" (两项默认关闭; 关闭时只认实时识别, 不用历史坐标盲点)")
-            return self._send_json({
-                "ok": True, "changed": pre != now, "enable_switch": now,
-                "claim_online": bool(eng.config.get("claim_online", True)),
-                "claim_party": bool(eng.config.get("claim_party", True)),
-                "claim_hb": bool(eng.config.get("claim_hb", False)),
-                "enable_shine": bool(eng.config.get("enable_shine", False)),
-                "enable_pollin": bool(eng.config.get("enable_pollin", True)),
-                "enable_like": bool(eng.config.get("enable_like", False)),
-                "log_click_pos": bool(eng.config.get("log_click_pos", False)),
-                "use_cache_pos": bool(eng.config.get("use_cache_pos", False)),
-            })
+            for line in _config_log_lines(eng, now):
+                log_append(line)
+            return self._send_json(_config_echo(eng, now, pre))
 
         if api == "connect" and self.command == "POST":
             return self._connect()
@@ -673,11 +849,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._log()
         if api == "log_download" and self.command == "GET":
             return self._log_download()
+        if api == "stream" and self.command == "GET":   # SSE 推送(2026-11-10 新增, 既有端点零改动)
+            return self._stream()
         if api == "log_clear" and self.command == "POST":
             return self._log_clear()
         # ---- 故障存证截图: 缓存信息 / 清理 / 浏览目录 (里程碑 94) ----
         if api == "fail_cache_info" and self.command == "GET":
             st = _fail_cache_stat()
+            st["files"] = sorted(st["files"])  # D7(方案批 D 表 D7): set 不可 JSON 序列化致本接口 500, 进 JSON 前转有序列表; _status() 内部仍用原 set 做子集比对, 故不改 _fail_cache_stat 返回类型
             thr = float(get_engine().config.get("fail_cache_prompt_mb", 100) or 100)
             return self._send_json({**st, "mb": st["bytes"] / 1048576, "threshold_mb": thr,
                                     "exceed": st["bytes"] / 1048576 >= thr})
@@ -980,59 +1159,28 @@ class Handler(BaseHTTPRequestHandler):
         modules = []
         # 各模块的可配置面板 meta (右侧 ⚙ 设置面板渲染数据)
         def _module_settings(mid):
-            if mid == "claim":
-                return [
-                    {"key": "claim_online", "type": "switch", "label": "功能1 · 在线礼包",
-                     "desc": "抽奖耗尽次数 + 时间档位领取", "value": bool(eng.config.get("claim_online", True))},
-                    {"key": "claim_party", "type": "switch", "label": "功能2 · 花灵派对",
-                     "desc": "进入派对并领取 6 个在线时长礼包", "value": bool(eng.config.get("claim_party", True))},
-                    {"key": "claim_hb", "type": "switch", "label": "功能3 · 奇妙花宝",
-                     "desc": "家园→奇妙花宝→奇妙特权，领奇妙礼包每日/每周/每月三档", "value": bool(eng.config.get("claim_hb", False))},
-                ]
-            if mid == "startup":
-                return [
-                    {"key": "enable_switch", "type": "switch", "label": "切换账号",
-                     "desc": "登录前自动切换到目标账号", "value": bool(eng.config.get("enable_switch", False))},
-                    {"key": "target_tail", "type": "text", "label": "目标账号尾部",
-                     "desc": "匹配 abc****de 的末尾数字", "value": eng.config.get("target_tail", "")},
-                ]
-            if mid == "social":
-                # 2026-10-07 用户反馈: ⚙ 只有 startup/claim 可点, 其余模块被 disabled —— 补齐
-                # social 的真实 if_config 开关(与 flow_social.json §4.1.1~4.1.4/4.2/4.3
-                # 一一对应, 默认值与 data/config.example.json 一致)。plant/energy/daily/idle
-                # 四个流程无任何 if_config, 返回 [] → ⚙ 可点开面板显示「暂无独立子功能」说明。
-                # 2026-10-11: 新增浇水开关 enable_water(4.1.1, 默认 true); 同批修 set_config
-                # 白名单缺 enable_mine/enable_rabbit 导致勾选被静默丢弃的缺陷(见上)。
-                return [
-                    {"key": "enable_water", "type": "switch", "label": "摇钱树浇水",
-                     "desc": "家族活动 4.1.1 · 每日浇水 X/3(含生效复核: 点击被吞自动重试 1 次)", "value": bool(eng.config.get("enable_water", True))},
-                    {"key": "enable_shine", "type": "switch", "label": "闪耀委托挑战",
-                     "desc": "家族活动 4.1.2 · 每日 10-21 时开放时段内执行", "value": bool(eng.config.get("enable_shine", False))},
-                    {"key": "enable_mine", "type": "switch", "label": "矿洞探险",
-                     "desc": "家族活动 4.1.3 · 每日礼包领取/次日「明日再来」跳过", "value": bool(eng.config.get("enable_mine", False))},
-                    {"key": "enable_rabbit", "type": "switch", "label": "守望兔子",
-                     "desc": "家族活动 4.1.4 · 占位待开发, 开启暂无实际动作", "value": bool(eng.config.get("enable_rabbit", False))},
-                    {"key": "enable_pollin", "type": "switch", "label": "好友采粉",
-                     "desc": "4.2 · 密友+好友逐页采集花粉, 无可采则回自己家园", "value": bool(eng.config.get("enable_pollin", True))},
-                ]
-            if mid == "daily":
-                # 2026-10-12 用户决策: 社区点赞自社交模块迁入每日任务(点赞唯一价值=完成每日任务;
-                # daily 按手账「献上点赞」行进度 a<b 门控执行, 已完成/行缺失跳过)。
-                return [
-                    {"key": "enable_like", "type": "switch", "label": "社区点赞",
-                     "desc": "完成手账「为精美搭配献上点赞吧」任务(每期上限 20 次; 任务已完成则跳过)",
-                     "value": bool(eng.config.get("enable_like", False))},
-                    {"key": "enable_hot_sale", "type": "switch", "label": "浏览热卖",
-                     "desc": "完成手账「查看最新热卖套装」任务(点行内前往进页浏览即完成, 不碰抽取按钮; 2026-10-27 自社区点赞拆分独立)",
-                     "value": bool(eng.config.get("enable_hot_sale", False))},
-                    {"key": "enable_baobao", "type": "switch", "label": "花宝照顾",
-                     "desc": "完成手账「在花园中照顾小花宝一次」任务(道具手套拖拽, 消耗手套道具)",
-                     "value": bool(eng.config.get("enable_baobao", False))},
-                    {"key": "enable_baobao_buy", "type": "switch", "label": "花宝自动补货",
-                     "desc": "挠痒痒 0 库存时受控购买 22 仙豆/个(单轮最多 1 次; 余额低于 10000 停止; 确认框全文核对+差额复核)",
-                     "value": bool(eng.config.get("enable_baobao_buy", True))},
-                ]
-            return []
+            # F06+W03(batch-04): ⚙ 面板 meta 由 _MODULE_SETTINGS(归属与顺序) × _CONFIG_KEYS
+            # (文案/缺省/type) 表生成, 与 set_config 白名单同源 —— 新增面板键不再可能被白名单
+            # 静默丢弃(里程碑 82/87「勾选被静默丢弃」事故类的结构性消除)。
+            # 历史注释随迁: 2026-10-07 ⚙ 只有 startup/claim 可点 → 补齐 social 真实 if_config
+            # 开关(与 flow_social.json §4.1.1~4.1.4/4.2/4.3 一一对应, 默认值与
+            # data/config.example.json 一致); plant/energy/daily/idle 无 if_config 返回 [] →
+            # ⚙ 面板显示「暂无独立子功能」。2026-10-11 新增 enable_water(4.1.1, 默认 true)。
+            # 2026-10-12 社区点赞自社交模块迁入每日任务(daily 按手账「献上点赞」行进度 a<b
+            # 门控执行, 已完成/行缺失跳过)。
+            out = []
+            for key in _MODULE_SETTINGS.get(mid, ()):
+                spec = _CONFIG_KEYS[key]
+                label, desc = spec["meta"]
+                if spec["type"] == "text":
+                    val = eng.config.get(key, spec.get("meta_default", ""))
+                    mtype = "text"
+                else:
+                    val = bool(eng.config.get(key, spec.get("meta_default", False)))
+                    mtype = "switch"
+                out.append({"key": key, "type": mtype, "label": label, "desc": desc,
+                            "value": val})
+            return out
         if plan and plan.get("modules"):
             for m in plan["modules"]:
                 mid = m.get("id")
@@ -1049,9 +1197,14 @@ class Handler(BaseHTTPRequestHandler):
             # W1(2026-10-27): 删除顶层 enable_switch/target_tail —— 消费方(右栏旧「账号切换」面板)
             # 已由 codex-20261025-4 删除, 现网回显唯一来源=modules[].settings(startup ⚙)。
             # 全局识别设置(供右栏「识别设置」面板回显); ocr_threads 改后重启生效(ONNX 会话)
+            # ocr_execution_provider 同口径(OCR3 batch-08: 执行后端三档, 默认 cpu; 改后重启生效)
+            # use_angle_cls 同口径(OCR2 batch-10: cls 方向分类器, 默认 true=现状逐字节等价;
+            # det736 A/B 落盘(batch-12)前默认保持 true, 不得凭 det32/64 数字默认关 —— 负清单 N8)
             "log_click_pos": bool(eng.config.get("log_click_pos", False)),
             "use_cache_pos": bool(eng.config.get("use_cache_pos", False)),
             "ocr_threads": int(eng.config.get("ocr_threads", 2)),
+            "ocr_execution_provider": str(eng.config.get("ocr_execution_provider", "cpu")),
+            "use_angle_cls": bool(eng.config.get("use_angle_cls", True)),
         })
 
     # ---- API: 按勾选模块运行每日编排 (使用界面「开始一轮」) ----
@@ -1059,6 +1212,13 @@ class Handler(BaseHTTPRequestHandler):
         data = self._read_json()
         selected = data.get("selected", [])
         mode = data.get("mode", "use")
+        # 完成动作(2026-11-10, 完成后关闭客户端): 解析 data.finish_action, 仅接受
+        # none/close_client 二值 —— 其余值一律 400 拒收, 绝不静默落进编排(防拼错键名
+        # 造成意外关闭客户端)。缺省 "none" = 零行为变化(引擎收尾不做任何动作)。
+        finish_action = str(data.get("finish_action", "none") or "none")
+        if finish_action not in ("none", "close_client"):
+            return self._send_json(
+                {"error": f"finish_action 仅接受 none/close_client, 收到: {finish_action!r}"}, 400)
         _set_mode(mode)
         import json as _json
         p = BASE / "flows" / "daily.json"
@@ -1088,12 +1248,33 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": "未勾选任何任务"}, 400)
         plan["modules"] = chosen
         plan["description"] = "Web UI 使用界面按勾选模块调度"
+        # 完成动作随编排传给引擎: 引擎 run_daily 全部模块跑完后按该值决定是否关闭客户端
+        # (none=无动作; close_client=关客户端。引擎侧同样只认这两值, 其余按 none 处理)。
+        plan["finish_action"] = finish_action
         name = plan.get("name", "每日编排")
-        if not _try_start_running():
+        # Q01(batch-04): check-and-set 原子化(_try_claim_running), 且置位提前到 spawn 前 ——
+        # 改前置位发生在 job 内 connect()(数秒) 之后, 与 /api/run 构成双入口 TOCTOU 无锁窗口。
+        if not _try_claim_running():
             return self._send_json({"error": "已有流程在运行, 请先停止"}, 409)
         def job():
+            eng = get_engine()
+            try:
+                if not _is_connected(eng):
+                    eng.connect()
+            except Exception as e:
+                log_append(f"[run] 连接失败: {e}")
+                # Q01: connect 异常 = 本轮未开始即失败, 回滚 running=false 并终止
+                # (验收线: connect 失败后 /api/status.running 恢复 false)。
+                _set_running(False)
+                return
             import sys
-            real_out, real_err = sys.stdout, sys.stderr
+            # Q01: stdout/stderr 换轨段按 job 互斥 —— 保存+换轨在同一把 _RUNNING_LOCK 临界区
+            # 内完成, 恢复段同锁串行化; 流程互斥已由 running 原子门保证且恢复先于
+            # _set_running(False), 后启动者不可能捕获到前一个 job 的 _TeeOut(嵌套消除)。
+            with _RUNNING_LOCK:
+                real_out, real_err = sys.stdout, sys.stderr
+                sys.stdout = _TeeOut(real_out, _LOGS)
+                sys.stderr = _TeeOut(real_err, _LOGS)
             try:
                 eng = get_engine()
                 try:
@@ -1109,10 +1290,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 log_append(f"[run] 流程异常: {e}")
             finally:
-                sys.stdout, sys.stderr = real_out, real_err
+                with _RUNNING_LOCK:
+                    sys.stdout, sys.stderr = real_out, real_err
                 _set_running(False)
         try:
-            threading.Thread(target=job, daemon=True).start()
+            threading.Thread(target=job, daemon=True, name="faa-daily").start()
         except Exception:
             _set_running(False)
             raise
@@ -1128,7 +1310,9 @@ class Handler(BaseHTTPRequestHandler):
         if target is None:
             return self._send_json({"error": f"未找到流程: {key}"}, 400)
         name = target.get("name")
-        if not _try_start_running():
+        # Q01(batch-04): 与 _run_daily_sel 同款 —— 原子 check-and-set + 置位提前到 spawn 前,
+        # 消除两入口共享的无锁窗口(详见 _try_claim_running 注释)。
+        if not _try_claim_running():
             return self._send_json({"error": "已有流程在运行, 请先停止"}, 409)
         try:
             _set_mode(mode)
@@ -1136,8 +1320,21 @@ class Handler(BaseHTTPRequestHandler):
             _set_running(False)
             raise
         def job():
+            eng = get_engine()
+            try:
+                if not _is_connected(eng):
+                    eng.connect()
+            except Exception as e:
+                log_append(f"[run] 连接失败: {e}")
+                # Q01: connect 异常 = 本轮未开始即失败, 回滚 running=false 并终止。
+                _set_running(False)
+                return
             import sys
-            real_out, real_err = sys.stdout, sys.stderr
+            # Q01: stdout/stderr 换轨段按 job 互斥(同 _run_daily_sel, 嵌套消除)。
+            with _RUNNING_LOCK:
+                real_out, real_err = sys.stdout, sys.stderr
+                sys.stdout = _TeeOut(real_out, _LOGS)
+                sys.stderr = _TeeOut(real_err, _LOGS)
             try:
                 eng = get_engine()
                 try:
@@ -1156,10 +1353,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 log_append(f"[run] 流程异常: {e}")
             finally:
-                sys.stdout, sys.stderr = real_out, real_err
+                with _RUNNING_LOCK:
+                    sys.stdout, sys.stderr = real_out, real_err
                 _set_running(False)
         try:
-            threading.Thread(target=job, daemon=True).start()
+            threading.Thread(target=job, daemon=True, name="faa-run").start()
         except Exception:
             _set_running(False)
             raise
@@ -1216,6 +1414,111 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    # ---- API: SSE 推送 (2026-11-10 新增 GET /api/stream; 既有端点与 webui.html 零改动) ----
+    def _sse_send(self, event: str, data) -> bool:
+        """发送一条 SSE 事件并逐事件 flush。连接断开(客户端关页/网络中断)返回 False,
+        调用方据此干净退出线程, 不留孤儿循环。event 为空串 = 心跳(SSE 注释行,
+        EventSource 不派发为事件, 仅保活兼探活 —— 每次心跳都是一次真实写探测)。"""
+        try:
+            if event:
+                payload = f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+            else:
+                payload = f": ping {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            self.wfile.write(payload.encode("utf-8"))
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            return False
+
+    def _stream(self):
+        """GET /api/stream —— SSE 推送通道(纯新增; 浏览器轮询回退通道不变)。
+
+        事件契约:
+        - event: log      内部 _LOGS 游标增量: 0.8s 轮询内部缓冲, 有新分片才推;
+                          data = {"next": int, "lines": [str,...]}(与 GET /api/log 同形)。
+                          游标从 0 起步(连上即回放本次会话已有分片, 与 /api/log?after=0 同语义);
+                          以「已消费末分片指纹」检测缓冲被整体替换(log_clear, 替换后缓冲=[标记行])
+                          → 游标归零重放, 保证清除后的日志仍推得出去。
+        - event: status   1.5s 检测 /api/status 载荷变化, 变更才推(载荷与 GET /api/status 同形);
+                          连接建立后立即推一次首帧状态, 之后仅在实际变化时推送。
+        - event: failures 失败游标增量(0.8s; data 与 GET /api/failures 同形 {items,next});
+                          仅新增失败才推。
+        - event: frame    仅 ?frames=1 时附带: 引擎 last_frame 指纹(hashlib.blake2b)变化才
+                          编码 jpeg b64 推送(data 与 GET /api/screen 同形 {jpeg,w,h})。
+                          ⚠ 绝不主动 ADB 截帧(不调 eng.screenshot, 只读引擎已有的 last_frame);
+                          空闲期引擎不产新帧 → 指纹不变 → 无新帧就不推。
+        - 心跳            每 15s 一条 ": ping" 注释行保活。
+        - 断开             写失败(BrokenPipeError/ConnectionResetError 等)→ 线程干净退出,
+                          无孤儿循环; 本端点不落任何盘、不改任何状态。
+        """
+        import hashlib   # 局部导入: 对既有 import 块零改动
+        frames = (self._query("frames") == "1")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        log_cur = 0          # _LOGS 游标(0=回放已有分片)
+        last_chunk = ""      # 已消费末分片指纹: 缓冲被整体替换(log_clear)时据此归零重放
+        fail_cur = 0         # 失败游标(0=回放既有失败, 与前端 failSeen 初值一致)
+        last_status = None   # 上次推送的 status 载荷指纹
+        last_frame_sig = None
+        t_log = t_fail = t_status = t_frame = 0.0
+        t_beat = time.monotonic()
+        while True:
+            now = time.monotonic()
+            if now - t_log >= 0.8:
+                t_log = now
+                with _LOG_LOCK:
+                    n = len(_LOGS)
+                    if log_cur > n or (log_cur > 0 and _LOGS[log_cur - 1] != last_chunk):
+                        log_cur = 0      # 缓冲被清空/整体替换(log_clear 后缓冲=[标记行]) → 归零重放
+                    new = list(_LOGS[log_cur:])
+                    log_cur = len(_LOGS)
+                    if new:
+                        last_chunk = _LOGS[-1]
+                if new and not self._sse_send("log", {"next": log_cur, "lines": new}):
+                    return
+            if now - t_fail >= 0.8:
+                t_fail = now
+                try:
+                    items, nxt = get_failures(fail_cur)
+                except Exception:
+                    items, nxt = [], fail_cur
+                if items and not self._sse_send("failures", {"items": items, "next": nxt}):
+                    return
+                if nxt > fail_cur:
+                    fail_cur = nxt
+            if now - t_status >= 1.5:
+                t_status = now
+                try:
+                    payload = _status()
+                except Exception:
+                    payload = None
+                if payload is not None:
+                    fp = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                    if fp != last_status:
+                        if not self._sse_send("status", payload):
+                            return
+                        last_status = fp
+            if frames and now - t_frame >= 1.5:
+                t_frame = now
+                eng = ENGINE                 # 只读既有单例: 不经 get_engine() 避免误建引擎
+                img = getattr(eng, "last_frame", None) if eng is not None else None
+                if img is not None:
+                    sig = hashlib.blake2b(img.tobytes(), digest_size=16).hexdigest()
+                    if sig != last_frame_sig:
+                        last_frame_sig = sig
+                        if not self._sse_send("frame", {"jpeg": _img_to_jpeg_b64(img),
+                                                        "w": getattr(eng, "screen_w", 0),
+                                                        "h": getattr(eng, "screen_h", 0)}):
+                            return
+            if now - t_beat >= 15.0:
+                t_beat = now
+                if not self._sse_send("", None):
+                    return
+            time.sleep(0.2)
 
     # ---- API: 清空运行日志 (UI「清除日志」按钮, 2026-10-03) ----
     def _log_clear(self):

@@ -1,0 +1,64 @@
+<UserControl x:Class="FAA.WpfGui.Views.LogPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+      运行日志页 = webui.html 日志区: 800ms 增量轮询 + 失败行红显 + 保存/清除。
+      契约4: 保存=服务端全量导出(log_download); 清除=服务端+磁盘+本页+游标一起动(文案三分支)。
+      NP2: 「浏览截图」已落地(POST /api/fail_cache_open, webui.html:321 同款, 服务端打开缓存目录)。
+    -->
+    <DockPanel Margin="16,12">
+        <!-- 顶部工具行 -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button Content="保存日志" Style="{StaticResource DarkButton}" Command="{Binding SaveLogCommand}"/>
+            <Button Content="清除日志" Style="{StaticResource DangerButton}" Margin="8,0,0,0"
+                    Command="{Binding ClearLogCommand}"/>
+            <Button Content="浏览截图" Style="{StaticResource DarkButton}" Margin="8,0,0,0"
+                    Command="{Binding BrowseShotsCommand}"
+                    ToolTip="在服务端机器的资源管理器中打开故障存证截图缓存目录 data/fail_cache/"/>
+            <TextBlock Style="{StaticResource MutedText}" Margin="14,0,0,0" VerticalAlignment="Center"
+                       Text="保存 = 服务端全量导出(含打开前历史, 同时归档截图缓存) · 清除 = 服务端缓冲+磁盘+本页+游标一起清"/>
+        </StackPanel>
+
+        <!-- 底部状态行 -->
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+            <TextBlock DockPanel.Dock="Right" Text="{Binding LineInfoText}" Style="{StaticResource MutedText}"/>
+            <TextBlock Text="{Binding StatusText}" Style="{StaticResource MutedText}"
+                       Foreground="{StaticResource OkBrush}" TextTrimming="CharacterEllipsis"/>
+        </DockPanel>
+
+        <!-- 日志本体(虚拟化 ListBox; 失败行红显) -->
+        <Border Style="{StaticResource CardBorder}" Margin="0" Padding="4">
+            <ListBox x:Name="LogList" ItemsSource="{Binding Lines}"
+                     Background="Transparent" BorderThickness="0"
+                     FontFamily="Consolas" FontSize="12"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     VirtualizingPanel.ScrollUnit="Pixel">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Background" Value="Transparent"/>
+                        <Setter Property="Padding" Value="8,1"/>
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                        <Setter Property="Focusable" Value="False"/>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding Text}" TextWrapping="Wrap" Foreground="{StaticResource TextBrush}">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource TextBrush}"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsFail}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource ErrBrush}"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Border>
+    </DockPanel>
+</UserControl>

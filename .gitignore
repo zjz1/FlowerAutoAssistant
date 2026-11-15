@@ -57,3 +57,16 @@ legacy/
 # ---------- OS ----------
 Thumbs.db
 .DS_Store
+
+# ---------- 原生 UI（N05 拍板 B 案, 2026-11-13 重构批 batch-02-structure-gates）：WPF 源码入库，只忽略构建产物 ----------
+# 演变谱系: 收尾批 1(zcode-20261112-1) 先交付 A 案段(整体忽略 native/) → 本批改 B 案(主 agent 拍板,
+# 拍板记录见 HANDOFF.md N05 节), 线性合并后者覆盖前者; 合并顺序提醒: 批 16-22 → 收尾 1-3 → 重构批。
+# 回退方式 = 恢复 A7 段原文「native/ + *.user + bin/ + obj/ + dist/」(单文件单段, 零其它影响)。
+# 权威源: native/FAA.WpfGui 源码以 git 仓库为准(docs/PROJECT_GUIDE.md §2.3 原生 UI 区 / §9 L 区)。
+# 构建产物(dist/ self-contained 发布件、bin/obj 中间产物、.vs/ IDE 元数据)继续不入库。
+native/**/bin/
+native/**/obj/
+native/**/dist/
+native/**/.vs/
+.vs/
+*.user

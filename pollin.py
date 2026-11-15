@@ -464,8 +464,10 @@ def _panel_friend_pt(eng, img=None):
       20261024 日志实测精识兜底 0/16, 且 16 次粗识 MISS 全部发生在「点『社交』前」的入口探测
       (面板必然未开, 结构性不可能命中, 每次白跑一次区域 OCR + 一次滤色精识)。
       「面板是否已开」由调用方改用 in_list 同帧判定(帧缓存复用, 零额外 OCR)。
+    F02(batch-05, 2026-11-14): 统计读写走公有面 eng.get_ocr_stat()(原为引擎下划线私有属性
+      跨界直读, 现走公有读法; 返回引擎活引用, 本函数的纯观测自增语义不变)。
     """
-    st = eng._ocr_stat
+    st = eng.get_ocr_stat()
     st["friend_coarse_n"] = st.get("friend_coarse_n", 0) + 1
     pt = eng.locate(["好友"], img=img, exact=True,
                     region_rel=SOCIAL_FRIEND_REGION, min_score=0.4)
@@ -508,7 +510,8 @@ def click_top_right_close(eng):
     只能靠点右上角 X 关闭: 依次试模板(各自阈值见 CORNER_CLOSE_TEMPLATES), 命中后须过「粉色一致性」校验。
 
     E3(2026-10-27, zcode-20261028-4, D12 收窄实施):
-    ①**粉色校验**: 复用引擎 _pink_ratio_at(与 close_dialog verify_pink 同 HSV/同阈值)——
+    ①**粉色校验**: 复用引擎 pink_ratio_at(F02 公有名, 原 _pink_ratio_at; 与 close_dialog
+      verify_pink 同 HSV/同阈值)——
       10-26 双日志实锤: 资料页上 close_corner_pink 0.748-0.753@(1195,99)/(1196,73) 以 0.65 低阈值
       通过并点击, 画面无变化(真 ✕ ≈(1240,30) 形状不同) -> 连续 2 个退出动作无变化 -> 归位放弃,
       ④段被跳过。校验后纯白/非粉候选被弃用, 交回下一模板。
@@ -525,7 +528,7 @@ def click_top_right_close(eng):
         pt = eng.locate_template(tpl, threshold=th, region_rel=CORNER_CLOSE_REGION, img=img)
         if pt is None:
             continue
-        ratio = eng._pink_ratio_at(pt, img, _PINK_CFG, tol)
+        ratio = eng.pink_ratio_at(pt, img, _PINK_CFG, tol)
         if ratio < _PINK_MIN:
             print(f"  [关闭] 右上角候选 {tpl} ({pt.x},{pt.y}) 粉色占比 {ratio:.1%} < {_PINK_MIN:.0%}, "
                   f"判为纯白图标/装饰, 弃用(不点击)")
@@ -649,6 +652,31 @@ def has_social(eng, img=None, min_score=0.4, cache=None):
     return pt
 
 def ensure_home(eng):
+    """确保回到自己家园主界面(入口; 实现在 _ensure_home_walk, 判定行为原样)。
+
+    V03(ii)(batch-11): 归位失败(任一退出档连续 2 轮无变化如实放弃 / 收尾仍未确认)时,
+    经引擎公有口 note_home_recover_failed 登记「本轮归位已失败」状态, 供 run_module 入口
+    对后续模块做**一次** at_home_main 轻验短路(不再每模块重复烧 4 轮归位 —— 2026-11-07
+    日志 1180 行起同一卡死画面连累 energy/claim/daily 各跑 4 轮); 本函数自身的失败上报
+    口径不变(run_friend_pollin 收尾失败如实上报口径保持, report_failure 无漏发)。
+    收到停止请求的返回 False 不登记(用户主动停止, 非归位失败)。
+    """
+    ok = _ensure_home_walk(eng)
+    if not ok and not stop_requested():
+        _note_home_recover_failed(eng)
+    return ok
+
+
+def _note_home_recover_failed(eng):
+    """V03(ii)(batch-11): 「本轮归位已失败」登记进编排层 —— 走引擎公有口
+    note_home_recover_failed(F02 公有面口径, 采集层不触引擎私有成员; 假引擎/桩引擎缺
+    该方法时静默跳过, batch-05 mock 单测链不受影响)。纯状态位, 不改任何判定语义。"""
+    fn = getattr(eng, "note_home_recover_failed", None)
+    if callable(fn):
+        fn()
+
+
+def _ensure_home_walk(eng):
     """确保回到自己家园主界面: 关提示框 -> 离开好友花园 -> 委托子页点左上角返回 -> 关家族面板 -> 兜底点右上角关闭。
 
     ⚠ 2026-10-03 加固(协作区 zcode-20261003-2): 每个退出动作后用 wait_screen_change 复核画面真的变了;
@@ -656,6 +684,9 @@ def ensure_home(eng):
       背景: 本次日志里委托子页出口 rel(0.035,0.038) 点在「家族」文字标签上, 画面不变却被当成功,
       4 轮 × 各模块(采粉开列表 3 次 × ensure_home 4 轮 + claim 首步)反复空转数分钟。
       出口控件真实位置仍待实机重采(B1); 本函数只保证「无效出口被快速、如实地暴露」, 不再空转陪跑。
+    V03(i)(batch-11): 好友列表档/提示框档/花园档原先 `continue` 不递增 stale —— 「列表关不掉」
+      类卡死每模块白烧满 4 轮(每轮 30-40s, 花园档最坏 ~2min/轮)。现三档结果全部纳入 stale
+      计数(成功清零/失败 +1, 阈值 2 与其它档一致, 对冲「动画慢」漏判风险)。
     """
     stale = 0  # 连续「点击后画面无变化」的退出动作计数(任一动作确认画面变化即清零)
     for _ in range(4):
@@ -670,14 +701,39 @@ def ensure_home(eng):
             # 整屏好友列表面板: 返回键无效, 也不能当"已在主界面"(social_usable 已排除列表),
             # 必须先关掉列表再往家园走 (2026-10-02 根因: 停在这里导致 claim 全程空跑)
             print("  [主界面] 停在好友列表, 先关闭列表")
-            leave_friend_list(eng)
+            # V03(i)(batch-11): 关列表结果纳入 stale 计数(旧版 continue 不计数 —— 列表
+            # 关不掉类卡死每模块白烧 4 轮; 阈值 2 与其它档一致)。失败存证已由
+            # leave_friend_list 内部如实落盘(tag=friendlist), 此处不重复存证。
+            if leave_friend_list(eng):
+                stale = 0
+            else:
+                stale += 1
+                if stale >= 2:
+                    print("  [主界面] 好友列表连续 2 轮关闭未确认, 如实放弃归位(不再空转)")
+                    return False
             continue
         if no_pollen_popup(eng, img):
             print("  [主界面] 关「没有花粉」提示框 -> 点「确定」")
-            dismiss_no_pollen_popup(eng, img)
+            if dismiss_no_pollen_popup(eng, img):
+                stale = 0
+            else:
+                stale += 1
+                if stale >= 2:
+                    print("  [主界面] 「没有花粉」提示框连续 2 轮关闭未确认, 如实放弃归位(不再空转)")
+                    save_escape_evidence(eng, "prompt_box")
+                    return False
             continue
         if in_garden(eng, img):
-            leave_garden(eng)
+            # V03(i)(batch-11): 离园结果纳入 stale 计数(旧版 continue 不计数 —— 花园档最坏
+            # ~2min/轮 × 4; leave_garden 内部点-验-重试 3 次仍失败才计 1 档, 阈值 2 不变)。
+            if leave_garden(eng):
+                stale = 0
+            else:
+                stale += 1
+                if stale >= 2:
+                    print("  [主界面] 离开花园连续 2 轮未确认回家, 如实放弃归位(不再空转)")
+                    save_escape_evidence(eng, "garden")
+                    return False
             continue
         if in_delegate_subpage(eng, img):
             # 委托挑战全屏子页: 出口=内容区右上角白圆粉花✕ → 模板定位(合规改造 2026-10-04;

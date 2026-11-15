@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- N02(batch-06, 重构批): 最小 xunit 测试工程 —— 六纯函数提纯(Services/SelftestArgs.cs、
+       ViewModels/LogLines.cs、ViewModels/SettingsClamps.cs、ViewModels/KbParser.cs、
+       Services/BackendPathResolver.cs + LogStore 游标守卫)的确定性回归面。
+       目标框架与被测工程一致(net8.0-windows + UseWPF, 经 ProjectReference 引 WinExe 主工程);
+       internal 可见性由主工程 FAA.WpfGui.csproj 的 InternalsVisibleTo 提供(N02 验收线)。
+       回退方式: 本工程从 sln 移除即回退测试基建(主工程零依赖)。 -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>FAA.WpfGui.Tests</AssemblyName>
+    <RootNamespace>FAA.WpfGui.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FAA.WpfGui\FAA.WpfGui.csproj" />
+  </ItemGroup>
+
+</Project>

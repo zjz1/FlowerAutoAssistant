@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- NP2 收尾: 数据/服务层 + 五页导航 + 托盘(H.NotifyIcon.Wpf) + 单实例互斥
+       版本沿革: 0.1.0(批16) → 0.3.0(批17) → 0.4.0(批18/19) → 0.5.0(批21, 本批);
+       0.2.x 未被占用(跳号属历史沿革, 无实际影响)。 -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>FAA.WpfGui</AssemblyName>
+    <RootNamespace>FAA.WpfGui</RootNamespace>
+    <Version>0.5.0</Version>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="H.NotifyIcon.Wpf" Version="2.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\app.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- N02(batch-06): 测试工程可见 internal —— 唯一 csproj 变更(N02 验收线原文);
+         六纯函数提纯产物(Services/SelftestArgs、BackendPathResolver + ViewModels/LogLines、
+         SettingsClamps、KbParser + LogStore 游标守卫)由此获得确定性单测面。 -->
+    <InternalsVisibleTo Include="FAA.WpfGui.Tests" />
+  </ItemGroup>
+
+</Project>

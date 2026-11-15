@@ -32,7 +32,11 @@ MERGED = COLLAB / "merged"
 LEDGER = COLLAB / "审阅台账.jsonl"
 
 T2_MARKERS = ("ocr_engine.py", "pollin.py", "webui.py", "webui.html",
-              "ocr_ui.py", "community_like.py", "webui_app.py", "main.py")
+              "ocr_ui.py", "community_like.py", "webui_app.py", "main.py",
+              "FAA.WpfGui.csproj")          # N01: C# 工程文件按 T2 审
+# N01(2026-11-13 批): native/ 前缀整体按 T2 引擎关键路径审阅（WPF 原生壳 ~6.6k 行）。
+# E01(2026-11-14 批): ocr_engine.py 拆包为 ocr_engine/ 包, 包内 .py 同属引擎关键路径。
+T2_PREFIXES = ("native/", "ocr_engine/")
 DANGER_WORDS = ("屏蔽聊天", "删除好友", "神叶", "灵豆", "星之粉")
 
 
@@ -153,6 +157,37 @@ def add_rule(results, rid, level, ok, detail):
     results.append({"id": rid, "level": level, "ok": ok, "detail": detail})
 
 
+def _known_step_types() -> set[str]:
+    """run_step 分派的步骤类型集合（E01, 2026-11-14 批）。
+
+    与 check_project.known_step_types 同口径: 优先 import 引擎显式导出的
+    ``ocr_engine.STEP_TYPES``（E02）; import 失败时回退源文本正则 —— 对根
+    ocr_engine.py(CLI shim) + ocr_engine/ 包全部 .py 求并集（run_step 分派已随
+    拆包迁入 ocr_engine/engine/_flowexec.py）。输出集合与拆包前逐字节一致（42 种）。
+    """
+    try:
+        if str(REPO) not in sys.path:
+            sys.path.insert(0, str(REPO))
+        import ocr_engine as _eng
+        st = getattr(_eng, "STEP_TYPES", None)
+        if isinstance(st, (frozenset, set)) and st and all(isinstance(x, str) for x in st):
+            return set(st)
+    except Exception:  # noqa: BLE001 —— 兜底不因 import 环境问题而断
+        pass
+    targets = []
+    shim = REPO / "ocr_engine.py"
+    if shim.exists():
+        targets.append(shim)
+    pkg = REPO / "ocr_engine"
+    if pkg.is_dir():
+        targets += [p for p in sorted(pkg.rglob("*.py")) if "__pycache__" not in p.parts]
+    found: set[str] = set()
+    for t in targets:
+        found |= set(re.findall(r's_type == "([^"]+)"', t.read_text(encoding="utf-8",
+                                                               errors="ignore")))
+    return found
+
+
 def check_gate():
     try:
         cp = subprocess.run([sys.executable, str(REPO / "tools" / "check_project.py")],
@@ -183,7 +218,8 @@ def main():
 
     rep_md5 = report_md5s(batch_dir)
     tier = "T0"
-    if any(r.endswith(T2_MARKERS) for r, _ in files):
+    if any(r.endswith(T2_MARKERS) for r, _ in files) or any(
+            r.startswith(T2_PREFIXES) for r, _ in files):
         tier = "T2"
     elif any(r.startswith(("flows/", "data/", "resource/template/")) for r, _ in files):
         tier = "T1"
@@ -234,8 +270,7 @@ def main():
                          f"{rel} 新增 require_seen {ns['require_seen'] - base_rs} 处（确认非快速过场链）")
             # R7 步骤类型（仅 flows）
             if rel.startswith("flows/"):
-                engine_src = (REPO / "ocr_engine.py").read_text(encoding="utf-8")
-                known = set(re.findall(r's_type == "([^"]+)"', engine_src))
+                known = _known_step_types()
                 unknown = sorted(ns["types"] - known)
                 add_rule(results, "R7", "FAIL", bool(not unknown),
                          f"{rel} 未知步骤类型: {unknown}" if unknown else f"{rel} 步骤类型全部已知")

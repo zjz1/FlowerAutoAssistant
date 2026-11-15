@@ -15,7 +15,7 @@
 |---|---|---|
 | **T0 文档/注释** | 仅 `docs/**`、`README.md`、`PROGRESS.md`、`*.md`、注释级改动 | 自动检查全过 + 抽读关键段 |
 | **T1 配置/流程/模板** | 仅 `flows/**`、`data/*.json`、`resource/template/**`（无引擎/ pollin/webui 改动） | 语义 diff（字段级）+ 关键断言 + 模板两态分离度 + 闸门；按比例抽样复核 |
-| **T2 引擎/关键路径** | 触及 `ocr_engine.py` / `pollin.py` / `webui.py(.html)` / `ocr_ui.py` / `community_like.py` / `webui_app.py` / `main.py` | **逐 hunk 独立复验** + 规则全扫 + 回归桩测 + 闸门；严格度不降 |
+| **T2 引擎/关键路径** | 触及 `ocr_engine.py` / `ocr_engine/**` / `pollin.py` / `webui.py(.html)` / `ocr_ui.py` / `community_like.py` / `webui_app.py` / `main.py` / `FAA.WpfGui.csproj` / `native/**`（N01） | **逐 hunk 独立复验** + 规则全扫 + 回归桩测 + 闸门；严格度不降 |
 
 > 分级是**审阅强度**的分级，不是「信任传递」。T2 永远全量；T1 的抽样不等于免检，
 > 发现一处问题即升级为全量。
@@ -37,6 +37,7 @@
 | **R8** | WARN | 新增 `require_seen: true` | 快速过场链会假失败（D19）；需人工确认该链不会「点击后立即换页」 |
 | **R9** | WARN | 新增默认开启的性能/行为闸门 | 新闸门必须默认关 + 缺省路径逐字节等价（-9/-13 模式） |
 | **R10** | INFO | 语义 diff 清单（新增/删除/修改路径）与 REPORT 声称的「N 处 diff」比对 | 防「格式重排掩盖语义改动」 |
+| **R11** | WARN/FAIL | native（C#/WPF）批**必须附构建/自测证据**：REPORT 含 `dotnet build` 0 错误退出码与四条自测链（probe/api/host/sse，或对应 `run_selftest.ps1`）输出；无 SDK 环境至少附上批构建指纹（exe/md5）。闸门侧配套：`check_project.py` 原生 UI 预检（csproj/sln 存在性 + dotnet build 退出码硬判，无 SDK 降级 WARN）与 `review_batch.py` T2 分级（`FAA.WpfGui.csproj` / `native/` 前缀） | 纯 C# 批此前被自动判 T0 文档级，构建回归在合并后才暴露（N01, 2026-11-13） |
 
 > WARN 不阻断合并，但**必须进入台账「待人工确认」**并在回复中列出。
 

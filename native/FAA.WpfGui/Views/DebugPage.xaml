@@ -1,0 +1,55 @@
+<UserControl x:Class="FAA.WpfGui.Views.DebugPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+      调试页 = webui.html「测试界面」: 实时画面(SSE frame 推送优先[B1: ?frames=1], 推送断流回落
+      1.5s 轮询; 页面不可见/最小化暂停) + OCR 框按需叠加(2.5s 过期)
+      + 点击发送(rel + hit 动效 + 点后刷新) + 模式切换(契约7: test=每步存点击截图 / use)
+      + 连接按钮(A4): POST /api/connect 连接设备 —— 未连接时截图接口 503 无画面, 连上后底栏回显分辨率。
+      Canvas overlay 与点击像素映射由代码后置负责(画面尺寸随帧自适应)。
+    -->
+    <DockPanel Margin="16,12">
+        <!-- 工具行 -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+            <TextBlock Text="模式:" VerticalAlignment="Center" Foreground="{StaticResource TextBrush}"/>
+            <ComboBox x:Name="ModeCombo" Width="150" Margin="6,0,14,0"
+                      SelectionChanged="OnModeSelectionChanged">
+                <ComboBoxItem>使用</ComboBoxItem>
+                <ComboBoxItem>测试(存点击图)</ComboBoxItem>
+            </ComboBox>
+            <CheckBox IsChecked="{Binding IsAutoRefresh, Mode=TwoWay}" VerticalAlignment="Center"
+                      Content="自动刷新" Foreground="{StaticResource TextBrush}"/>
+            <CheckBox IsChecked="{Binding IsOcrEnabled, Mode=TwoWay}" VerticalAlignment="Center" Margin="14,0,0,0"
+                      Content="OCR标注(按需)" Foreground="{StaticResource TextBrush}"
+                      ToolTip="勾选时才做一次全屏 OCR 并叠加文字框(默认关, 避免每帧 OCR 烧 CPU; 框 2.5s 过期不再叠加)"/>
+            <!-- 连接(A4): POST /api/connect 连接设备, 与主页/设置页连接同语义; 文案随 /api/status.connected 回显 -->
+            <Button Content="{Binding ConnectButtonText}" Style="{StaticResource DarkButton}" Margin="14,0,0,0"
+                    Command="{Binding ConnectCommand}"
+                    ToolTip="连接设备(ADB 连模拟器)。未连接时截图接口返回 503, 画面无更新; 连接成功后底栏回显分辨率"/>
+            <TextBlock Text="{Binding ConnectStatusText}" Style="{StaticResource MutedText}"
+                       Margin="14,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource OkBrush}"/>
+            <Button Content="刷新" Style="{StaticResource DarkButton}" Margin="14,0,0,0"
+                    Command="{Binding RefreshCommand}"/>
+            <TextBlock Text="{Binding ModeStatusText}" Style="{StaticResource MutedText}"
+                       Margin="14,0,0,0" VerticalAlignment="Center" Foreground="{StaticResource OkBrush}"/>
+        </StackPanel>
+
+        <!-- 底部状态 -->
+        <TextBlock DockPanel.Dock="Bottom" Text="{Binding ScreenStatusText}" Style="{StaticResource MutedText}"
+                   Margin="0,8,0,0"/>
+
+        <!-- 画面 + overlay(点击/框) -->
+        <Border Style="{StaticResource CardBorder}" Margin="0" Padding="8"
+                SizeChanged="OnHostSizeChanged">
+            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                <Grid x:Name="ScreenHost" Width="960" Height="540"
+                      HorizontalAlignment="Left" VerticalAlignment="Top"
+                      Background="#141519" MouseLeftButtonDown="OnScreenClick">
+                    <Image x:Name="ScreenImg" Source="{Binding ScreenImage}" Stretch="Fill"
+                           RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+                    <Canvas x:Name="OcrCanvas" IsHitTestVisible="False"/>
+                </Grid>
+            </ScrollViewer>
+        </Border>
+    </DockPanel>
+</UserControl>

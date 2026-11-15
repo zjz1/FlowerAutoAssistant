@@ -1,0 +1,76 @@
+<UserControl x:Class="FAA.WpfGui.Views.AboutPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+      「关于」页(批 C2): 版本(读程序集, csproj Version 0.5.0) / 应用说明 / 项目链接(占位, 发布前替换) / 致谢。
+      静态信息页, 无轮询无服务依赖; 打开链接在 AboutViewModel(系统默认浏览器, 失败原生框如实报)。
+    -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel MaxWidth="780" HorizontalAlignment="Left" Margin="16,12">
+
+            <!-- ======== 卡片一: 应用与版本 ======== -->
+            <Border Style="{StaticResource CardBorder}">
+                <StackPanel>
+                    <TextBlock Text="🌺 FAA 小花仙挂机助手" Style="{StaticResource SectionTitle}" FontSize="18"/>
+                    <Grid Margin="0,2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="170"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="30"/>
+                            <RowDefinition Height="30"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="应用版本" Style="{StaticResource RowLabel}"
+                                   ToolTip="读自程序集 InformationalVersion(csproj &lt;Version&gt;0.5.0&lt;/Version&gt;)"/>
+                        <TextBlock Grid.Column="1" Text="{Binding VersionText}" Style="{StaticResource RowValue}"/>
+                        <TextBlock Grid.Row="1" Text="程序集版本" Style="{StaticResource RowLabel}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding AssemblyVersionText}" Style="{StaticResource RowValue}"/>
+                    </Grid>
+                    <TextBlock Text="{Binding AppIntro}" Style="{StaticResource MutedText}" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Border>
+
+            <!-- ======== 卡片二: 项目链接(占位) ======== -->
+            <Border Style="{StaticResource CardBorder}">
+                <StackPanel>
+                    <TextBlock Text="项目链接" Style="{StaticResource SectionTitle}"/>
+                    <Grid Margin="0,2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="170"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="30"/>
+                            <RowDefinition Height="30"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="项目文档" Style="{StaticResource RowLabel}"/>
+                        <TextBlock Grid.Column="1" VerticalAlignment="Center">
+                            <Hyperlink Command="{Binding OpenLinkCommand}" CommandParameter="{Binding DocsUrl}"
+                                       ToolTip="占位链接: 发布前替换为实际文档地址">
+                                <Run Text="{Binding DocsUrl, Mode=OneWay}"/>
+                            </Hyperlink>
+                        </TextBlock>
+                        <TextBlock Grid.Row="1" Text="GitHub 仓库" Style="{StaticResource RowLabel}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="1" VerticalAlignment="Center">
+                            <Hyperlink Command="{Binding OpenLinkCommand}" CommandParameter="{Binding GithubUrl}"
+                                       ToolTip="占位链接: 发布前替换为实际仓库地址">
+                                <Run Text="{Binding GithubUrl, Mode=OneWay}"/>
+                            </Hyperlink>
+                        </TextBlock>
+                    </Grid>
+                    <TextBlock Text="以上链接为占位, 发布前替换为实际地址; 点击用系统默认浏览器打开。"
+                               Style="{StaticResource MutedText}" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Border>
+
+            <!-- ======== 卡片三: 致谢 ======== -->
+            <Border Style="{StaticResource CardBorder}">
+                <StackPanel>
+                    <TextBlock Text="致谢" Style="{StaticResource SectionTitle}"/>
+                    <TextBlock Text="{Binding Thanks}" Style="{StaticResource MutedText}"/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

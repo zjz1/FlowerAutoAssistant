@@ -1,0 +1,225 @@
+<Window x:Class="FAA.WpfGui.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:FAA.WpfGui.ViewModels"
+        xmlns:views="clr-namespace:FAA.WpfGui.Views"
+        Title="FAA 原生窗口" Width="1180" Height="760"
+        MinWidth="980" MinHeight="620" WindowStartupLocation="CenterScreen"
+        Background="{StaticResource BgBrush}" FontFamily="Microsoft YaHei UI" FontSize="13"
+        Closing="OnClosing" Loaded="OnLoaded">
+    <Window.Resources>
+        <!-- 六页导航: VM 类型 → 视图模板(ContentControl 只绑 CurrentPage) -->
+        <DataTemplate DataType="{x:Type vm:HomeViewModel}">
+            <views:HomePage/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:LogViewModel}">
+            <views:LogPage/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
+            <views:SettingsPage/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:DebugViewModel}">
+            <views:DebugPage/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:FlowViewModel}">
+            <views:FlowPage/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:AboutViewModel}">
+            <views:AboutPage/>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid>
+        <DockPanel>
+            <!-- 顶栏: 标题 + 状态徽章(契约5: 连接/分辨率/模式/缓存/运行中模块) -->
+            <Border DockPanel.Dock="Top" Padding="16,10" BorderBrush="{StaticResource LineBrush}"
+                    BorderThickness="0,0,0,1" Background="#22242A">
+                <DockPanel LastChildFill="False">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="🌺 FAA 小花仙挂机助手" FontSize="16" FontWeight="Bold"
+                                   Foreground="{StaticResource TextBrush}" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- 连接状态徽章(圆点+文字同色) -->
+                    <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="10,4">
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse Width="8" Height="8" Margin="0,0,6,0"
+                                     Fill="{Binding ConnDotBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding ConnBadgeText}" Foreground="{Binding ConnDotBrush}"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+                    <!-- 分辨率 -->
+                    <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="10,4" Margin="8,0,0,0"
+                            ToolTip="screen=实机分辨率(adb 直读); 引擎工作区可能按 MAA 长边缩放, 相对坐标不受影响">
+                        <TextBlock Text="{Binding ResolutionText}" Foreground="{StaticResource SubBrush}"
+                                   VerticalAlignment="Center" FontFamily="Consolas"/>
+                    </Border>
+                    <!-- 模式徽章(契约7: 测试模式=每步存点击截图) -->
+                    <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="10,4" Margin="8,0,0,0"
+                            ToolTip="模式切换在「调试」页; 测试模式每步存点击截图到 data/click_debug/">
+                        <TextBlock Text="{Binding ModeText}" Foreground="{StaticResource SubBrush}"
+                                   VerticalAlignment="Center"/>
+                    </Border>
+                    <!-- 截图缓存徽章(契约3: 常驻, exceed 变红加粗) -->
+                    <Border x:Name="FailCacheBadge" Background="{StaticResource PanelBrush}"
+                            BorderBrush="{StaticResource LineBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="10,4" Margin="8,0,0,0"
+                            ToolTip="{Binding FailCache.BadgeTooltip}">
+                        <TextBlock Text="{Binding FailCache.BadgeText}" VerticalAlignment="Center"
+                                   FontFamily="Consolas">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource SubBrush}"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding FailCache.IsExceed}" Value="True">
+                                            <Setter Property="Foreground" Value="{StaticResource ErrBrush}"/>
+                                            <Setter Property="FontWeight" Value="Bold"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Border>
+                    <!-- 运行中模块 -->
+                    <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}"
+                            BorderThickness="1" CornerRadius="10" Padding="10,4" Margin="8,0,0,0"
+                            ToolTip="current_module: 运行中该模块的勾选与 ⚙ 设置锁定(契约1), 结束后自动解锁">
+                        <TextBlock Text="{Binding RunningText}" Foreground="{StaticResource SubBrush}"
+                                   VerticalAlignment="Center"/>
+                    </Border>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- 主体: 左侧导航 + 内容 -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="176"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Border Background="#22242A" BorderBrush="{StaticResource LineBrush}"
+                    BorderThickness="0,0,1,0" Padding="10,12">
+                <StackPanel>
+                    <RadioButton GroupName="nav" Style="{StaticResource NavRadio}" Content="🏠  主页"
+                                 IsChecked="{Binding IsNavHome, Mode=TwoWay}"
+                                 ToolTip="每日挂机任务 / 开始一轮 / 连接"/>
+                    <RadioButton GroupName="nav" Style="{StaticResource NavRadio}" Content="📜  运行日志"
+                                 IsChecked="{Binding IsNavLog, Mode=TwoWay}"
+                                 ToolTip="800ms 增量轮询 / 保存日志 / 清除日志 / 浏览截图"/>
+                    <RadioButton GroupName="nav" Style="{StaticResource NavRadio}" Content="⚙  设置"
+                                 IsChecked="{Binding IsNavSettings, Mode=TwoWay}"
+                                 ToolTip="连接 / 识别 / 界面三组设置(改动即时保存)"/>
+                    <RadioButton GroupName="nav" Style="{StaticResource NavRadio}" Content="🐛  调试"
+                                 IsChecked="{Binding IsNavDebug, Mode=TwoWay}"
+                                 ToolTip="实时画面 / OCR 标注 / 点击发送 / 模式切换"/>
+                    <RadioButton GroupName="nav" Style="{StaticResource NavRadio}" Content="📋  流程"
+                                 IsChecked="{Binding IsNavFlow, Mode=TwoWay}"
+                                 ToolTip="流程下拉与运行 / 流程表 / 知识库"/>
+                    <!-- C2: 「关于」页入口 —— 版本/说明/链接(占位)/致谢 -->
+                    <RadioButton GroupName="nav" Style="{StaticResource NavRadio}" Content="ℹ  关于"
+                                 IsChecked="{Binding IsNavAbout, Mode=TwoWay}"
+                                 ToolTip="应用版本 / 应用说明 / 项目链接(占位) / 致谢"/>
+                </StackPanel>
+            </Border>
+            <ContentControl Grid.Column="1" Content="{Binding CurrentPage}"/>
+        </Grid>
+        </DockPanel>
+
+        <!-- ===== overlay 层(浮层/模态, 覆盖全窗) =====
+             ⚠ 容器 Grid 不得绑 IsHitTestVisible(否则模态隐藏时失败浮层按钮点不了);
+             遮罩 Border 折叠时不参与命中测试, 可见时才挡住下层 —— 语义即模态。 -->
+        <Grid>
+            <!-- 遮罩 + 截图缓存提醒模态(契约3; webui fc-modal 同构) -->
+            <Border Background="#73000000" Visibility="{Binding FailCache.IsModalVisible,
+                    Converter={StaticResource BoolToVisibility}}">
+                <Border Width="560" Background="#FFFFFF" CornerRadius="10" Padding="18,20"
+                        VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <StackPanel>
+                        <TextBlock Text="截图缓存已达提醒阈值" FontSize="17" FontWeight="Bold" Foreground="#1E1F22"/>
+                        <TextBlock Text="{Binding FailCache.ModalInfoText}" Foreground="#55595E"
+                                   TextWrapping="Wrap" Margin="0,8,0,12" LineHeight="20"/>
+                        <TextBlock Foreground="#55595E" TextWrapping="Wrap" LineHeight="17" FontSize="12"
+                                   Margin="0,0,0,12"
+                                   Text="缓存目录: data/fail_cache/（出错现场的全量 OCR + 截图; 跨重启保留）&#x0a;清理只删图片像素, 存证记录（时间/tag/全量 OCR 文本）永久保留在 index.jsonl; 清理动作会写入运行日志（不静默）。"/>
+                        <WrapPanel>
+                            <Button Content="全部清理" Style="{StaticResource DangerButton}"
+                                    Command="{Binding FailCache.CleanCommand}" CommandParameter="all"/>
+                            <Button Content="清理 30 天前" Style="{StaticResource DarkButton}" Margin="8,0,0,0"
+                                    Command="{Binding FailCache.CleanCommand}" CommandParameter="30"/>
+                            <Button Content="清理 7 天前" Style="{StaticResource DarkButton}" Margin="8,0,0,0"
+                                    Command="{Binding FailCache.CleanCommand}" CommandParameter="7"/>
+                            <Button Content="清理 1 天前" Style="{StaticResource DarkButton}" Margin="8,0,0,0"
+                                    Command="{Binding FailCache.CleanCommand}" CommandParameter="1"/>
+                            <Button Content="暂不清理" Style="{StaticResource DarkButton}" Margin="8,0,0,0"
+                                    Command="{Binding FailCache.CleanCommand}" CommandParameter="none"/>
+                        </WrapPanel>
+                    </StackPanel>
+                </Border>
+            </Border>
+
+            <!-- 功能失败提醒浮层(契约8; webui fail-pop 同构, 右下角) -->
+            <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource ErrBrush}"
+                    BorderThickness="1" CornerRadius="10" Width="480"
+                    HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,16,16"
+                    Visibility="{Binding Failures.IsVisible, Converter={StaticResource BoolToVisibility}}">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="18" ShadowDepth="3" Opacity="0.5"/>
+                </Border.Effect>
+                <StackPanel>
+                    <!-- 头: ⚠ 功能失败提醒 + 计数 + ✕(收起) -->
+                    <Border Background="#24F88173" Padding="10,8">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="✕" Command="{Binding Failures.CollapseCommand}"
+                                    Background="Transparent" BorderThickness="0" Foreground="{StaticResource SubBrush}"
+                                    Cursor="Hand" Padding="4,0" FontSize="14"
+                                    ToolTip="收起(新失败会再次弹出)"/>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="⚠ 功能失败提醒 " Foreground="{StaticResource ErrBrush}" FontWeight="Bold"/>
+                                <TextBlock Text="{Binding Failures.CountText}" Foreground="{StaticResource TextBrush}" FontWeight="Bold"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </Border>
+                    <!-- 列表: [module] detail + ts -->
+                    <ItemsControl ItemsSource="{Binding Failures.Items}" MaxHeight="220">
+                        <ItemsControl.Template>
+                            <ControlTemplate TargetType="ItemsControl">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="10,6">
+                                    <ItemsPresenter/>
+                                </ScrollViewer>
+                            </ControlTemplate>
+                        </ItemsControl.Template>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Padding="0,5">
+                                    <TextBlock TextWrapping="Wrap">
+                                        <Run Text="[" Foreground="{StaticResource SubBrush}"/>
+                                        <Run Text="{Binding Module, Mode=OneWay}" Foreground="#4C8DFF" FontWeight="SemiBold"/>
+                                        <Run Text="] " Foreground="{StaticResource SubBrush}"/>
+                                        <Run Text="{Binding Detail, Mode=OneWay}" Foreground="{StaticResource TextBrush}"/>
+                                        <Run Text="  " />
+                                        <Run Text="{Binding Ts, Mode=OneWay}" Foreground="{StaticResource SubBrush}" FontSize="11"/>
+                                    </TextBlock>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <!-- 尾: 提示 + 已知悉 -->
+                    <Border Background="{StaticResource Panel2Brush}" Padding="10,8"
+                            BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="已知悉，清空列表" Style="{StaticResource DarkButton}"
+                                    Command="{Binding Failures.AcknowledgeCommand}"
+                                    ToolTip="POST /api/failures_clear: 服务端清空失败清单"/>
+                            <TextBlock Text="失败同时已写入运行日志（搜「[失败]」可定位）。"
+                                       Style="{StaticResource MutedText}" VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>
