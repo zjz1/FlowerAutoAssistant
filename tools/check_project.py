@@ -43,6 +43,7 @@ PY_SOURCES = [
     ROOT / "pollin.py",
     ROOT / "community_like.py",
     ROOT / "webui.py",
+    ROOT / "webui_app.py",
     ROOT / "tools",
 ]
 

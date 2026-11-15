@@ -46,6 +46,16 @@ def _running() -> bool:
     with _RUNNING_LOCK:
         return _RUNNING
 
+
+def _try_start_running() -> bool:
+    """原子占用运行位: 检查与置 True 在同一把锁内, 避免两个请求同时通过 _running() 检查。"""
+    global _RUNNING
+    with _RUNNING_LOCK:
+        if _RUNNING:
+            return False
+        _RUNNING = True
+        return True
+
 # 模板标注工具(人机协同标注): 只记录坐标标注, 不直接保存模板文件
 _ANNOT_FILE = BASE / "data" / "tplt_annotations.jsonl"   # 提交给助手的标注记录(追加)
 _ANNOT_LOCK = threading.Lock()
@@ -64,6 +74,8 @@ _POST_ROUTES = {
 # ---- 运行日志环形缓冲 (支持增量拉取) ----
 _LOG_LOCK = threading.Lock()
 _LOGS: list[str] = []
+_LOG_MAX_LINES = 20000          # 最多保留的写入分片数(print 正文与换行各算一片); 超出从头部丢弃
+_LOG_BASE = 0                   # 被丢弃的头部片数, /api/log 的游标 = 全局序号
 # 日志磁盘备份: 服务**运行期间**把日志追加落盘(便于本次会话崩溃后排查)。
 # 注意: **每次服务启动都会清空**内存缓冲与磁盘文件, 因此备份不跨会话保留 —— 重开 webui
 # 后不会再看到上一次会话的残留日志 (需求 2026-10-01)。
@@ -90,9 +102,19 @@ def _log_persist(text: str) -> None:
         pass
 
 
-def log_append(text: str) -> None:
+def _append_log(text: str) -> None:
+    """追加一个日志分片；超过上限时丢弃最旧的头部并推进全局序号。"""
+    global _LOG_BASE
     with _LOG_LOCK:
         _LOGS.append(text)
+        overflow = len(_LOGS) - _LOG_MAX_LINES
+        if overflow > 0:
+            del _LOGS[:overflow]
+            _LOG_BASE += overflow
+
+
+def log_append(text: str) -> None:
+    _append_log(text)
     _log_persist(text)
 
 
@@ -103,8 +125,10 @@ def _log_reset_history() -> None:
     上一次会话残留的日志。磁盘备份以**截断**方式重建(而非追加), 避免旧内容越堆越多;
     运行期间落盘的备份仅用于本次会话内崩溃排查, 不跨会话保留。
     """
+    global _LOG_BASE
     with _LOG_LOCK:
         _LOGS.clear()
+        _LOG_BASE = 0
     try:
         _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(_LOG_FILE, "w", encoding="utf-8"):
@@ -124,7 +148,8 @@ def _log_reset_history() -> None:
 # 设计(用户 2026-10-17/18 定案):
 #  ①截图**当场同步写盘**在 data/fail_cache/<会话戳>/ (零运行内存; 跨服务重启保留不清);
 #  ②**不设自动上限**(不写死张数/MB, 也不在落盘路径做任何统计 → 零额外开销);
-#  ③**服务启动时统计一次**缓存大小; 页面首次加载若 ≥ fail_cache_prompt_mb(默认 100, 可在 WebUI 改)
+#  ③**统计结果缓存 10s**（W2-003）：/api/status 每 1.5s 轮询不重复遍历大目录；清理/归档强制刷新；
+#    页面首次加载若 ≥ fail_cache_prompt_mb(默认 100, 可在 WebUI 改)
 #    则弹提醒, 由**用户选择**清理粒度(全部/>30天/>7天/>1天/暂不) —— 系统永不自动删;
 #  ④清理**只删像素**, index.jsonl 元数据墓碑**永久保留**(信息不死: 时间/tag/全量OCR文本仍在),
 #    且被清条目标 evicted=true; 清理前后各写一行日志(删除必须"有声", 不静默);
@@ -138,13 +163,26 @@ _FAIL_CACHE_DIR = BASE / "data" / "fail_cache"
 _FAIL_ARCHIVE_DIR = BASE / "data" / "fail_archives"
 _CACHE_PROMPT_PENDING = True      # 本次服务会话是否还未弹出过缓存提醒(刷新页面不重复弹)
 _LAST_ARCHIVE = None              # 最近一次「保存日志」归档: {ts,count,bytes,files:set(相对路径)}
+# W2-003: /api/status 每 1.5s 调一次, 不能每次都遍历 fail_cache；缓存 10s, 清理/归档时强制刷新。
+_FAIL_CACHE_STAT_LOCK = threading.Lock()
+_FAIL_CACHE_STAT_CACHE: dict | None = None
+_FAIL_CACHE_STAT_TS = 0.0
+_FAIL_CACHE_STAT_TTL = 10.0
 
 
-def _fail_cache_stat() -> dict:
+def _fail_cache_stat(force: bool = False) -> dict:
     """统计缓存: 总字节/张数/会话数/最早一张时间(按**文件名内嵌时间戳**, 不用 mtime —— 复制迁移后 mtime 不可靠)。
 
     files = 现存像素的相对路径集合(`<会话>/<文件名>`), 供「是否全部已归档」比对(2026-10-26)。
+    结果缓存 10s(W2-003): /api/status 每 1.5s 调用, 避免反复遍历大目录; 清理/归档传 force=True。
     """
+    global _FAIL_CACHE_STAT_CACHE, _FAIL_CACHE_STAT_TS
+    now = time.time()
+    with _FAIL_CACHE_STAT_LOCK:
+        cached = _FAIL_CACHE_STAT_CACHE
+        cached_ts = _FAIL_CACHE_STAT_TS
+    if not force and cached is not None and (now - cached_ts) < _FAIL_CACHE_STAT_TTL:
+        return cached
     total = 0
     count = 0
     sessions = []
@@ -152,8 +190,12 @@ def _fail_cache_stat() -> dict:
     oldest = None
     try:
         if not _FAIL_CACHE_DIR.exists():
-            return {"bytes": 0, "count": 0, "sessions": 0, "oldest": None, "session": "",
-                    "session_files": 0, "files": files}
+            out = {"bytes": 0, "count": 0, "sessions": 0, "oldest": None, "session": "",
+                   "session_files": 0, "files": files}
+            with _FAIL_CACHE_STAT_LOCK:
+                _FAIL_CACHE_STAT_CACHE = out
+                _FAIL_CACHE_STAT_TS = time.time()
+            return out
         for d in sorted(_FAIL_CACHE_DIR.iterdir()):
             if not d.is_dir():
                 continue
@@ -177,8 +219,20 @@ def _fail_cache_stat() -> dict:
     cur_files = 0
     if cur and (_FAIL_CACHE_DIR / cur).exists():
         cur_files = sum(1 for f in (_FAIL_CACHE_DIR / cur).iterdir() if f.is_file())
-    return {"bytes": total, "count": count, "sessions": len(sessions),
-            "oldest": oldest, "session": cur, "session_files": cur_files, "files": files}
+    out = {"bytes": total, "count": count, "sessions": len(sessions),
+           "oldest": oldest, "session": cur, "session_files": cur_files, "files": files}
+    with _FAIL_CACHE_STAT_LOCK:
+        _FAIL_CACHE_STAT_CACHE = out
+        _FAIL_CACHE_STAT_TS = time.time()
+    return out
+
+
+def _invalidate_fail_cache_stat() -> None:
+    """清理/归档后让下一次 /api/status 重新统计。"""
+    global _FAIL_CACHE_STAT_CACHE, _FAIL_CACHE_STAT_TS
+    with _FAIL_CACHE_STAT_LOCK:
+        _FAIL_CACHE_STAT_CACHE = None
+        _FAIL_CACHE_STAT_TS = 0.0
 
 
 def _fail_cache_clean(mode: str = "all", days: int | None = None) -> dict:
@@ -189,7 +243,7 @@ def _fail_cache_clean(mode: str = "all", days: int | None = None) -> dict:
     mode="days" 按会话目录内**最早一张**(文件名时间戳)判定, 今日会话天然不满足"早于 N 天前"故自动保留。
     """
     import json
-    stat = _fail_cache_stat()
+    stat = _fail_cache_stat(force=True)
     if not _FAIL_CACHE_DIR.exists():
         return {"removed": 0, "bytes": 0, "sessions": 0, "kept": 0}
     cutoff = None
@@ -247,6 +301,7 @@ def _fail_cache_clean(mode: str = "all", days: int | None = None) -> dict:
     log_append(f"[截图缓存] 已清理 {removed} 张 / {rbytes/1048576:.1f} MB / {rsess} 个会话"
                f" (mode={mode}{', days=' + str(days) if days else ''}; 保留 {kept} 张; "
                f"墓碑标注 {marked} 条 —— 元数据与 OCR 文本仍保留在 index.jsonl)\n")
+    _invalidate_fail_cache_stat()
     return {"removed": removed, "bytes": rbytes, "sessions": rsess, "kept": kept}
 
 
@@ -259,7 +314,7 @@ def _fail_cache_archive(ts: str) -> dict:
     """
     global _LAST_ARCHIVE
     import json, shutil
-    stat = _fail_cache_stat()
+    stat = _fail_cache_stat(force=True)
     sess = stat.get("session") or ""
     dst = _FAIL_ARCHIVE_DIR / ts
     copied = []
@@ -315,6 +370,7 @@ def _fail_cache_archive(ts: str) -> dict:
     else:
         # 记录本次归档覆盖的文件集合: 清除日志时据此判断「缓存像素是否全部已有归档副本」
         _LAST_ARCHIVE = {"ts": ts, "count": len(copied), "bytes": total, "files": set(copied)}
+    _invalidate_fail_cache_stat()
     return {"dir": str(dst), "count": len(copied), "bytes": total,
             "sessions": len({c.split("/")[0] for c in copied}), "session_files": sess_count,
             "evicted": len([f for f in evicted if f not in copied])}
@@ -328,8 +384,7 @@ class _TeeOut:
 
     def write(self, s: str) -> int:
         if s:
-            with _LOG_LOCK:
-                self._buf.append(s)
+            _append_log(s)
             _log_persist(s)
         try:
             return self._real.write(s)
@@ -767,6 +822,9 @@ class Handler(BaseHTTPRequestHandler):
             w = h = 0
         if w <= 0 or h <= 0:
             return self._send_json({"error": "缺少画面尺寸"}, 400)
+        # W2-004: annotation_id 只保留安全字符, 防止 ../ 或绝对路径写出 annot_shots 之外。
+        raw_id = str(data.get("annotation_id") or "")
+        annotation_id = "".join(ch for ch in raw_id if ch.isalnum() or ch in "-_")[:80] or "ann"
         # 方案A: 附带原始截图, 保存到 data/annot_shots/{annotation_id}.png, 坐标与画面绑定
         shot_saved = ""
         shot = str(data.get("shot") or "")
@@ -777,13 +835,13 @@ class Handler(BaseHTTPRequestHandler):
                 raw = _b64.b64decode(b64)
                 shot_dir = BASE / "data" / "annot_shots"
                 shot_dir.mkdir(parents=True, exist_ok=True)
-                shot_name = str(data.get("annotation_id") or "ann") + ".png"
+                shot_name = annotation_id + ".png"
                 (shot_dir / shot_name).write_bytes(raw)
                 shot_saved = str(Path("data") / "annot_shots" / shot_name)
             except Exception as e:
                 log_append(f"[tpltool] 保存标注截图失败: {e}")
         record = {
-            "annotation_id": str(data.get("annotation_id") or ""),
+            "annotation_id": annotation_id,
             "ts": int(time.time()),
             "image_size": [w, h],
             "shot": shot_saved,
@@ -1031,21 +1089,20 @@ class Handler(BaseHTTPRequestHandler):
         plan["modules"] = chosen
         plan["description"] = "Web UI 使用界面按勾选模块调度"
         name = plan.get("name", "每日编排")
-        if _running():
+        if not _try_start_running():
             return self._send_json({"error": "已有流程在运行, 请先停止"}, 409)
         def job():
-            eng = get_engine()
-            try:
-                if not _is_connected(eng):
-                    eng.connect()
-            except Exception as e:
-                log_append(f"[run] 连接失败: {e}")
-            _set_running(True)
             import sys
             real_out, real_err = sys.stdout, sys.stderr
-            sys.stdout = _TeeOut(real_out, _LOGS)
-            sys.stderr = _TeeOut(real_err, _LOGS)
             try:
+                eng = get_engine()
+                try:
+                    if not _is_connected(eng):
+                        eng.connect()
+                except Exception as e:
+                    log_append(f"[run] 连接失败: {e}")
+                sys.stdout = _TeeOut(real_out, _LOGS)
+                sys.stderr = _TeeOut(real_err, _LOGS)
                 log_append(f"[run] ==== {name} (勾选 {len(chosen)} 模块) 开始 ====")
                 eng.run_daily(plan)
                 log_append(f"[run] ==== {name} 完成 ====")
@@ -1054,7 +1111,11 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 sys.stdout, sys.stderr = real_out, real_err
                 _set_running(False)
-        threading.Thread(target=job, daemon=True).start()
+        try:
+            threading.Thread(target=job, daemon=True).start()
+        except Exception:
+            _set_running(False)
+            raise
         return self._send_json({"ok": True, "started": name, "count": len(chosen)})
 
     # ---- API: 运行流程 (后台线程 + 日志) ----
@@ -1062,27 +1123,30 @@ class Handler(BaseHTTPRequestHandler):
         data = self._read_json()
         key = data.get("flow", "")
         mode = data.get("mode", "use")
-        _set_mode(mode)
         flows = load_flows()
         target = select_flow(flows, key)
         if target is None:
             return self._send_json({"error": f"未找到流程: {key}"}, 400)
         name = target.get("name")
-        if _running():
+        if not _try_start_running():
             return self._send_json({"error": "已有流程在运行, 请先停止"}, 409)
+        try:
+            _set_mode(mode)
+        except Exception:
+            _set_running(False)
+            raise
         def job():
-            eng = get_engine()
-            try:
-                if not _is_connected(eng):
-                    eng.connect()
-            except Exception as e:
-                log_append(f"[run] 连接失败: {e}")
-            _set_running(True)
             import sys
             real_out, real_err = sys.stdout, sys.stderr
-            sys.stdout = _TeeOut(real_out, _LOGS)
-            sys.stderr = _TeeOut(real_err, _LOGS)
             try:
+                eng = get_engine()
+                try:
+                    if not _is_connected(eng):
+                        eng.connect()
+                except Exception as e:
+                    log_append(f"[run] 连接失败: {e}")
+                sys.stdout = _TeeOut(real_out, _LOGS)
+                sys.stderr = _TeeOut(real_err, _LOGS)
                 log_append(f"[run] ==== {name} 开始 ====")
                 if "modules" in target:
                     eng.run_daily(target)
@@ -1094,7 +1158,11 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 sys.stdout, sys.stderr = real_out, real_err
                 _set_running(False)
-        threading.Thread(target=job, daemon=True).start()
+        try:
+            threading.Thread(target=job, daemon=True).start()
+        except Exception:
+            _set_running(False)
+            raise
         return self._send_json({"ok": True, "started": name})
 
     # ---- API: 增量日志 ----
@@ -1103,10 +1171,14 @@ class Handler(BaseHTTPRequestHandler):
         # 返回错行的日志且 next 变负, 前端增量轮询从此错乱。与 /api/failures 的 max(0,...) 同款防御。
         after = max(0, int(self._query("after") or 0))
         with _LOG_LOCK:
-            if after >= len(_LOGS):
-                return self._send_json({"next": after, "lines": []})
-            lines = _LOGS[after:]
-        return self._send_json({"next": after + len(lines), "lines": lines})
+            base = _LOG_BASE
+            if after < base:                 # 客户端游标落后于已丢弃的头部: 从现存最早一片续读
+                after = base
+            end = base + len(_LOGS)
+            if after >= end:
+                return self._send_json({"next": end, "lines": []})
+            lines = _LOGS[after - base:]
+        return self._send_json({"next": end, "lines": lines})
 
     # ---- API: 导出日志为 txt 文件 ----
     def _log_download(self):

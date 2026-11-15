@@ -9,6 +9,10 @@ FlowerAutoAssistant - 原生窗口外壳（WebView2 / pywebview）
 - 端口被别的程序占用 -> 明确提示后退出, 不静默失败
 - 菜单「🌐 切回浏览器」-> 用系统默认浏览器打开同一地址(只开一次)
 - 启动时**不**额外打开浏览器
+- **下载桥(2026-11-09, zcode-20261109-15)**: WebView2 无下载管理器, 页面 `_downloadBlob` 的
+  a.download 触发的下载会被静默丢弃 → 「保存日志」等导出功能失效。壳以 js_api 暴露 `save_file`,
+  并在每次页面加载后注入 JS 覆盖 `_downloadBlob`: blob→base64→壳内**原生另存为对话框**(SAVE_DIALOG,
+  失败兜底写 ~/Downloads)落盘。webui.html / webui.py **零改动**; 桥未就绪时回落原浏览器下载路径。
 
 用法:
     python webui_app.py [--port 8765]
@@ -102,6 +106,118 @@ def _stop_server() -> None:
         srv.server_close()  # 关监听 socket, 端口立刻可复用
     except Exception:
         pass
+
+
+class _Bridge:
+    """暴露给页面 JS 的保存桥(js_api)。
+
+    WebView2/pywebview 窗口没有浏览器下载管理器: webui.html `_downloadBlob` 的
+    `a.download` 点击不会产生任何用户可见的下载 → 「保存日志」(服务端导出与页面快照
+    两条路径都经它)在原生窗口里失效。此桥由注入 JS 把 blob 转 base64 后回传壳进程,
+    壳用**原生另存为对话框**落盘; 对话框不可用时兜底写 ~/Downloads(重名自动加序号)。
+    与服务归属无关(连已有实例模式同样可用); webui.html / webui.py 零改动。
+    """
+
+    def save_file(self, filename: str, data_b64: str) -> str:
+        import base64
+        # W2-004: 页面传入的文件名只取 basename, 并限制扩展名, 防止 ../ 或绝对路径写出下载目录。
+        name = Path(str(filename or "")).name
+        if not name or name in (".", ".."):
+            name = "faa_download.txt"
+        allowed = {".txt", ".log", ".json", ".csv", ".png", ".jpg", ".jpeg",
+                   ".webp", ".html", ".md", ".zip"}
+        if Path(name).suffix.lower() not in allowed:
+            name += ".txt"
+        try:
+            data = base64.b64decode(data_b64)
+        except Exception as e:
+            print(f"[FAA] save_file: base64 解码失败: {e}")
+            return "__error__"
+        win = _STATE["window"]
+        if win is not None:
+            try:
+                import webview
+                r = win.create_file_dialog(webview.SAVE_DIALOG, save_filename=name)
+                if r:
+                    path = r if isinstance(r, str) else r[0]
+                    Path(path).write_bytes(data)
+                    return path
+                return "__cancelled__"          # 用户在另存为框点了取消
+            except Exception as e:
+                print(f"[FAA] save_file: 原生另存为不可用({e}), 兜底写下载目录")
+        try:
+            dl = Path(os.path.expanduser("~")) / "Downloads"
+            dl.mkdir(exist_ok=True)
+            path = dl / name
+            stem, suf, i = path.stem, path.suffix, 1
+            while path.exists():
+                path = dl / f"{stem}_{i}{suf}"
+                i += 1
+            path.write_bytes(data)
+            return str(path)
+        except Exception as e:
+            print(f"[FAA] save_file: 兜底写入也失败: {e}")
+            return "__error__"
+
+
+_BRIDGE = _Bridge()
+
+
+def _inject_download_bridge() -> None:
+    """页面每次加载完成后注入下载桥(覆盖 _downloadBlob)。
+
+    pywebview 每次导航(go_page / 页内跳转)都会重新触发 loaded, 新 document 里
+    __FAA_DL_BRIDGE__ 标记已重置, 故每次都会重新覆盖 —— 幂等且覆盖切页场景。
+    桥未就绪(pywebview.api 缺失)时回落原实现, 行为同浏览器。
+    """
+    win = _STATE["window"]
+    if win is None:
+        return
+    js = r"""
+(function(){
+  if (window.__FAA_DL_BRIDGE__) return;
+  if (typeof window._downloadBlob !== 'function') return;
+  window.__FAA_DL_BRIDGE__ = true;
+  const orig = window._downloadBlob;
+  function toast(msg, ok){
+    try{
+      const t = document.createElement('div');
+      t.textContent = msg;
+      t.style.cssText = 'position:fixed;top:14px;right:14px;z-index:99999;max-width:46ch;'
+        + 'padding:10px 14px;border-radius:8px;font-size:13px;line-height:1.5;'
+        + 'box-shadow:0 4px 16px rgba(0,0,0,.25);'
+        + (ok ? 'background:#2e7d32;color:#fff' : 'background:#c62828;color:#fff');
+      document.body.appendChild(t);
+      setTimeout(function(){ t.remove(); }, ok ? 4000 : 7000);
+    }catch(e){}
+  }
+  window._downloadBlob = async function(blob, filename){
+    try{
+      const api = window.pywebview && window.pywebview.api;
+      if(!(api && typeof api.save_file === 'function')){
+        return orig.call(window, blob, filename);      // 桥未就绪 -> 原行为
+      }
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      let bin = '';
+      const CH = 0x8000;
+      for(let i = 0; i < buf.length; i += CH){
+        bin += String.fromCharCode.apply(null, buf.subarray(i, i + CH));
+      }
+      const r = await api.save_file(filename, btoa(bin));
+      if(r === '__cancelled__'){ toast('已取消保存'); return; }
+      if(r === '__error__'){ toast('保存失败(壳侧写入错误), 请查看控制台', false); return; }
+      toast('已保存: ' + r, true);
+    }catch(e){
+      toast('原生保存失败, 回退浏览器下载', false);
+      try{ orig.call(window, blob, filename); }catch(e2){}
+    }
+  };
+})();
+"""
+    try:
+        win.evaluate_js(js)
+    except Exception as e:
+        print(f"[FAA] 注入下载桥失败: {e}")
 
 
 def open_in_browser() -> bool:
@@ -235,6 +351,7 @@ def _boot_window(url: str) -> int:
             APP_TITLE,
             url=url,
             width=1400, height=880, min_size=(1000, 640),
+            js_api=_BRIDGE,
             menu=[Menu("界面", [
                 MenuAction("🏠 主界面（使用 / 测试）", lambda: go_page("/")),
                 MenuAction("🎯 模板标注工具", lambda: go_page("/tpltool")),
@@ -244,6 +361,7 @@ def _boot_window(url: str) -> int:
         )
         _STATE["window"] = win
         win.events.closing += _on_closing
+        win.events.loaded += lambda *a, **k: _inject_download_bridge()   # 每次导航完成都注入(幂等)
         webview.start()
         return 0
     except Exception as e:

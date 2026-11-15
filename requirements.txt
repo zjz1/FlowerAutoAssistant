@@ -2,3 +2,4 @@ maafw>=1.4.0
 opencv-python>=4.10.0
 Pillow>=10.0.0
 pywebview>=6.0
+rapidocr_onnxruntime>=1.2.3,<2

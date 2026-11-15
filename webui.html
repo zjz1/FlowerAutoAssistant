@@ -362,6 +362,7 @@ let logPolling = true;    // 关闭服务后置 false: 服务已退出, 继续�
 const logChunks = [];     // 服务端返回的**原始分片**(与 _LOGS 元素一一对应, 2026-10-01)
                           // 离线导出必须用它 join("") 才能与服务端 "".join(_LOGS) 等价:
                           // print("abc\n") 会产生 2 个分片, 按 div 拼行会多出空行/断行错位。
+const LOG_MAX_CHUNKS = 20000;  // 前端缓存上限(与服务端 _LOG_MAX_LINES 同量级); 超出丢最旧分片
 let runningFlag = false;  // 服务端是否有流程在跑(用于运行时关页面确认弹窗, 2026-09-30)
 // 服务端页面版本戳(2026-10-12): 加载时由服务端注入 <meta name="ui-build">;
 // 与 /api/status 返回的 ui_build 不一致 = 本页落后于服务端(webui 升级重启后的旧标签页)。
@@ -622,7 +623,7 @@ async function refreshKb(){
         const btns = Object.values(btnMap).filter(b => b && typeof b === "object");
         total += btns.length;
         const cats = [...new Set(btns.map(b => b.category || "其他"))].join(" / ");
-        html += `<div class="kb-scene" data-scene="${esc(sc)}">
+        html += `<div class="kb-scene" data-scene="${attrEsc(sc)}">
           <div class="kb-scene-h"><span class="arrow">▾</span>${esc(sc)}<span class="count">${btns.length} 个按钮 · <span class="cnt-cat">${esc(cats)}</span></span></div>
           <div class="scroll">${btns.map(kbRow).join("")}</div></div>`;
       }
@@ -650,6 +651,8 @@ async function refreshKb(){
 }
 
 function esc(s){ const d=document.createElement("div"); d.textContent=String(s??""); return d.innerHTML; }
+// W2-008: 属性上下文必须额外转义引号, 否则 data-*/title 可被数据中的 " 或 ' 跳出。
+function attrEsc(s){ return esc(s).replace(/"/g,"&quot;").replace(/'/g,"&#39;"); }
 
 // ---- 使用界面: 任务列表 ----
 let maaTasks = [];  // [{id,name,flow,settings,checked}]
@@ -675,10 +678,10 @@ function renderMaaTasks(){
     const isRunning = t.id === currentRunningModule;
     const gearStyle = isRunning ? 'style="opacity:.35;cursor:not-allowed"' : (hasSettings ? "" : 'style="opacity:.55"');
     html +=
-      `<div class="task-row" data-id="${esc(t.id)}">
-        <input type="checkbox" data-id="${esc(t.id)}" ${t.checked?"checked":""} ${isRunning?'disabled title="流程运行中, 暂不可修改"':''}>
+      `<div class="task-row" data-id="${attrEsc(t.id)}">
+        <input type="checkbox" data-id="${attrEsc(t.id)}" ${t.checked?"checked":""} ${isRunning?'disabled title="流程运行中, 暂不可修改"':''}>
         <span class="name">${esc(t.name)}</span>
-        <button class="gear" data-gear="${esc(t.id)}" title="${isRunning ? t.flow + " · 运行中, 设置已锁定" : (hasSettings ? t.flow + " · 设置" : t.flow + " · 无独立设置(点击查看说明)")}" ${gearStyle} ${isRunning?'disabled':''}>⚙</button>
+        <button class="gear" data-gear="${attrEsc(t.id)}" title="${attrEsc(isRunning ? t.flow + " · 运行中, 设置已锁定" : (hasSettings ? t.flow + " · 设置" : t.flow + " · 无独立设置(点击查看说明)"))}" ${gearStyle} ${isRunning?'disabled':''}>⚙</button>
       </div>`;
   }
   box.innerHTML = html;
@@ -705,10 +708,10 @@ function showModuleSettings(mid){
   for(const s of t.settings){
     if(s.type === "switch"){
       html += `<div class="cfg-row"><span class="lbl"><span style="display:block;font-weight:600;color:var(--fg)">${esc(s.label)}</span><span class="muted" style="font-size:11px">${esc(s.desc)}</span></span>
-        <label class="cfg-hint"><input type="checkbox" data-key="${esc(s.key)}" ${s.value?"checked":""}> <span class="cfg-sw-txt">${s.value?"开":"关"}</span></label></div>`;
+        <label class="cfg-hint"><input type="checkbox" data-key="${attrEsc(s.key)}" ${s.value?"checked":""}> <span class="cfg-sw-txt">${s.value?"开":"关"}</span></label></div>`;
     } else if(s.type === "text"){
       html += `<div class="cfg-row"><span class="lbl"><span style="display:block;font-weight:600;color:var(--fg)">${esc(s.label)}</span><span class="muted" style="font-size:11px">${esc(s.desc)}</span></span>
-        <span class="cfg-hint"><input type="text" data-key="${esc(s.key)}" value="${esc(s.value)}" style="width:80px"></span></div>`;
+        <span class="cfg-hint"><input type="text" data-key="${attrEsc(s.key)}" value="${attrEsc(s.value)}" style="width:80px"></span></div>`;
     }
   }
   // 运行中锁定(2026-10-11 用户需求): 当前模块正在运行时, 设置面板整体只读 + 顶部提示
@@ -965,10 +968,16 @@ async function pollLog(){
       const isBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
       for(const line of d.lines){
         logChunks.push(line);   // 留存原始分片供离线导出
+        if(logChunks.length > LOG_MAX_CHUNKS){
+          logChunks.splice(0, logChunks.length - LOG_MAX_CHUNKS);
+        }
         const div = document.createElement("div");
         div.textContent = line.replace(/\n$/,"");
         div.className = /异常|失败|错误/.test(line) ? "l-fail" : (/ok|成功/.test(line) ? "" : "");
         box.appendChild(div);
+      }
+      while(box.childElementCount > LOG_MAX_CHUNKS){
+        box.removeChild(box.firstElementChild);
       }
       if(isBottom) box.scrollTop = box.scrollHeight;
     }

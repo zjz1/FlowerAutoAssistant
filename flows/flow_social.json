@@ -255,6 +255,7 @@
         { "type": "if_config",
           "key": "enable_pollin",
           "value": true,
+          "default": true,
           "then": [
               { "type": "friend_pollin", "delay": 1.0 }
           ],

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,7 @@ import numpy as np
 # ---------- 单例引擎 ----------
 _engine = None
 _engine_region = None   # 裁片专用实例(小 det limit, zcode-20261031-13; 由配置闸门 det_region_limit 启用)
+_ENGINE_LOCK = threading.Lock()   # W2-007: 首次初始化双检锁, 防止 WebUI/引擎线程各建一份模型
 
 # RapidOCR 1.2.3 未暴露 ONNX 会话线程数配置(OrtInferSession 内部自建 SessionOptions,
 # 默认吃满全部物理核: 720p 全屏 OCR 实测瞬时占用 ~13 核、CPU 时间 ~5.3s/次,
@@ -40,35 +42,36 @@ def set_thread_limit(n) -> None:
 def get_engine():
     """获取全局唯一 OCR 引擎实例（首次调用时初始化）。"""
     global _engine
-    if _engine is None:
-        import rapidocr_onnxruntime.utils as _ru
-        from rapidocr_onnxruntime import RapidOCR
+    with _ENGINE_LOCK:
+        if _engine is None:
+            import rapidocr_onnxruntime.utils as _ru
+            from rapidocr_onnxruntime import RapidOCR
 
-        if _thread_limit > 0:
-            _orig_so = _ru.SessionOptions
-            _limit = _thread_limit
+            if _thread_limit > 0:
+                _orig_so = _ru.SessionOptions
+                _limit = _thread_limit
 
-            def _limited_session_options():
-                so = _orig_so()
-                so.intra_op_num_threads = _limit
-                so.inter_op_num_threads = 1
-                return so
+                def _limited_session_options():
+                    so = _orig_so()
+                    so.intra_op_num_threads = _limit
+                    so.inter_op_num_threads = 1
+                    return so
 
-            # det/cls/rec 三个 ONNX 会话都由此创建(utils.OrtInferSession 在调用时才解析该名字)
-            _ru.SessionOptions = _limited_session_options
+                # det/cls/rec 三个 ONNX 会话都由此创建(utils.OrtInferSession 在调用时才解析该名字)
+                _ru.SessionOptions = _limited_session_options
 
-        # 检测参数调优: 关闭膨胀(use_dilation=False), 避免「半透明按钮/相邻文字」被膨胀成
-        # 一个合并块导致子串命中整块中心而误点。box_thresh 降、unclip_ratio 降, 检测框更紧贴文字。
-        # 注意: 传任意 det_* 参数时该库强制读取 det_model_path, 需显式传 None 以沿用默认模型路径。
-        # (检测边长 limit_side_len 不下调: 实测 960/max 会在好友列表等界面丢块, 影响采粉, 见协作区基准)
-        _engine = RapidOCR(
-            det_model_path=None,
-            det_use_dilation=False,
-            det_thresh=0.2,
-            det_box_thresh=0.3,
-            det_unclip_ratio=1.4,
-        )
-    return _engine
+            # 检测参数调优: 关闭膨胀(use_dilation=False), 避免「半透明按钮/相邻文字」被膨胀成
+            # 一个合并块导致子串命中整块中心而误点。box_thresh 降、unclip_ratio 降, 检测框更紧贴文字。
+            # 注意: 传任意 det_* 参数时该库强制读取 det_model_path, 需显式传 None 以沿用默认模型路径。
+            # (检测边长 limit_side_len 不下调: 实测 960/max 会在好友列表等界面丢块, 影响采粉, 见协作区基准)
+            _engine = RapidOCR(
+                det_model_path=None,
+                det_use_dilation=False,
+                det_thresh=0.2,
+                det_box_thresh=0.3,
+                det_unclip_ratio=1.4,
+            )
+        return _engine
 
 
 def get_engine_region():
@@ -80,32 +83,33 @@ def get_engine_region():
     由 ocr_engine 配置闸门 det_region_limit(默认 false)启用; 关闭时本函数不被调用,
     引擎走 get_engine(), 行为与旧版逐字节一致。线程限制与 get_engine 同型。"""
     global _engine_region
-    if _engine_region is None:
-        import rapidocr_onnxruntime.utils as _ru
-        from rapidocr_onnxruntime import RapidOCR
+    with _ENGINE_LOCK:
+        if _engine_region is None:
+            import rapidocr_onnxruntime.utils as _ru
+            from rapidocr_onnxruntime import RapidOCR
 
-        if _thread_limit > 0:
-            _orig_so = _ru.SessionOptions
-            _limit = _thread_limit
+            if _thread_limit > 0:
+                _orig_so = _ru.SessionOptions
+                _limit = _thread_limit
 
-            def _limited_session_options_region():
-                so = _orig_so()
-                so.intra_op_num_threads = _limit
-                so.inter_op_num_threads = 1
-                return so
+                def _limited_session_options_region():
+                    so = _orig_so()
+                    so.intra_op_num_threads = _limit
+                    so.inter_op_num_threads = 1
+                    return so
 
-            _ru.SessionOptions = _limited_session_options_region
-        # 传任意 det_* 参数时该库强制读取 det_model_path, 需显式传 None 沿用默认模型路径(同 get_engine)
-        _engine_region = RapidOCR(
-            det_model_path=None,
-            det_limit_side_len=32,
-            det_limit_type="min",
-            det_use_dilation=False,
-            det_thresh=0.2,
-            det_box_thresh=0.3,
-            det_unclip_ratio=1.4,
-        )
-    return _engine_region
+                _ru.SessionOptions = _limited_session_options_region
+            # 传任意 det_* 参数时该库强制读取 det_model_path, 需显式传 None 沿用默认模型路径(同 get_engine)
+            _engine_region = RapidOCR(
+                det_model_path=None,
+                det_limit_side_len=32,
+                det_limit_type="min",
+                det_use_dilation=False,
+                det_thresh=0.2,
+                det_box_thresh=0.3,
+                det_unclip_ratio=1.4,
+            )
+        return _engine_region
 
 
 def ocr_image(image, engine=None) -> list[dict]:

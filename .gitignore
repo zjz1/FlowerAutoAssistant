@@ -41,6 +41,8 @@ dev_tools/
 workbench/
 
 # ---------- 其他区：内部文档，不入库 ----------
+# 注：ignore 只影响未跟踪文件；PROGRESS.md 与 config/maa_option.json 在历史上已被跟踪，
+# 因此仍会出现在 git ls-files / git status 中（详见 docs/DEV_PROMPT.md 分区表）。
 PROGRESS.md
 HANDOFF.md
 docs/DEV_PROMPT.md

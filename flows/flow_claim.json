@@ -11,6 +11,7 @@
         { "type": "if_config",
           "key": "claim_online",
           "value": true,
+          "default": true,
           "then": [
               { "_note": "已领完跳过(2026-10-03, 协作区 zcode-20261003-4): 在线礼包入口仅在有可领内容时显示在家园主界面 —— 入口不在 = 今日已领完(或未开放), 直接跳过本功能: 不脱困、不点 close、不报失败。入口区域按 2026-10-03 实测 rel(0.7516,0.2167) 限定右上部活动图标带。" },
               { "type": "if_text",
@@ -68,6 +69,7 @@
         { "type": "if_config",
           "key": "claim_party",
           "value": true,
+          "default": true,
           "then": [
               { "type": "navigate", "target": "花灵派对", "max_rounds": 3 },
               { "type": "wait_text", "text": ["时长礼包", "每日任务"], "timeout": 5, "interval": 1.0,

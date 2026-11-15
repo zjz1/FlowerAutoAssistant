@@ -79,6 +79,11 @@ SWIPE_SETTLE_S = 1.5                              # 滑动后等列表停稳再�
 
 LIST_MARKS = ("删除好友", "好友设置")             # 好友列表存在性判据(2026-10-05 已迁至 scenes.json「好友列表」, 常量保留供参考)
 CATEGORIES = ("密友", "好友")
+# 「没有花粉」提示框(2026-11-16 实机): 文案「很抱歉, 这人花园里没有花粉可以采哦」+「确定」。
+# OCR 常把「抱歉」读成「很抱款」→ 旧判据「抱歉」会漏；改用更稳定的「没有花粉」。
+# 仍需与「确定」同时出现，避免世界聊天里的「花粉」误判。
+NO_POLLEN_KWS = ("没有花粉", "没有花粉可以采", "抱歉")
+NO_POLLEN_CONFIRM_REGION = [0.35, 0.58, 0.65, 0.72]   # 提示框「确定」所在区域
 
 
 # ---------------- 基础工具 ----------------
@@ -91,6 +96,34 @@ def has(eng, kws, img=None, min_score=0.4, **kw):
     if "need_refine" not in kw:
         kw["need_refine"] = bool(kw.get("exact", False))
     return eng.locate(kws, img=img, min_score=min_score, **kw) is not None
+
+
+def no_pollen_popup(eng, img=None) -> bool:
+    """当前画面是否为「没有花粉」提示框(带「确定」)。
+
+    2026-11-16 实机: 好友花园点「采粉」后弹出「提示 / 很抱款, 这人花园里没有花粉可以采哦 / 确定」。
+    旧判据只认「抱歉」, 而 OCR 实测读成「很抱款」→ 漏判；改用「没有花粉」作为主判据。
+    必须同时有「确定」，避免把聊天/活动横幅里的「花粉」误当弹窗。
+    """
+    img = img if img is not None else eng.screenshot()
+    if img is None:
+        return False
+    if not has(eng, "确定", img=img, min_score=0.3, region_rel=NO_POLLEN_CONFIRM_REGION):
+        return False
+    return any(has(eng, k, img=img, min_score=0.3) for k in NO_POLLEN_KWS)
+
+
+def dismiss_no_pollen_popup(eng, img=None, tries=2) -> bool:
+    """点「确定」关闭「没有花粉」提示框。True=确认已不在屏/本就无此弹窗。"""
+    for i in range(max(1, int(tries))):
+        img = img if i == 0 and img is not None else eng.screenshot()
+        if not no_pollen_popup(eng, img):
+            return True
+        print(f"    [采集] 无花粉提示 -> 点「确定」(第{i + 1}次)")
+        eng.click_text(["确定"], exact=True, region_rel=NO_POLLEN_CONFIRM_REGION,
+                       min_score=0.4, no_fallback=True)
+        time.sleep(1.0)
+    return not no_pollen_popup(eng)
 
 
 def wait_until(eng, cond, timeout, desc="", interval=1.0):
@@ -335,14 +368,18 @@ def save_escape_evidence(eng, tag):
         print(f"  [存证] 保存失败画面异常: {e}")
 
 
-def adb_text(s):
-    subprocess.run([ADB_PATH, "-s", ADB_ADDRESS, "shell", "input", "text", s],
+def adb_text(s, eng=None):
+    adb = getattr(eng, "adb_path", ADB_PATH) if eng is not None else ADB_PATH
+    addr = getattr(eng, "address", ADB_ADDRESS) if eng is not None else ADB_ADDRESS
+    subprocess.run([adb, "-s", addr, "shell", "input", "text", s],
                    capture_output=True, timeout=15)
 
 
-def adb_key(code):
+def adb_key(code, eng=None):
     """发按键(同本体 back() 的 subprocess 机制): 123=移到行尾, 67=退格。"""
-    subprocess.run([ADB_PATH, "-s", ADB_ADDRESS, "shell", "input", "keyevent", str(code)],
+    adb = getattr(eng, "adb_path", ADB_PATH) if eng is not None else ADB_PATH
+    addr = getattr(eng, "address", ADB_ADDRESS) if eng is not None else ADB_ADDRESS
+    subprocess.run([adb, "-s", addr, "shell", "input", "keyevent", str(code)],
                    capture_output=True, timeout=15)
 
 
@@ -635,9 +672,9 @@ def ensure_home(eng):
             print("  [主界面] 停在好友列表, 先关闭列表")
             leave_friend_list(eng)
             continue
-        if has(eng, "确定", img=img) and has(eng, "抱歉", img=img):
-            print(f"  [主界面] 关提示框 click_text(['确定']) -> {eng.click_text(['确定'])}")
-            wait_until(eng, lambda: not has(eng, "抱歉"), 5, desc="提示框关闭")
+        if no_pollen_popup(eng, img):
+            print("  [主界面] 关「没有花粉」提示框 -> 点「确定」")
+            dismiss_no_pollen_popup(eng, img)
             continue
         if in_garden(eng, img):
             leave_garden(eng)
@@ -858,6 +895,12 @@ def open_friend_list(eng):
         if stop_requested():
             return False
         img = eng.screenshot()
+        # 2026-11-16: 「没有花粉」提示框带「确定」但没有右上角✕，会吞掉后续「社交」点击；
+        # 在花园/列表判定前先清掉，避免 open_friend_list 重试 3 次全被弹窗吞掉。
+        if no_pollen_popup(eng, img):
+            print("  [列表] 存在「没有花粉」提示框 -> 先点「确定」")
+            dismiss_no_pollen_popup(eng, img)
+            img = eng.screenshot()
         # 2026-10-14 防御(2026-10-21 修正判据): 上一环节(采粉/浇水/矿洞…)可能残留半透明奖励弹窗。
         # ⚠ 原判据 `not has(社交)` 是**反的**: 弹窗半透明时「社交」仍然可读, 但点击会被弹窗吞掉
         #   (用户 2026-10-20 指出)。于是最需要清弹窗的场景反而永远不进 escape —— 日志里大量
@@ -1035,10 +1078,10 @@ def _jump_once(eng, n):
     print(f"  [翻页] 模板命中数字条 ({pt.x},{pt.y}) 唤起数字键盘")
     eng.click_abs(pt.x, pt.y)
     time.sleep(2.5)
-    adb_key(123)                             # 光标移到行尾
+    adb_key(123, eng)                        # 光标移到行尾
     for _ in range(5):
-        adb_key(67)                          # 退格清空(最大两位数, 5 次足够)
-    adb_text(str(n))
+        adb_key(67, eng)                     # 退格清空(最大两位数, 5 次足够)
+    adb_text(str(n), eng)
     time.sleep(1.5)
     print("  [翻页] 点键盘「确定」(OCR, 系统键盘有该文字)")
     eng.click_text(["确定"], region_rel=IME_OK_REGION, min_score=0.4)
@@ -1191,10 +1234,9 @@ def collect_one(eng, x, y):
         print("    [采集] 点采粉后 5s 画面无变化(点击可能被吞/被气泡遮挡), 本槽位跳过")
         return "fail"
     img = eng.screenshot()
-    empty = has(eng, "抱歉", img=img, min_score=0.3) and has(eng, "确定", img=img, min_score=0.3)
+    empty = no_pollen_popup(eng, img)
     if empty:
-        print(f"    [采集] 无花粉提示 -> click_text(['确定']) {eng.click_text(['确定'])}")
-        time.sleep(1.0)
+        dismiss_no_pollen_popup(eng, img)
     elif has(eng, "采粉", img=img):
         # 画面已变化但「一键采粉」菜单仍在(2026-10-04, 协作区 zcode-20261004):
         # 旧判据把它当"未确认失败"→ 当晚 7 槽位全 fail、采粉 0 收获。实机观察:

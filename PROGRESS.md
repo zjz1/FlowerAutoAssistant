@@ -2691,6 +2691,150 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
   用 `MuMuManager control -v 0 launch` 拉起后 4 分钟仍无 adb 设备（窗口已开、Android 未启动），已 `shutdown` 收尾。
   故本轮验证**只到离线存证帧 + 流程级**，真机「能关列表 / 能回自己家园」仍待下一次实机回归。
 
+## 2026-11-09 · 原生窗口外壳（WebView2 / pywebview）+ zcode 下载桥修复（里程碑 113）
+
+**来源**：另一开发线程提交 `714a919`（新增 `webui_app.py` / `start_webui_app.bat`，`requirements.txt` 加
+`pywebview>=6.0`），该提交**未同步文档**；协作区 `zcode-20261109-15` 随后提交了针对新外壳的 bug 排查与修复。
+本条为**事后同步**，并把审阅通过的交付**落位到工作区**（未 commit）。
+
+### 113.1 外壳本体（commit 714a919）
+
+- **定位**：`webui_app.py` 只做窗口外壳，`webui.py` / `webui.html` **一行不改**；`start_webui_app.bat`
+  双击启动（`--port` 缺省 8765，优先用 `.venv`）。
+- **端口策略**：启动先探测 `127.0.0.1:<port>` —— ①已有 FAA 实例（`/api/status` 同时含 `flow_dir` + `ui_build`）
+  则**直连、不重复起服务**；②空闲则在本进程内用 `webui.Handler` 起同款 `ThreadingHTTPServer`
+  （同步 `webui._SERVER`，页面「关闭服务」照常生效）；③被其它程序占用则原生提示后退出（返回码 2），不静默失败。
+- **与旧 `start_webui.bat` 的关键差异**：**启动不自动打开浏览器**（旧 bat 会开）；只在菜单「🌐 切回浏览器」
+  手动打开，且同进程只开一次（`_STATE["browser_opened"]`）。正好对应 2026-11-09「反复弹窗」排查后的诉求。
+- **关窗**：`closing` 事件先返回 False 拦下（不能在 FormClosing 里直接弹模态框），后台线程弹原生 MessageBox；
+  确认后 `_stop_server()` + `os._exit(0)`（pywebview 6 + WebView2 关窗后消息循环可能僵留，硬退出兜底）。
+  确认策略与页面 `confirm_page_close` 同口径，流程运行中**始终确认**。
+- **降级**：pywebview 缺失 / WebView2 建窗失败 → 原生提示 + 默认浏览器打开，进程不崩。
+
+### 113.2 zcode-20261109-15：WebView2「保存日志」失效（已落位）
+
+- **根因**：`webui.html` 的「保存日志」两条路径（`/api/log_download` 服务端导出、停服后页面快照）都经
+  `_downloadBlob()`（webui.html:926，`Blob + a.download + click`）。**WebView2 没有浏览器下载管理器**，
+  pywebview 6.2.1 默认不处理 `DownloadStarting` → 下载被**静默丢弃**（无文件、无提示）；浏览器内同一功能正常。
+- **修法（壳层接管，页面/服务零改动）**：
+  ① `_Bridge.save_file(filename, data_b64)` 经 `js_api` 暴露；优先 `webview.SAVE_DIALOG` 原生另存为，
+  取消/异常分别返回 `__cancelled__` / `__error__`；对话框不可用时兜底写 `~/Downloads`（重名自动 `_1` 序号）。
+  ② `events.loaded` 每次导航后注入 JS 覆盖 `window._downloadBlob`（`__FAA_DL_BRIDGE__` 幂等标记）：
+  blob→arrayBuffer→分块 base64→`pywebview.api.save_file`，页面右上 toast 反馈；**桥未就绪时回落原实现**。
+  ③ 覆盖一个全局函数即同时覆盖两条保存路径；「切回浏览器」走真浏览器下载，不受影响。
+- **落位指纹**：`webui_app.py` md5 `6050303699f0d9b07718269945927e92`（16709 B / 425 行），与交付一致；
+  diff **+110 / −0**，既有函数零改动（`review_batch` R10 语义差异 0 处）。
+
+### 113.3 审阅与验证（主 agent）
+
+- `tools/review_batch.py --batch zcode-20261109-15`：**PASS**（R1 基线 md5 一致 / R6 模板引用全在 / GATE 全绿 /
+  语义差异 0）。注：脚本按路径分级判为 **T0**（`webui_app.py` 不在 T2 清单），故本次**按 T2 口径人工逐 hunk 复核**：
+  只新增 `_Bridge` / `_inject_download_bridge` 两个符号与 `create_window` 两个参数，无既有函数修改，
+  无 `click_rel` / `fallback_rel` / 阈值类新增。
+- 离线：`py_compile` PASS；无窗口环境 `import webui_app` OK；交付方桩测
+  （`evidence/test_bridge_output.txt`）兜底写入 / 重名序号 / 坏 base64 防护 / 空窗安全均 PASS。
+- 环境核对：`.venv` 已装 `pywebview 6.2.1`；`webui.py` 被复用的内部符号
+  （`Handler` / `_SERVER` / `_set_running` / `_running` / `log_append` / `_log_reset_history`）**全部存在**。
+- 闸门：`tools/check_project.py` **全绿**（JSON 15/15、步骤类型 42 种 / 371 处 / 未知 0、语法 9/9）。
+
+### 113.4 未验证 / 待实机（C63）
+
+- **WebView2 窗口内**的另存为对话框、JS 注入时序、`pywebview.api` 就绪时机**均未实证**（本机无 WebView2 自动化环境）；
+  `confirm()` / `alert()`（关闭服务 / 清理缓存截图确认流）在 WebView2 下是否可用也未实证；
+  运行中经菜单切页会触发页面 `beforeunload` 确认（与浏览器一致，观察项）。
+- 真机验收清单见 `_collab/inbox/zcode-developing/C类_待实机回归.md` **C63**。
+
+## 2026-11-16 · 全项目静态审查修复批（里程碑 114）
+
+**来源**：`debug/review/runs/20261116-005153/summary.md`（23 findings：高 1 / 中 6 / 低 15 / info 1）。
+本轮只修 `implementation-defect`；`needs-device` / `design-decision` / 历史兼容项不动，列在 §114.4。
+
+### 114.1 P0
+
+- **WebUI 运行互斥 TOCTOU**（W2-001）：新增 `_try_start_running()` 在 `_RUNNING_LOCK` 内原子检查+占位；
+  `_run_daily_sel` / `_run` 先占位再起线程，job 全程 `try/finally` 释放，线程启动失败回滚。
+- **依赖清单**（W5-001）：`requirements.txt` 增 `rapidocr_onnxruntime>=1.2.3,<2`；README 依赖说明改为显式列出。
+
+### 114.2 P1
+
+- **pollin 翻页输入**（W2-005）：`adb_text/adb_key` 接受 `eng`，使用 `eng.adb_path` / `eng.address`；`_jump_once` 传入当前引擎。
+- **fail_cache 状态轮询**（W2-003）：`_fail_cache_stat` 结果缓存 10s；清理/归档 `force=True`，清理后失效重算。
+- **日志缓冲无上限**（W2-002）：服务端 `_LOG_MAX_LINES=20000` 分片上限 + `_LOG_BASE` 全局游标；
+  `/api/log` 兼容落后游标；前端 `logChunks` 与 DOM 同步 20000 上限。
+- **本地写入路径**（W2-004）：`_tplt_submit` 的 `annotation_id` 只保留 `[A-Za-z0-9_-]`；
+  `webui_app.save_file` 取 basename + 扩展名白名单。
+- **OCR 单例初始化**（W2-007）：`get_engine` / `get_engine_region` 双检锁，避免并发建两份模型。
+
+### 114.3 P2
+
+- `claim_scroll` / `dump_text` 达 `max_rounds` 补 `report_failure`（W1-001）。
+- `if_greater` 的 `min_score` 接通 `parse_count_at` 过滤（W1-003）。
+- `run_flow` 改走 `run_steps`，顶层 `BranchAborted`/嵌套 list 语义与模块一致（W1-004）。
+- 条件/等待步骤 `scene` 只在命中/到位后切换；`wait_scene` 不再把列表写进 `_scene`（W1-002）。
+- `claim_online` / `claim_party` / `enable_pollin` 三处 `if_config` 补 `default:true`（W3-003）；
+  手套说明 0.90→0.95（W3-002）。
+- 工具：`check_project` 的 `PY_SOURCES` 加 `webui_app.py`；`review_batch` T2 加 `webui_app.py`/`main.py`；
+  R3 识别 `template_threshold`；`REVIEW_RULES` T2 清单同步（W4-001/W4-002）。
+- 文档：README/FLOWS/PROJECT_GUIDE 改 42 种并补 `buy_item`；README 修正 resource 入仓/知识库默认关闭；
+  DEV_PROMPT/.gitignore 说明分区与已跟踪文件（W6-001/W6-002/W6-003）。
+
+### 114.4 验证与未处理
+
+- `tools/check_project.py`：**exit 0**，JSON 15/15、步骤类型 42 种/371 处/未知 0、语法 **10/10**。
+- 离线桩测（仓外 `_coagent/.../analysis/test_fixes_20261116.py`）：运行位 CAS、日志上限、ADB 参数、
+  fail_cache 缓存、R3 `template_threshold`、路径净化、场景命中、`min_score`、`run_flow` 全部 PASS。
+- **未处理（需实机/样本）**：W1-005（`claim_scroll` 是否命中「已领取」）、W2-006（community_like 1280 绝对像素）、
+  W3-001（`b1_switch_down=0.8` / `close_online_small=0.85` 正负样本）、W5-002（历史 `back()`/`click_rel` 死代码）。
+
+## 2026-11-16 · 实机发现「没有花粉」提示框吞点击（里程碑 115）
+
+**来源**：lab 试验包实机跑 social（8766）在好友花园点「采粉」后中止。存证帧 OCR（`_lab/ocr/reports/abort_ocr_20261116_020434.json`）
+识别为「提示 / **很抱款**, 这人花园里没有花粉可以采哦 / 确定」——旧判据 `has("抱歉") + has("确定")` 因 OCR 把「抱歉」
+读成「很抱款」而漏判；提示框留在屏上吞掉后续「社交」点击，`open_friend_list` 重试 3 次后失败。
+
+### 115.1 修复（正式版 / `_lab` / 上游重构包三处同步）
+
+- 新增 `NO_POLLEN_KWS = ("没有花粉", "没有花粉可以采", "抱歉")` 与按钮带 `NO_POLLEN_CONFIRM_REGION=[0.35,0.58,0.65,0.72]`。
+- 新增 `no_pollen_popup(eng, img)`：**带内「确定」+ 任一文案** 双条件（避免世界聊天「花粉」误判）；
+  `dismiss_no_pollen_popup(eng, img, tries=2)`：带区域 `no_fallback=True` 点「确定」并复核已关闭。
+- 调用点：`collect_one` 采粉后先判弹窗（不再只认「采粉」消失）；`ensure_home` / `_ensure_home_walk` 归位时先关框
+  （lab/上游保留连续 2 轮关闭失败 → 如实放弃并落 escape 存证）；`open_friend_list` 每次 attempt 截图后先关框再找社交。
+
+### 115.2 上游重构包导入缺失（实机启动即崩的运行时缺陷）
+
+- `ocr_engine/engine/_orchestrate.py`：补 `from .._exceptions import FlowFailed, StopRequested, clear_stop`
+  （缺 `StopRequested`/`FlowFailed` → 停止或判失败时 `NameError`）。
+- `_closebtn.py` / `_findtext.py` / `_judges.py` / `_template.py`：补 `import numpy as np`（均实际使用 `np.`）。
+  拆分时「逐行原文」未带模块级导入，`py_compile` 查不出，只有运行到该分支才炸。
+
+### 115.3 验证
+
+- `py_compile`：正式版/lab/上游 `pollin.py` + 上游 5 个引擎模块全 PASS。
+- `tools/check_project.py`：**exit 0**，JSON 15/15、步骤类型 42 种/371 处/未知 0、语法 10/10。
+- 离线桩测（`_coagent/FAA_basis-trae/analysis/test_no_pollen_20261116.py`，用中止帧真实 OCR 坐标假引擎）：
+  三份代码均 **PASS** —— 新判据命中、旧「抱歉」判据确为 False、点击落在按钮带内、关闭后不再判弹窗、
+  只有聊天「花粉」无「确定」时不误判。
+- lab 与上游重构包 39 个 `.py` 逐文件哈希一致（仅 `webui_app.py` 为外壳版本差异，非本批范围）。
+- **待办**：真机复跑 social 验证弹窗可关、好友列表可继续打开；上游修复需随下一批次/补丁交付给 zcode 登记。
+
+### 115.4 实机复跑（lab 8766，2026-11-16 02:19–02:47）
+
+- 配置：MuMu 1920×1080（工作区 1280×720），`enable_switch=false`、`use_cache_pos=false`、`log_click_pos=false`；
+  勾选 startup/social/energy/claim/daily，**不跑 plant/idle**。
+- 结果：**ok=4 / fail=1 / skip=0**，整轮 28m26s。startup 58s · social 15m41s · energy 1m25s · claim 3m52s · daily 6m30s。
+- social：好友列表 10 页全翻完，采集生效 8 次；`open_friend_list` 在好友花园内重开列表均 1s 命中，未再出现上次
+  「弹窗吞点击→重试 3 次失败」。**本轮未出现「没有花粉」弹窗**（0 次），但守卫每轮都在探测（日志可见
+  `['确定'] 区域[0.35,0.58,0.65,0.72]` 命中 0 块的检查），调用链已生效。
+- 真实引擎离线复核：对上次中止帧 `abort_screen_20261116_020434.jpg` 跑真 OCR（须先置 `screen_w/h=1280,720`，
+  否则 region 裁片为 0×0）→ `no_pollen_popup=True`、旧判据 `抱歉=False`、带内 `确定=True`。
+- **新发现（claim 软失败）**：花灵派对面板「今日参与派对时长：0」但有 6 个「领取」钮；前 5 次点击后通用奖励守卫
+  均判「见到领取成功界面」并关闭 (639,171)，第 6 次无弹窗 → `[失败] [claim] 花灵派对礼包: 未见到「领取成功」界面`。
+  疑似通用奖励守卫把「无法领取/时长不足」类提示（含「点击任意处关闭」页脚）当成奖励弹窗，点击关闭本身无害，
+  但「领取成功」判据失真。**待办：抓取该弹窗帧确认文案后再决定是否收紧判据**（未改代码，避免无样本臆改）。
+- 整轮 OCR：全图 336 次 402s · 区域 272 次 211s · 拆分 146 次 135s · 缓存命中 236 次 · 拆宽 139 次 124s ·
+  精识 7 次 10s；社交面板「好友」粗识 18/19（95%）。
+- 收尾：lab 后端已 `/api/shutdown`，8766 已释放；本机无 WPF 进程。
+
 ## 2026-11-03 · 实机核验：花神之契月礼包 / 奇妙特权每月礼包（已有实现，无代码改动）
 
 **背景**：协作任务要求补上「花神之契·月礼包」「奇妙特权·每月礼包」。核对当前工作树：两项**自里程碑 104

@@ -32,7 +32,7 @@ MERGED = COLLAB / "merged"
 LEDGER = COLLAB / "审阅台账.jsonl"
 
 T2_MARKERS = ("ocr_engine.py", "pollin.py", "webui.py", "webui.html",
-              "ocr_ui.py", "community_like.py")
+              "ocr_ui.py", "community_like.py", "webui_app.py", "main.py")
 DANGER_WORDS = ("屏蔽聊天", "删除好友", "神叶", "灵豆", "星之粉")
 
 
@@ -99,9 +99,11 @@ def scan_tree(obj, out=None) -> dict:
             words = json.dumps(obj.get("text") or obj.get("template"), ensure_ascii=False)
             if any(w in words for w in DANGER_WORDS):
                 out["danger_clicks"].append(words[:120])
-        th = obj.get("threshold")
-        if isinstance(th, (int, float)) and th < 0.9:
-            out["low_threshold"].append({"template": obj.get("template"), "threshold": th})
+        for key in ("threshold", "template_threshold"):
+            th = obj.get(key)
+            if isinstance(th, (int, float)) and th < 0.9:
+                out["low_threshold"].append({"template": obj.get("template") or obj.get("name"),
+                                             "threshold": th, "key": key})
         if obj.get("require_seen") is True:
             out["require_seen"] += 1
         for v in obj.values():

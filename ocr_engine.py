@@ -1246,6 +1246,7 @@ class OCREngine:
             self.swipe_rel(*swipe, duration_ms=dur)
             time.sleep(settle)
         print(f"[采集] {label}: 达到 max_rounds={max_rounds} 上限仍未稳定, 如实登记")
+        report_failure(self._module, f"dump_text {label}: 达到 max_rounds={max_rounds} 上限仍未稳定(采集可能不完整)")
 
     def _write_collect(self, save, label, round_no, rows, blocks):
         """采集留档: 追加 data/collect/<save>.jsonl(ts/label/round/rows/blocks 全量)。
@@ -1540,6 +1541,7 @@ class OCREngine:
             self.swipe_rel(*swipe, duration_ms=dur)
             time.sleep(settle)
         print(f"[领取] {label}: 达到 max_rounds={max_rounds} 上限, 如实登记")
+        report_failure(self._module, f"claim_scroll {label}: 达到 max_rounds={max_rounds} 上限(未确认列表到底)")
 
     def _if_collected(self, step: dict, indent: int) -> None:
         """条件分支(2026-10-12 v2): 查询最近一次采集(label)的**跨屏累计**行分组结果, 按 desc 关键字找行,
@@ -2217,9 +2219,10 @@ class OCREngine:
             return best
         return None
 
-    def parse_count_at(self, region_rel, img=None, tol=120) -> "int | None":
+    def parse_count_at(self, region_rel, img=None, tol=120, min_score: float = 0.0) -> "int | None":
         """OCR 整图, 找形如 '关键字:N' 或纯数字('N') 的数字块, 取中心离 region_rel*屏 最近且距离<=tol 的, 返回 N。
         用于解析『剩余抽奖次数:3』这类带关键字的单值数字。未找到返回 None。
+        min_score>0 时过滤低于该分数的文字块(if_greater 的步骤参数; 缺省 0 = 旧行为)。
         """
         img = img if img is not None else self.screenshot()
         if img is None:
@@ -2230,6 +2233,8 @@ class OCREngine:
         def _scan(blks):
             b_best, b_d = None, float("inf")
             for b in blks:
+                if min_score > 0 and float(b.get("score", 1.0)) < min_score:
+                    continue
                 m = re.search(r"[:：]?\s*(\d+)\s*$", b.get("text", "").strip())
                 if not m:
                     continue
@@ -2259,7 +2264,7 @@ class OCREngine:
         if not reg:
             print("[if_greater] 缺少 region_rel")
             return False
-        n = self.parse_count_at(reg, img=img)
+        n = self.parse_count_at(reg, img=img, min_score=float(step.get("min_score", 0.0) or 0.0))
         if n is None:
             print(f"[if_greater] 区域{reg} 未识别到 '关键字:N' 数字")
             return False
@@ -3476,8 +3481,9 @@ class OCREngine:
         # 残留值只会影响「步骤结束后、非步骤内」的调用(pollin 内部函数在 friend_pollin 步骤内, 正确归属)。
         self._ocr_src = s_type
         kws = step.get("text", step.get("keywords"))
-        # 步骤可声明当前界面场景(如 "scene": "家园主界面"), 之后的点击默认记入该场景
-        if step.get("scene"):
+        # 步骤可声明当前界面场景(如 "scene": "家园主界面"), 之后的点击默认记入该场景。
+        # 条件/等待步骤只在**命中/到位后**才改场景, 否则 MISS 也会污染知识库/均值复核(W1-002)。
+        if step.get("scene") and s_type not in ("if_text", "if_scene", "wait_scene"):
             self._scene = step["scene"]
         if step.get("category") and (
                 s_type in ("click_text", "click_rel", "click_account_tail")):
@@ -3612,6 +3618,8 @@ class OCREngine:
             if hit:
                 # 批B: 命中后登记守卫, 供紧邻下一步 click_text 复用该点位(免二次截图+全图 OCR)。
                 self._remember_guard(kws, pt, False, region_rel, min_score)
+                if step.get("scene"):
+                    self._scene = step["scene"]
             branch = step.get("then") if hit else step.get("else")
             print(f"{pad}[if_text] {kws} {'区域'+str(region_rel)+' ' if region_rel else ''}-> {'HIT' if hit else 'MISS'}")
             if branch:
@@ -3620,6 +3628,8 @@ class OCREngine:
             # 条件分支: 按场景注册表(scenes.json)判定当前画面是否为指定场景
             # (2026-10-05 用户定立的引擎第三种判定; 判据示例见 scenes.json「家园界面」)
             hit = self.judge_scene(step.get("scene", ""), min_score=step.get("min_score", 0.4))
+            if hit and step.get("scene"):
+                self._scene = step["scene"]
             branch = step.get("then") if hit else step.get("else")
             if branch:
                 self.run_steps(branch, indent=indent + 1)
@@ -3654,6 +3664,8 @@ class OCREngine:
                 time.sleep(interval)
                 waited += interval
             if okflag:
+                if okname:
+                    self._scene = okname      # 只有真正等到场景才切换, 超时保持原场景(W1-002)
                 if len(scenes) > 1:
                     print(f"[等待成功] 场景『{okname}』(多场景任一命中, 第{probes}次探测)")
             else:
@@ -4219,8 +4231,7 @@ class OCREngine:
             self._scene = flow["scene"]
         print(f"\n[{_ts()}] ===== 流程: {name} (scene={self._scene}) =====")
         try:
-            for step in flow.get("steps", []):
-                self.run_step(step)
+            self.run_steps(flow.get("steps", []))
         except StopRequested:
             print(f"[{_ts()}] ===== 流程已由停止请求中断: {name} =====")
             return

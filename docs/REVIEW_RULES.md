@@ -15,7 +15,7 @@
 |---|---|---|
 | **T0 文档/注释** | 仅 `docs/**`、`README.md`、`PROGRESS.md`、`*.md`、注释级改动 | 自动检查全过 + 抽读关键段 |
 | **T1 配置/流程/模板** | 仅 `flows/**`、`data/*.json`、`resource/template/**`（无引擎/ pollin/webui 改动） | 语义 diff（字段级）+ 关键断言 + 模板两态分离度 + 闸门；按比例抽样复核 |
-| **T2 引擎/关键路径** | 触及 `ocr_engine.py` / `pollin.py` / `webui.py(.html)` / `ocr_ui.py` / `community_like.py` | **逐 hunk 独立复验** + 规则全扫 + 回归桩测 + 闸门；严格度不降 |
+| **T2 引擎/关键路径** | 触及 `ocr_engine.py` / `pollin.py` / `webui.py(.html)` / `ocr_ui.py` / `community_like.py` / `webui_app.py` / `main.py` | **逐 hunk 独立复验** + 规则全扫 + 回归桩测 + 闸门；严格度不降 |
 
 > 分级是**审阅强度**的分级，不是「信任传递」。T2 永远全量；T1 的抽样不等于免检，
 > 发现一处问题即升级为全量。
@@ -29,7 +29,7 @@
 | **R0** | FAIL | 交付文件与 `files/` 清单完整、可解析（JSON/py） | 缺文件/坏 JSON 直接阻断 |
 | **R1** | WARN | 基线 md5 与 REPORT 声称一致（若 REPORT 中出现该值） | 防「拿错基线」的幽灵 diff |
 | **R2** | FAIL | 新增 `click_rel` / `fallback_rel` / 直坐标点击 | 用户规则 6：点击必须实时 OCR/模板定位 |
-| **R3** | WARN | 新增 `click_template.threshold < 0.9` | 低阈值关闭兜底会误点收起菜单（M103/M105 教训） |
+| **R3** | WARN | 新增 `threshold` / `template_threshold` < 0.9 | 低阈值关闭兜底会误点收起菜单（M103/M105 教训） |
 | **R4** | FAIL | 新增点击危险控件：「屏蔽聊天」「删除好友」「神叶/灵豆/星之粉」等 | 误点不可逆或消耗货币 |
 | **R5** | WARN/FAIL | 新模板：合并前「待落位」为 WARN；**合并后必须存在且 md5 一致**，不一致=FAIL | 只交 inbox 不落位 → 运行时模板 MISS（M105 事故） |
 | **R6** | FAIL | 主仓库 `flows/**` 引用的模板全部存在 | 同上，落位后立刻可运行 |

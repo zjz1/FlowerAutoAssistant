@@ -44,6 +44,8 @@ FlowerAutoAssistant/
 ├── webui.html           # WebUI 前端：使用界面 / 测试界面（实时画面+OCR标注+日志）
 ├── tpltool.html         # 人机协同标注页 /tpltool：只产出坐标标注，不直接存模板
 ├── start_webui.bat      # 双击启动 WebUI（优先用 .venv，自动开浏览器）
+├── webui_app.py         # 原生窗口外壳（WebView2/pywebview）：复用同一 WebUI 服务，启动不自开浏览器
+├── start_webui_app.bat  # 双击启动原生窗口（优先用 .venv；端口缺省 8765）
 ├── ocr_engine.py        # 核心引擎：连接/截图/OCR定位/颜色/模板/点击/知识库/流程执行
 ├── ocr_ui.py            # RapidOCR 单例（模型只初始化一次）
 ├── pollin.py            # 好友采粉闭环模块（引擎步骤 friend_pollin 的实现；可 python pollin.py state|all 单独调试）
@@ -59,13 +61,13 @@ FlowerAutoAssistant/
 │   ├── config.example.json # 功能开关模板（复制为 config.json 后填写）
 │   ├── config.json         # 功能开关与目标账号尾号等配置（本地私有，已 gitignore）
 │   ├── tplt_annotations.jsonl / annot_shots/  # tpltool 标注产物（坐标+绑定截图）
-├── resource/template/   # 模板匹配模板（已 gitignore）
+├── resource/template/   # 模板匹配模板（入仓；缺失则模板通道全废）
 ├── workbench/           # 未确认功能的暂存区（用户确认后才并入主体）
 ├── dev_tools/           # 常驻开发工具：self_test(离线自测) / calibrate(实机校准) / explore(探查采集)
 └── PROGRESS.md          # 项目活文档：运行前先读，里程碑完成即更新
 ```
 
-> `debug/`（截图）、`legacy/`（旧 MAA 路线备份）、`.venv/`、`resource/` 已加入 `.gitignore`，不参与版本控制。
+> `debug/`（截图）、`legacy/`（旧 MAA 路线备份）、`.venv/` 已加入 `.gitignore`，不参与版本控制；`resource/template/` 入仓。
 
 ---
 
@@ -73,7 +75,7 @@ FlowerAutoAssistant/
 
 ```bash
 pip install -r requirements.txt
-# maafw, opencv-python, Pillow（RapidOCR 随依赖安装）
+# maafw, opencv-python, Pillow, pywebview, rapidocr_onnxruntime（OCR 引擎）
 ```
 
 ## 环境
@@ -112,7 +114,14 @@ python main.py --address 127.0.0.1:16384 --adb "D:\Program Files\Netease\MuMu\nx
 ```bash
 python webui.py            # 默认 8765
 start_webui.bat            # 或双击：优先用 .venv，启动后自动开浏览器
+python webui_app.py        # 原生窗口（WebView2/pywebview），启动不自开浏览器
+start_webui_app.bat        # 或双击原生窗口
 ```
+
+> **推荐原生窗口**（`start_webui_app.bat` / `python webui_app.py`）：同一套 `webui.py` 服务装进独立 WebView2 窗口；
+> 端口已有 FAA 实例则**直接复用、不重复起服务**，**启动不自动开浏览器**，关窗即停服（不留孤儿端口）。
+> 原生窗口内「保存日志」走**原生另存为对话框**（WebView2 无浏览器下载管理器，由壳层 js_api 落盘）。
+> `start_webui.bat` 仍保留（浏览器模式，会自动开浏览器）。
 
 浏览器打开 `http://127.0.0.1:8765/`，右上角可切换两个界面：
 
@@ -177,7 +186,7 @@ start_webui.bat            # 或双击：优先用 .venv，启动后自动开浏
 }
 ```
 
-**支持的步骤类型（共 41 种，2026-10-27 核对）**
+**支持的步骤类型（共 42 种，2026-11-16 核对）**
 
 | 类别 | 步骤类型 |
 |---|---|
@@ -185,10 +194,10 @@ start_webui.bat            # 或双击：优先用 .venv，启动后自动开浏
 | 等待/停顿 | `wait_text`、`wait_text_gone`（可 `require_seen`）、`wait_update_done`（资源更新守卫）、`sleep`、`wait_scene`（可传场景列表） |
 | 条件分支 | `if_text`、`if_account_tail`、`if_fraction`、`if_greater`、`if_config`、`if_time`、`if_weekday`、`if_scene`、`count_text`、`if_color_count`、`if_collected`、`if_count` |
 | 循环 | `loop_text`、`loop_fraction`、`loop_times`、`retry_loop` |
-| 状态/其它 | `store_fraction`、`close_dialog`、`ensure_menu`、`ensure_home`、`navigate`、`friend_pollin`、`community_like`、`claim_scroll`、`dump_text`、`reward_dialog`、`count_probe`、`touch_drag`、`slide`、`dump_frame`（手动故障存证）、`fail_flow` |
+| 状态/其它 | `store_fraction`、`close_dialog`、`ensure_menu`、`ensure_home`、`navigate`、`friend_pollin`、`community_like`、`claim_scroll`、`dump_text`、`reward_dialog`、`count_probe`、`touch_drag`、`slide`、`dump_frame`（手动故障存证）、`buy_item`（花宝受控购买）、`fail_flow` |
 
 - **公共导航**：`navigate` 引用 [`flows/common/entries.json`](flows/common/entries.json) 的 target（已登记 家族活动 / 闪耀变身 / 花灵派对），把"归位→逐层导航→目标命中→脱困重试"收敛到一处，避免各流程重复内嵌进入链。
-- **知识库自动积累**：每次点击成功即写入 `data/click_log.json`（按 `scene` 场景 + `category` 类别分组，`ocr`/`color` 命中还会累积 `mean_rel` 均值样本），越用越稳。
+- **知识库（可选）**：默认 `log_click_pos=false`，运行时不写 `data/click_log.json`；显式开启后，OCR/颜色命中才会按 `scene` + `category` 分组并累积 `mean_rel` 均值样本。缓存回退不作为命中证据、不落库。
 
 ---
 
