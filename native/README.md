@@ -21,7 +21,7 @@
 **已验证（主 agent 实跑）**
 - `dotnet 8.0.427` 编译 `FAA.WpfGui.sln`：**0 警告 0 错误**。
 - `dotnet test FAA.WpfGui.Tests`：**65/65 通过**。
-- 2026-11-16 真实 MuMu 完整链路：`--api-base http://127.0.0.1:8766` 连接 → 勾选 5 模块开始一轮 → SSE 日志实时刷新 → `ok=5 / fail=0` → 回到空闲。连接徽标显示的端口号仍为缺省 8765（实际请求走 `--api-base`，仅显示瑕疵）。
+- 2026-11-16 真实 MuMu 完整链路：`--api-base http://127.0.0.1:8766` 连接 → 勾选 5 模块开始一轮 → SSE 日志实时刷新 → `ok=5 / fail=0` → 回到空闲。连接徽章按 `--api-base` 显示实际端口（修复前误显示缺省 8765）。
 
 **未验证**
 - 关窗停服（`closing` 确认 → `/api/shutdown`）与 `finish_action=close_client` 的实机关闭效果（需 `target_package`；默认 `none`）。

@@ -2812,7 +2812,7 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 - `native/FAA.WpfGui/`（53 源文件）+ `native/FAA.WpfGui.Tests/`（6 文件）+ `native/README.md` 入仓；
   根新增 `start_faa_native.bat`。`dist/`（154MB）本地复制可用但按 `.gitignore` 不入库。
 - 实机链路：`--api-base http://127.0.0.1:8766` → 勾选 5 模块 → 开始一轮 → SSE 日志实时刷新 →
-  `ok=5/fail=0` → 回空闲。连接徽标固定显示缺省 8765（实际请求走 `--api-base`），列为已知显示瑕疵。
+  `ok=5/fail=0` → 回空闲。连接徽章已按 `--api-base` 显示实际端口（修复前显示缺省 8765，见 §116.4）。
 
 ### 116.3 验证
 
@@ -2825,6 +2825,17 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
   工作区 1280×720）、`/api/shutdown` 全部正常，端口已释放。
 - 无花粉守卫离线桩测：正式版 / `_lab` / 上游重构包三份 PASS。
 - **未验证**：WPF 关窗停服与 `finish_action=close_client`；dotnet build（本机 PATH 无 dotnet，闸门降级 WARN）。
+
+### 116.4 原生 UI 连接徽章端口修复
+
+- **根因**：`--api-base` 分支只设置 `Proxy` / `OwnsService`，未同步 `Session.Port`（保持缺省 8765）；
+  1.5s 后状态轮询 `PollStatusAsync` 按 `Session.Port` 重绘徽章，覆盖启动时的「已连接 (--api-base)」。
+- **修复**：从 `Session.Proxy.BaseUrl` 解析端口写入 `Session.Port`；状态轮询在 api-base 模式下显示
+  `已连接 (--api-base :{port})`，不可达提示同样使用实际端口。
+- **验证**：`dotnet test` **65/65 通过**；`dotnet publish` 重发布 `native/dist`；实机 `--api-base :8766`
+  徽章显示「已连接 (--api-base :8766)」。
+- **附**：dotnet 8.0.427 位于 `%LOCALAPPDATA%\Microsoft\dotnet`（未加入 PATH）；`build_native.bat` 自带
+  用户级目录自举可正常构建；`check_project.py` 的 `shutil.which("dotnet")` 找不到时构建硬判降级 WARN。
 
 ## 2026-11-16 · 实机发现「没有花粉」提示框吞点击（里程碑 115）
 

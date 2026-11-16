@@ -228,7 +228,13 @@ public partial class MainViewModel : ObservableObject, IDisposable
             DebugTrace.Log($"startup: --api-base override -> {apiBase} (跳过探测/托管)");
             Session.Proxy = new FaaProxy(apiBase);
             Session.OwnsService = false;
-            SetBadge($"已连接 (--api-base)", UiBrushes.Ok);
+            // 端口显示与 --api-base 对齐: 状态轮询按 Session.Port 重绘徽章, 原实现未同步
+            // 导致 --api-base :8766 被显示成缺省 :8765(2026-11-16 实机发现)。
+            if (Uri.TryCreate(Session.Proxy.BaseUrl, UriKind.Absolute, out var apiUri))
+            {
+                Session.Port = apiUri.Port;
+            }
+            SetBadge($"已连接 (--api-base :{Session.Port})", UiBrushes.Ok);
             await OnServiceReadyAsync("已按 --api-base 直连指定服务(调试模式: 不探测端口、不托管服务)");
             return;
         }
@@ -433,7 +439,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _statusFailStreak = 0;
         SetBadge(Session.OwnsService
             ? $"已连接 (:{Session.Port}, 本窗口托管服务)"
-            : $"已连接现有实例 (:{Session.Port})", UiBrushes.Ok);
+            : Session.ApiBaseOverride is not null
+                ? $"已连接 (--api-base :{Session.Port})"
+                : $"已连接现有实例 (:{Session.Port})", UiBrushes.Ok);
         IsServiceConnected = true;   // A3: 服务可达 → 「关闭服务」入口可用
         ApplyStatus(r.Value);
     }
