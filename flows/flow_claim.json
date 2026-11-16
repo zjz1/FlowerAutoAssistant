@@ -311,6 +311,17 @@
                       ] }
                 ] }
           ],
+          "else": [] },
+
+        { "_note": "===== 4. 花仙乐园（2026-11-17）=====" },
+        { "type": "if_config",
+          "key": "claim_fairyland",
+          "value": true,
+          "default": true,
+          "then": [
+              { "_note": "花仙乐园: 家园(自己/好友均可)->菜单->花仙乐园->在线领取->每日任务(雪绒花/月季花兑换、浇水5/5、仙豆3/3; 未完成走购买占位)->关闭回园。按钮置灰=底色饱和度<30。" },
+              { "type": "fairyland_claim", "required": false }
+          ],
           "else": [] }
     ]
 }

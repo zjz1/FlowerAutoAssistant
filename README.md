@@ -204,7 +204,7 @@ start_webui_app.bat        # 或双击原生窗口
 }
 ```
 
-**支持的步骤类型（共 42 种，2026-11-16 核对）**
+**支持的步骤类型（共 46 种，2026-11-17 核对）**
 
 | 类别 | 步骤类型 |
 |---|---|
@@ -212,7 +212,7 @@ start_webui_app.bat        # 或双击原生窗口
 | 等待/停顿 | `wait_text`、`wait_text_gone`（可 `require_seen`）、`wait_update_done`（资源更新守卫）、`sleep`、`wait_scene`（可传场景列表） |
 | 条件分支 | `if_text`、`if_account_tail`、`if_fraction`、`if_greater`、`if_config`、`if_time`、`if_weekday`、`if_scene`、`count_text`、`if_color_count`、`if_collected`、`if_count` |
 | 循环 | `loop_text`、`loop_fraction`、`loop_times`、`retry_loop` |
-| 状态/其它 | `store_fraction`、`close_dialog`、`ensure_menu`、`ensure_home`、`navigate`、`friend_pollin`、`community_like`、`claim_scroll`、`dump_text`、`reward_dialog`、`count_probe`、`touch_drag`、`slide`、`dump_frame`（手动故障存证）、`buy_item`（花宝受控购买）、`fail_flow` |
+| 状态/其它 | `store_fraction`、`close_dialog`、`ensure_menu`、`ensure_home`、`navigate`、`friend_pollin`、`plant_flower`（种植花朵阶段1+2：搜索→精点白色桃花→数量1→随机种植→详情确认→回读 d-1/肥力-2）、`plant_harvest`（收获花朵：可收获/可授粉判定→无待授粉才一键收花→关奖励弹窗）、`fairyland_claim`（花仙乐园：在线骰子+每日任务兑换/浇水/仙豆，按钮底色置灰判据）、`buy_seed`（购买种子：搜索→选种→数量→购买→二次确认→关弹窗）、`community_like`、`claim_scroll`、`dump_text`、`reward_dialog`、`count_probe`、`touch_drag`、`slide`、`dump_frame`（手动故障存证）、`buy_item`（花宝受控购买）、`fail_flow` |
 
 - **公共导航**：`navigate` 引用 [`flows/common/entries.json`](flows/common/entries.json) 的 target（已登记 家族活动 / 闪耀变身 / 花灵派对），把"归位→逐层导航→目标命中→脱困重试"收敛到一处，避免各流程重复内嵌进入链。
 - **知识库（可选）**：默认 `log_click_pos=false`，运行时不写 `data/click_log.json`；显式开启后，OCR/颜色命中才会按 `scene` + `category` 分组并累积 `mean_rel` 均值样本。缓存回退不作为命中证据、不落库。

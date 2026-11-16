@@ -54,7 +54,7 @@ class _DeviceMixin:
         self.debug_click = bool(os.environ.get("FAA_DEBUG_CLICK", ""))
         self._click_seq = 0
         if self.debug_click:
-            self.debug_dir = Path(__file__).resolve().parent.parent / "data" / "click_debug"
+            self.debug_dir = Path(__file__).resolve().parent.parent.parent / "data" / "click_debug"
             self.debug_dir.mkdir(parents=True, exist_ok=True)
         # 连接即读取画面尺寸(2026-10-06 用户要求, 2026-10-07 细化为两套):
         # ① 工作区(screen_w/h): MAA 首帧, 先清零再探, 重连/换模拟器必拿当前值, 供

@@ -562,6 +562,11 @@ _CONFIG_KEYS: dict[str, dict] = {
         type="bool", log_line=2, log_label="功能3奇妙花宝", log_fmt="sw",
         log_default=_NO_DEFAULT, echo=True,
         meta=("功能3 · 奇妙花宝", "家园→奇妙花宝→奇妙特权，领奇妙礼包每日/每周/每月三档"), meta_default=False),
+    # 花仙乐园(2026-11-17): 不进 [config] 日志行(避免改既有日志契约), 仅 ⚙ 面板 + set_config 白名单
+    "claim_fairyland": dict(
+        type="bool",
+        meta=("花仙乐园", "在线骰子 + 每日任务（兑换/浇水/仙豆；购买花种占位）"),
+        meta_default=True),
     "enable_shine": dict(
         type="bool", log_line=2, log_label="闪耀委托挑战", log_fmt="sw",
         log_default=_NO_DEFAULT, echo=True,
@@ -590,6 +595,29 @@ _CONFIG_KEYS: dict[str, dict] = {
         type="bool", log_line=2, log_label="花宝补货", log_fmt="sw", log_default=True,
         meta=("花宝自动补货", "挠痒痒 0 库存时受控购买 22 仙豆/个(单轮最多 1 次; 余额低于 10000 停止; "
               "确认框全文核对+差额复核)"), meta_default=True),
+    # 种植模块(2026-11-16 用户定稿): 四功能。种植花朵当前仅桃花; 归位自己家园已实现,
+    # 种花动作与另外三功能先占位(默认关闭, 开启暂无实际动作)。无 log_line/echo ——
+    # 不改既有 [config] 日志行与 set_config 回显键面(同 use_angle_cls 口径)。
+    "plant_flower": dict(
+        type="bool",
+        meta=("种植花朵", "当前仅桃花; 已实现『确保在自己家园』归位, 种花动作占位待补"),
+        meta_default=False),
+    "plant_flower_type": dict(
+        type="text",
+        meta=("花种选择", "当前仅支持：桃花(后续扩展)"),
+        meta_default="桃花"),
+    "plant_pollinate": dict(
+        type="bool",
+        meta=("花朵授粉", "占位待开发, 开启暂无实际动作"),
+        meta_default=False),
+    "plant_harvest": dict(
+        type="bool",
+        meta=("收获花朵", "已实现: 可收获/可授粉判定; 无待授粉才一键收花"),
+        meta_default=False),
+    "plant_buy_seed": dict(
+        type="bool",
+        meta=("购买种子", "占位待开发, 开启暂无实际动作"),
+        meta_default=False),
     "log_click_pos": dict(
         type="bool", log_line=3, log_label="记录按钮位置", log_fmt="sw", log_default=False,
         echo=False, meta=None),
@@ -645,9 +673,12 @@ _CONFIG_KEYS: dict[str, dict] = {
 # 返回 [] → ⚙ 可点开面板显示「暂无独立子功能」说明。2026-10-11: 新增浇水开关
 # enable_water(4.1.1, 默认 true)。2026-10-12: 社区点赞自社交模块迁入每日任务(daily 按
 # 手账「献上点赞」行进度 a<b 门控执行, 已完成/行缺失跳过)。
+# 2026-11-16: plant 不再是空面板 —— 种植模块四功能(种植花朵/花种选择/授粉/收获/购买种子),
+# 前两项已接入, 其余三项占位默认关闭。
 _MODULE_SETTINGS: dict[str, tuple[str, ...]] = {
-    "claim": ("claim_online", "claim_party", "claim_hb"),
+    "claim": ("claim_online", "claim_party", "claim_hb", "claim_fairyland"),
     "startup": ("enable_switch", "target_tail"),
+    "plant": ("plant_flower", "plant_flower_type", "plant_pollinate", "plant_harvest", "plant_buy_seed"),
     "social": ("enable_water", "enable_shine", "enable_mine", "enable_rabbit", "enable_pollin"),
     "daily": ("enable_like", "enable_hot_sale", "enable_baobao", "enable_baobao_buy"),
 }

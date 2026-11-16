@@ -22,6 +22,9 @@ from ._template import _TemplateMixin
 from ._flowexec import _FlowExecMixin
 from ._steps import _StepHandlersMixin
 from ._buy import _BuyMixin
+from ._buyseed import _BuySeedMixin
+from ._plant import _PlantMixin
+from ._fairyland import _FairylandMixin
 from ._orchestrate import _OrchestrateMixin
 
 from .._constants import ADB_ADDRESS, ADB_PATH
@@ -50,6 +53,9 @@ class OCREngine(
     _FlowExecMixin,
     _StepHandlersMixin,
     _BuyMixin,
+    _BuySeedMixin,
+    _PlantMixin,
+    _FairylandMixin,
     _OrchestrateMixin,
 ):
     """OCR 自动化引擎: 管理设备连接、截图、OCR、定位、点击。"""

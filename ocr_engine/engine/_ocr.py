@@ -387,6 +387,32 @@ class _OcrMixin:
         b, sb = self._ocr_frame(img, need_split=need_refine)
         return b, sb, False
 
+    def ocr_blocks(self, img=None, region_rel=None) -> list[dict]:
+        """读取一帧的全部 OCR 文本块(全图坐标, dict: text/score/center/box)。
+
+        供种植等需要「整页字段解析」的模块使用: 只读, 不拆分过宽块(拆分只为点击精度)。
+        region_rel 给定且 region_ocr 开启、面积<=40% 时走区域裁片(复用 _region_cache),
+        否则全图; 结果按 center 再过滤到 region, 与既有区域语义一致。
+        不改任何判定语义, 不写 last_rel / _last_match_block。
+        """
+        img = img if img is not None else self.screenshot()
+        if img is None:
+            return []
+        blocks = None
+        if region_rel and len(region_rel) == 4 and self.config.get("region_ocr", True):
+            r = self._ocr_frame_region(img, region_rel, need_split=False)
+            if r is not None:
+                blocks = r[0]
+        if blocks is None:
+            blocks, _ = self._ocr_frame(img, need_split=False)
+        if region_rel and len(region_rel) == 4:
+            w, h = self.screen_w or 1, self.screen_h or 1
+            x1, y1, x2, y2 = region_rel
+            blocks = [b for b in blocks
+                      if x1 * w <= b["center"][0] <= x2 * w
+                      and y1 * h <= b["center"][1] <= y2 * h]
+        return blocks
+
     def _print_ocr_stat(self, mid):
         """批C-②: 模块级 OCR 计时汇总(纯观测), 并累计进整轮统计。
         O0(2026-10-21): 追加「来源 / 拆分缓存 / 仅子块命中 / 直调」三行, 用于把 44min 之类的耗时

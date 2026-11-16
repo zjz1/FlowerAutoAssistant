@@ -292,15 +292,16 @@ class _FlowExecMixin:
     def run_step(self, step: dict, indent=1):
         """执行单个步骤。step 为流程 JSON 中的一个节点; 分派外壳逐 type 转 handler(E06)。
 
-        支持全部 42 种步骤类型(= 模块级 STEP_TYPES 白名单, tools/check_project.py 闸门消费;
+        支持全部 46 种步骤类型(= 模块级 STEP_TYPES 白名单, tools/check_project.py 闸门消费;
         本 docstring 原先只列 11 种的漂移随批对齐 —— F09 文档维度仅改本 docstring):
-        buy_item / claim_scroll / click_account_tail / click_rel / click_row_button /
+        buy_item / buy_seed / claim_scroll / click_account_tail / click_rel / click_row_button /
         click_template / click_text / close_dialog / community_like / count_probe / count_text /
-        dump_frame / dump_text / ensure_home / ensure_menu / fail_flow / friend_pollin /
-        if_account_tail / if_collected / if_color_count / if_config / if_count / if_fraction /
-        if_greater / if_scene / if_text / if_time / if_weekday / loop_fraction / loop_text /
-        loop_times / navigate / retry_loop / reward_dialog / sleep / slide / store_fraction /
-        touch_drag / wait_scene / wait_text / wait_text_gone / wait_update_done
+        dump_frame / dump_text / ensure_home / ensure_menu / fail_flow / fairyland_claim /
+        friend_pollin / if_account_tail / if_collected / if_color_count / if_config / if_count /
+        if_fraction / if_greater / if_scene / if_text / if_time / if_weekday / loop_fraction /
+        loop_text / loop_times / navigate / plant_flower / plant_harvest / retry_loop /
+        reward_dialog / sleep / slide / store_fraction / touch_drag / wait_scene / wait_text /
+        wait_text_gone / wait_update_done
 
         handler 签名统一为 `self._step_<type>(step, kws, pad, indent)`(kws/pad/indent 为
         run_step 前导段既有局部量); 分支体逐行原文搬移至 _steps.py, AST 分支体全等对拍。
@@ -389,6 +390,14 @@ class _FlowExecMixin:
             self._step_navigate(step, kws, pad, indent)
         elif s_type == "friend_pollin":
             self._step_friend_pollin(step, kws, pad, indent)
+        elif s_type == "plant_flower":
+            self._step_plant_flower(step, kws, pad, indent)
+        elif s_type == "plant_harvest":
+            self._step_plant_harvest(step, kws, pad, indent)
+        elif s_type == "fairyland_claim":
+            self._step_fairyland_claim(step, kws, pad, indent)
+        elif s_type == "buy_seed":
+            self._step_buy_seed(step, kws, pad, indent)
         elif s_type == "ensure_menu":
             self._step_ensure_menu(step, kws, pad, indent)
         elif s_type == "ensure_home":

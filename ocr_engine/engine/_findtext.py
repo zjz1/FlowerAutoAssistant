@@ -291,7 +291,7 @@ class _FindTextMixin:
                 print(f"    · {str(b.get('text',''))[:24]} @{float(b.get('score',1.0)):.2f} ({c[0]},{c[1]})")
             import cv2
             import json
-            base = Path(__file__).resolve().parent.parent / "data" / "fail_cache"
+            base = Path(__file__).resolve().parent.parent.parent / "data" / "fail_cache"
             out = base / self._session_stamp
             out.mkdir(parents=True, exist_ok=True)
             self._dump_seq += 1

@@ -249,8 +249,9 @@ public sealed class FaaProxy
     public static readonly string[] SetConfigKeys =
     [
         "enable_switch", "target_tail",          // startup ⚙(936-940)
-        "claim_online", "claim_party", "claim_hb",   // claim ⚙(927-933)
+        "claim_online", "claim_party", "claim_hb", "claim_fairyland",  // claim ⚙(2026-11-17 花仙乐园)
         "enable_water", "enable_shine", "enable_mine", "enable_rabbit", "enable_pollin",  // social ⚙(948-959)
+        "plant_flower", "plant_flower_type", "plant_pollinate", "plant_harvest", "plant_buy_seed",  // plant ⚙(2026-11-16 四功能)
         "enable_like", "enable_hot_sale", "enable_baobao", "enable_baobao_buy",           // daily ⚙(963-976)
         "log_click_pos", "use_cache_pos",        // 识别设置(539-542)
         "ocr_threads",                            // OCR 线程数(543-549)

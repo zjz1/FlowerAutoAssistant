@@ -136,7 +136,7 @@ class _CollectMixin:
         """采集留档: 追加 data/collect/<save>.jsonl(ts/label/round/rows/blocks 全量)。
         dump_text 与 claim_scroll 共用(2026-10-12 v2 抽取)。"""
         try:
-            out_dir = Path(__file__).resolve().parent.parent / "data" / "collect"
+            out_dir = Path(__file__).resolve().parent.parent.parent / "data" / "collect"
             out_dir.mkdir(parents=True, exist_ok=True)
             rec = {
                 "ts": time.strftime("%Y-%m-%d %H:%M:%S"),

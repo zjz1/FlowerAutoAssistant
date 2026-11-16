@@ -1,45 +1,147 @@
 {
     "name": "种植任务",
-    "description": "归位进家园: ①先判是否已在家园(场景判断『家园界面』= 锚点(一键种植|菜单)+8钮命中≥3; 2026-10-06 B1 整改, 由旧文本判据『菜单/离开/奇妙花宝』迁移), 是则直接通过; ②不在家园时 retry_loop 点底部『家园』入口, mark 只在真实 OCR 命中时置位(缓存回退不算命中), 未命中即本轮失败 -> close_dialog 脱困后重试(最多3轮); ③进入后 wait_scene 等加载, 再用同一判据复核, 仍未到家园则再脱困一次并补点一次。花田作业(浇水/施肥/授粉/收花)后续待开发。",
+    "description": "种植模块四功能(2026-11-16 用户定稿): ①种植花朵(当前仅白色桃花; 阶段0确保自己家园、阶段1进种植页/采集/搜索、阶段2精确点选/数量1/随机种植/详情确认/回读校验均已实现; 造型种植与种子数据库待补) ②花朵授粉(占位) ③收获花朵(已实现: 照料页可收获/可授粉判定; 无待授粉则一键收花并关奖励弹窗; 有待授粉则跳过) ④购买种子(占位)。阶段0 归位按用户口述三态: 户外=右下角「家园」; 自己家园=右下角「离开」; 好友家园=右下角「离开」——自家/好友家单帧同形, 靠点「离开」后的下一屏区分(仍在「离开」=好友家→自己家; 变「家园」=自己家→户外→点家园回去)。旧 if_scene 归位只保证『在家园(自己或好友均可)』, 不满足本模块『必须在自己的家园』的前提, 已替换。",
     "steps": [
-        { "_note": "① 已在家园则整段跳过进入链(避免在家园里空点『家园』)" },
-        { "type": "if_scene",
-          "scene": "家园界面",
+        { "_note": "===== 阶段0: 确保在自己家园(不区分自家/好友家的旧 ensure_home 不满足) =====" },
+        { "type": "wait_text",
+          "text": ["离开", "家园"],
+          "region_rel": [0.78, 0.85, 1.0, 1.0],
           "min_score": 0.4,
-          "_note": "已在家园判据改场景判断(2026-10-06 B1 整改): 旧 if_text[菜单/离开/奇妙花宝] 孤「菜单」即命中(闪耀变身页等带左上「菜单」的页面会误判); 场景判据=锚点(一键种植|菜单)+8钮命中≥3",
-          "then": [],
-          "else": [
-              { "_note": "② 不在家园: 点『家园』入口; 未真实命中就 close_dialog 脱困, 下一轮再试(=脱困一次-尝试-不行再脱困)" },
-              { "type": "retry_loop",
-                "max_rounds": 3,
-                "do": [
-                    { "type": "click_text", "text": ["家园"], "mark": true, "delay": 2.5 },
-                    { "type": "sleep", "seconds": 1.5 }
-                ] },
-              { "_note": "③ 等家园界面加载, 再用同一判据复核(不把『点了按钮』当成『已到位』)" },
-              { "type": "wait_scene", "scene": "家园界面", "timeout": 5, "interval": 1.0,
-                "_note": "载入等待同步迁移场景判断(2026-10-06 B1 整改), 超时语义不变(软失败)" },
-              { "type": "if_scene",
-                "scene": "家园界面",
+          "need_refine": false,
+          "timeout": 5,
+          "interval": 0.8,
+          "_note": "先等右下角按钮出现: 过场/加载中可能两种按钮都暂时没有。区域=右下角操作带(家园/离开 历史实测 rel≈0.873,0.951), 只做判据不做点击坐标。" },
+        { "type": "if_text",
+          "text": ["离开"],
+          "region_rel": [0.78, 0.85, 1.0, 1.0],
+          "min_score": 0.4,
+          "need_refine": false,
+          "then": [
+              { "_note": "有「离开」= 在家园(自己或好友, 单帧不可分)。先点离开, 用下一屏区分。" },
+              { "type": "click_text",
+                "text": ["离开"],
+                "region_rel": [0.78, 0.85, 1.0, 1.0],
                 "min_score": 0.4,
-                "_note": "同上: 复核判据已迁移场景判断(2026-10-06 B1 整改)",
-                "then": [],
+                "no_fallback": true,
+                "delay": 2.0 },
+              { "type": "sleep", "seconds": 3.0,
+                "_note": "等过场落定再判下一屏; 3s 为待实机校准值(2026-11-16 首版)。" },
+              { "type": "wait_text",
+                "text": ["离开", "家园"],
+                "region_rel": [0.78, 0.85, 1.0, 1.0],
+                "min_score": 0.4,
+                "need_refine": false,
+                "timeout": 8,
+                "interval": 1.0,
+                "_note": "等下一屏按钮出现(加载可能在 3s 后仍未完成)。" },
+              { "type": "if_text",
+                "text": ["离开"],
+                "region_rel": [0.78, 0.85, 1.0, 1.0],
+                "min_score": 0.4,
+                "need_refine": false,
+                "then": [
+                    { "_note": "离开仍在 -> 刚才在好友家园, 现在在自己家园。完成。" }
+                ],
                 "else": [
-                    { "_note": "仍未到家园: 再脱困一次并补点一次『家园』" },
-                    { "type": "close_dialog", "delay": 1.5 },
-                    { "type": "click_text", "text": ["家园"], "delay": 2.5 },
-                    { "type": "wait_scene", "scene": "家园界面", "timeout": 5, "interval": 1.0, "_note": "同上(2026-10-06 B1 整改)" },
-                    { "type": "if_scene",
-                      "scene": "家园界面",
+                    { "type": "if_text",
+                      "text": ["家园"],
+                      "region_rel": [0.78, 0.85, 1.0, 1.0],
                       "min_score": 0.4,
-                      "_note": "同上: 判据已迁移场景判断(2026-10-06 B1 整改)",
-                      "then": [],
+                      "need_refine": false,
+                      "then": [
+                          { "_note": "离开消失且「家园」出现 -> 刚才在自己家园, 现在回到户外; 点家园进自己家园。" },
+                          { "type": "click_text",
+                            "text": ["家园"],
+                            "region_rel": [0.78, 0.85, 1.0, 1.0],
+                            "min_score": 0.4,
+                            "no_fallback": true,
+                            "delay": 2.0 },
+                          { "type": "wait_text",
+                            "text": ["离开"],
+                            "region_rel": [0.78, 0.85, 1.0, 1.0],
+                            "min_score": 0.4,
+                            "need_refine": false,
+                            "timeout": 8,
+                            "interval": 1.0,
+                            "_note": "自己家园特征=右下角「离开」; 等它出现才算到位, 不把点击当成功。" }
+                      ],
                       "else": [
-                          { "_note": "两轮仍未确认到家园: 如实报出, 不再假装成功(后续模块各自归位)" }
+                          { "type": "fail_flow",
+                            "reason": "确保自己家园失败: 点「离开」后右下角既无「离开」也无「家园」(未知界面, 不盲点)" }
                       ] }
                 ] }
+          ],
+          "else": [
+              { "type": "if_text",
+                "text": ["家园"],
+                "region_rel": [0.78, 0.85, 1.0, 1.0],
+                "min_score": 0.4,
+                "need_refine": false,
+                "then": [
+                    { "_note": "无「离开」有「家园」= 户外; 点家园进入自己家园。" },
+                    { "type": "click_text",
+                      "text": ["家园"],
+                      "region_rel": [0.78, 0.85, 1.0, 1.0],
+                      "min_score": 0.4,
+                      "no_fallback": true,
+                      "delay": 2.0 },
+                    { "type": "wait_text",
+                      "text": ["离开"],
+                      "region_rel": [0.78, 0.85, 1.0, 1.0],
+                      "min_score": 0.4,
+                      "need_refine": false,
+                      "timeout": 8,
+                      "interval": 1.0,
+                      "_note": "等自己家园特征出现, 不把点击当成功。" }
+                ],
+                "else": [
+                    { "type": "fail_flow",
+                      "reason": "确保自己家园失败: 右下角既无「离开」也无「家园」(未知界面, 不盲点)" }
+                ] }
           ] },
-        { "_note": "花田作业(浇水/施肥/授粉/收花)后续待开发" },
-        { "type": "sleep", "seconds": 1.0 }
+
+        { "_note": "===== 功能1: 种植花朵(当前仅桃花) =====" },
+        { "type": "if_config",
+          "key": "plant_flower",
+          "value": true,
+          "default": false,
+          "then": [
+              { "_note": "阶段1+2(已开发): 一键种植→区域 OCR 采集天气/肥力/已选→搜索桃花→精确点白色桃花网格块→数量1→随机种植→详情「白色桃花花种/已选择：1/58」核对→确认→回读 d-1、肥力-2、已选=0。造型种植/关面板待补。" },
+              { "type": "plant_flower", "required": false }
+          ],
+          "else": [] },
+
+        { "_note": "===== 功能2: 花朵授粉(占位待开发) =====" },
+        { "type": "if_config",
+          "key": "plant_pollinate",
+          "value": true,
+          "default": false,
+          "then": [
+              { "_note": "占位: 花朵授粉未开发, 开启暂无实际动作(遵循 enable_rabbit 占位约定)。" }
+          ],
+          "else": [] },
+
+        { "_note": "===== 功能3: 收获花朵(已开发) =====" },
+        { "type": "if_config",
+          "key": "plant_harvest",
+          "value": true,
+          "default": false,
+          "then": [
+              { "_note": "花朵收获(已开发): 照料页读可收获(x); x=0 关面板; x>0 查可授粉(y); y=0 一键收花→关奖励弹窗→回读诊断; y>0 跳过并关面板。" },
+              { "type": "plant_harvest", "required": false }
+          ],
+          "else": [] },
+
+        { "_note": "===== 功能4: 购买种子(占位待开发) =====" },
+        { "type": "if_config",
+          "key": "plant_buy_seed",
+          "value": true,
+          "default": false,
+          "then": [
+              { "_note": "占位: 购买种子未开发, 开启暂无实际动作。" }
+          ],
+          "else": [] },
+
+        { "type": "sleep", "seconds": 0.5 }
     ]
 }

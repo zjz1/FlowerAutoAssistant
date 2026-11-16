@@ -22,14 +22,15 @@ NAV_SCENES_PATH = FLOW_DIR / "common" / "scenes.json"
 
 # ---------------------------------------------------------------------------
 # 步骤类型白名单（E02, 2026-11-13 批）: run_step 分派支持的步骤类型显式导出。
-# 值由 tools/check_project.py known_step_types() 现跑输出机械生成(42 种, 改造前后
-# 对拍逐字节一致), 锚点=run_step 分派段(『---- 流程执行 ----』 banner 之后的 42 个
-# s_type == 分支)。维护契约: run_step 新增/删除 s_type 分支时必须同步本集合 ——
+# 值由 tools/check_project.py known_step_types() 现跑输出机械生成(46 种; 2026-11-16 新增
+# plant_flower/plant_harvest, 2026-11-17 新增 fairyland_claim/buy_seed), 锚点=run_step 分派段
+# (『---- 流程执行 ----』 banner 之后的 s_type == 分支)。维护契约: run_step 新增/删除 s_type 分支时必须同步本集合 ——
 # 闸门 tools/check_project.py 优先 import 本集合做流程校验(不再解析源文本),
 # 旧正则提取仅作 import 失败时的兜底路径保留。
 # ---------------------------------------------------------------------------
 STEP_TYPES: frozenset[str] = frozenset({
     "buy_item",
+    "buy_seed",
     "claim_scroll",
     "click_account_tail",
     "click_rel",
@@ -45,6 +46,7 @@ STEP_TYPES: frozenset[str] = frozenset({
     "ensure_home",
     "ensure_menu",
     "fail_flow",
+    "fairyland_claim",
     "friend_pollin",
     "if_account_tail",
     "if_collected",
@@ -61,6 +63,8 @@ STEP_TYPES: frozenset[str] = frozenset({
     "loop_text",
     "loop_times",
     "navigate",
+    "plant_flower",
+    "plant_harvest",
     "retry_loop",
     "reward_dialog",
     "sleep",
