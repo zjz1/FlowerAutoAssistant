@@ -3004,6 +3004,17 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
   按设计如实返回 False 并交后续弹窗/社交点击兜底；本轮采到 1 次、`_home_ok=True`，
   流程无阻塞。结论：区域 bug 已修复；收菜单点击本身可能被吞，不重试点击（防重新点开）。
 
+### 130.3 客户端生命周期验证（Stage 4 收尾）
+
+- pywebview 壳（8766）冒烟：启动后 `/api/health` 返回 `service=faa`；
+  服务日志出现 `[webui] 已登记父进程看护 (pid=66216)`；强杀壳进程后 5s 内
+  服务退出、端口释放，无孤儿监听（无 `webui.py --port 8766` 残留）。
+- WPF：本机 `dotnet` 不在 PATH，无法重建；仓库内预构建 exe 为 2026-11-16，
+  早于 2026-11-17 的 `ProbeService` / `FaaProcessHost` 改动，不能用于验证
+  Stage 4 的 health 握手与 `--parent-pid`。待装 .NET SDK 的机器补做
+  `dotnet build` / `--probe-test` / `--host-selftest`。
+- pywebview 定位：冻结保留为轻量备用/开发壳；主推 WPF；不再为 pywebview 增加新功能。
+
 ## 2026-11-17 · 里程碑 129：Stage 5 `pollin.py` 分包
 
 **范围**：按 `docs/ARCHITECTURE_ROADMAP.md` Stage 5，把 1500 行的 `pollin.py`
@@ -3035,7 +3046,12 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 - 导入面：`import pollin` / `from pollin import ensure_home` 正常；
   `run_friend_pollin` 的 `EnginePort` 标注保留；
   `pollin.run_friend_pollin.__module__ == "pollin.runner"`。
-- 未跑实机：本阶段为结构性迁移，函数体逐行原样搬迁；实机采粉留待下次运行验证。
+- 实机回归（2026-11-18 02:11–02:33，`debug/stage5_social_regression_20261118.log`）：
+  `[好友采粉] 闭环结束 {'密友': 0, '好友': 9}`、`回自己家园 -> True`、
+  `_home_ok=True`；无类别中止/Traceback；`friendlist_exit 0.951`；
+  底行补救 3 次（第 2/3/6 页）；2 个槽位级 fail（采粉画面 5s 无变化、
+  进园点击连续被吞），均为已知输入延迟/时序问题，未阻塞类别。
+  结构与 2026-11-17 23:25 基线一致（采集次数差异来自好友花粉状态）。
 
 ## 2026-11-17 · 里程碑 128：Stage 4 客户端与服务生命周期统一
 
