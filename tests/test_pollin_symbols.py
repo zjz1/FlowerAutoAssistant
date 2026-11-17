@@ -22,6 +22,7 @@ class PollinSymbolTests(unittest.TestCase):
             "dismiss_reward_popup", "escape_overlay", "frame_diff",
             "wait_until", "wait_screen_change", "wait_stable",
             "wait_enter_garden", "adb_text", "adb_key",
+            "close_quick_action_menu",
         }
         missing = sorted(name for name in expected if not hasattr(pollin, name))
         self.assertFalse(missing, f"pollin facade 缺少公共符号: {missing}")

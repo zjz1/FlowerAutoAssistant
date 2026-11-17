@@ -12,11 +12,39 @@ import time
 from core.ports import EnginePort
 from ocr_engine import stop_requested
 
-from .constants import BASE, BOTTOM_BAR_REGION, HOUSE_DX_REL, HOUSE_DY_REL
+from .constants import BASE, HOUSE_DX_REL, HOUSE_DY_REL, QUICK_ACTION_REGION
 from .navigation import ensure_home, in_garden, in_list, wait_enter_garden
 from .popups import (dismiss_no_pollen_popup, dismiss_reward_popup,
                      escape_overlay, no_pollen_popup)
 from .primitives import click_btn_fine, frame_diff, has, wait_stable, wait_until
+
+
+def close_quick_action_menu(eng: EnginePort, img=None) -> bool:
+    """收起「快捷操作」菜单。返回 True=点击后确认已收起。
+
+    2026-11-18: 旧实现误用 BOTTOM_BAR_REGION(社交区 x0.28~0.55)定位「快捷操作」
+    (实测 x≈0.69) -> 区域外, 永不命中(日志自带「区域外含同字块」警告)。
+    改用专用带 QUICK_ACTION_REGION + exact: 区域完整覆盖按钮文本, 右侧合并块
+    「快捷操作种植箱」由 exact 拒绝。未命中/点击后仍在屏均如实打印并返回 False,
+    交后续奖励弹窗与「社交」点击兜底; 不重试点击(防把刚关上的菜单又点开)。
+    """
+    img = img if img is not None else eng.screenshot()
+    if not has(eng, "采粉", img=img):
+        return False
+    pt = eng.locate(["快捷操作"], img=img, exact=True,
+                    region_rel=QUICK_ACTION_REGION, min_score=0.5)
+    if pt is None:
+        print(f"    [采集] 收「快捷操作」菜单未命中(区域 {QUICK_ACTION_REGION}), "
+              "交后续弹窗/社交点击兜底")
+        return False
+    print(f"    [采集] 收「快捷操作」菜单 ({pt.x},{pt.y})")
+    eng.click_abs(pt.x, pt.y)
+    time.sleep(1.5)
+    if has(eng, "采粉", img=eng.screenshot()):
+        print("    [采集] 「快捷操作」菜单点击后仍在屏(可能被吞), "
+              "交后续弹窗/社交点击兜底")
+        return False
+    return True
 
 
 def collect_one(eng: EnginePort, x, y):
@@ -110,17 +138,10 @@ def collect_one(eng: EnginePort, x, y):
     else:
         print("    [采集] 静默成功(有花粉)")
 
-    # 收「快捷操作」菜单(否则挡住底栏「社交」): 改「底栏区域限定 + exact」定位 ——
+    # 收「快捷操作」菜单(否则挡住底栏「社交」): 专用区域 + exact ——
     # 旧 click_text(["快捷操作"]) 会命中 OCR 合并块(如「快捷操作种植箱」)并取其中心, 该点可能
     # **越出屏幕**(2026-10-14 日志实测 (883,773), 屏高仅 720) -> 菜单没真正收起。
-    img = eng.screenshot()
-    if has(eng, "采粉", img=img):
-        pt = eng.locate(["快捷操作"], img=img, exact=True,
-                        region_rel=BOTTOM_BAR_REGION, min_score=0.5)
-        if pt is not None:
-            print(f"    [采集] 收「快捷操作」菜单 ({pt.x},{pt.y})")
-            eng.click_abs(pt.x, pt.y)
-            time.sleep(1.5)
+    close_quick_action_menu(eng)
     # 2026-10-14 修复: 采粉后会弹「点击任意处关闭」型半透明奖励弹窗, 必须在此关掉 ——
     # 该弹层半透明, 底层按钮仍可见 -> in_garden() 仍 HIT; 随后开列表走花园分支时
     # 「社交」被弹层遮挡, OCR 整词 MISS -> 归类中止(本轮日志: 采 1 次即中止)。
