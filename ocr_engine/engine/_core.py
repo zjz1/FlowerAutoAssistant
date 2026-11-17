@@ -7,25 +7,8 @@ allowlist)。行为等价口径: 帧集回归 0 退化 + 闸门全绿 + import �
 """
 from __future__ import annotations
 
-from ._registry import _RegistryMixin
-from ._config import _ConfigMixin
-from ._closebtn import _CloseButtonMixin
-from ._clicklog import _ClickLogMixin
-from ._device import _DeviceMixin
-from ._ocr import _OcrMixin
-from ._collect import _CollectMixin
-from ._reward import _RewardMixin
-from ._findtext import _FindTextMixin
-from ._judges import _JudgeMixin
-from ._guard import _GuardMixin
-from ._template import _TemplateMixin
-from ._flowexec import _FlowExecMixin
-from ._steps import _StepHandlersMixin
-from ._buy import _BuyMixin
-from ._buyseed import _BuySeedMixin
-from ._plant import _PlantMixin
-from ._fairyland import _FairylandMixin
-from ._orchestrate import _OrchestrateMixin
+from ._layers import (ActionLayer, DeviceLayer, FlowLayer, LocatorLayer,
+                      OcrLayer)
 
 from .._constants import ADB_ADDRESS, ADB_PATH
 from .._stat import _new_ocr_stat
@@ -38,25 +21,11 @@ import numpy as np
 
 # ---------- 核心引擎 ----------
 class OCREngine(
-    _RegistryMixin,
-    _ConfigMixin,
-    _CloseButtonMixin,
-    _ClickLogMixin,
-    _DeviceMixin,
-    _OcrMixin,
-    _CollectMixin,
-    _RewardMixin,
-    _FindTextMixin,
-    _JudgeMixin,
-    _GuardMixin,
-    _TemplateMixin,
-    _FlowExecMixin,
-    _StepHandlersMixin,
-    _BuyMixin,
-    _BuySeedMixin,
-    _PlantMixin,
-    _FairylandMixin,
-    _OrchestrateMixin,
+    DeviceLayer,
+    OcrLayer,
+    LocatorLayer,
+    ActionLayer,
+    FlowLayer,
 ):
     """OCR 自动化引擎: 管理设备连接、截图、OCR、定位、点击。"""
 

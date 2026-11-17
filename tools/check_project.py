@@ -14,14 +14,18 @@
                       + 步骤类型软提示 + 打印"待合并清单"（其他 agent 的成果，见 _collab/README.md）
   6. webui 契约一致性(Q03): ⚙面板键 ⊆ set_config 白名单（里程碑 82/87「勾选被静默丢弃」
                       防线，先 WARN 一轮）+ POST 分派 ↔ _POST_ROUTES 白名单（漏同步=405，硬判）
-  7. 原生 UI 预检(N01): native/FAA.WpfGui csproj/sln 存在性 + dotnet build 退出码硬判；
+  7. config 键一致性: flow 的 if_config.key ↔ config.example.json（硬判缺键）
+                      ↔ WebUI ⚙ 面板 / WPF SetConfigKeys（缺控件 WARN）
+  8. 原生 UI 预检(N01): native/FAA.WpfGui csproj/sln 存在性 + dotnet build 退出码硬判；
                       dotnet 不在 PATH 或 native/ 未落位时降级 WARN（无 SDK 环境不假红）
+  9. 离线单元测试(可选) : --with-tests 运行 tests/（stdlib unittest，不联网/不连 ADB）
 
 用法（cwd = 仓库根 FlowerAutoAssistant/，必须用项目 .venv）:
     python tools/check_project.py          # 全量校验（退出码 0=通过, 1=有错）
     python tools/check_project.py --map    # 打印项目地图（目录职责 / 常用命令），不校验
     python tools/check_project.py -v       # 附带每类检查的逐项明细
     python tools/check_project.py --strict-webui   # webui 白名单一致性 WARN 升 FAIL（烧完观察期后用）
+    python tools/check_project.py --with-tests     # 额外运行 tests/ 离线单元测试
 """
 from __future__ import annotations
 
@@ -36,11 +40,19 @@ from pathlib import Path
 
 # 本文件在 <repo>/tools/ 下 → 仓库根 = 上一级
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+try:
+    from config import schema as config_schema
+except Exception:  # pragma: no cover - schema 缺失时回退 AST 提取
+    config_schema = None
 
 FLOWS_DIR = ROOT / "flows"
 DATA_DIR = ROOT / "data"
 ENGINE = ROOT / "ocr_engine.py"
 WEBUI = ROOT / "webui.py"
+HTTP_COMMON = ROOT / "transport" / "http" / "common.py"
+HTTP_ROUTER = ROOT / "transport" / "http" / "router.py"
+CONFIG_SERVICE = ROOT / "app" / "config_service.py"
 WEBUI_HTML = ROOT / "webui.html"
 
 # 原生 UI 工程（N01, 2026-11-13 批）: C# 侧最小闸门的锚点
@@ -53,6 +65,9 @@ DOTNET_BUILD_TIMEOUT_S = 300      # 本工程 27 行 csproj, 常态构建 <1min;
 # 协作开发区（工作区根，与代码区同级；其他 agent 只在此区域开发，成果等待合并）
 COLLAB_DIR = ROOT.parent / "_collab"
 
+# inbox 下的常驻台账目录（不是待合并批次，不参与 files/ + REPORT.md 检查）
+COLLAB_LEDGER_DIRS = {"zcode-developing", "zcode-handover"}
+
 # 代码区需做语法校验的 .py（跳过 .venv / _dev / legacy / __pycache__）
 PY_SOURCES = [
     ROOT / "main.py",
@@ -61,7 +76,18 @@ PY_SOURCES = [
     ROOT / "ocr_engine",            # E01(2026-11-14 批): ocr_engine/ 包全部 .py 入语法闸(目录递归)
     ROOT / "ocr_ui.py",
     ROOT / "pollin.py",
+    *sorted((ROOT / "pollin").glob("*.py")),  # 2026-11-17 Stage 5: 好友采粉分包
     ROOT / "community_like.py",
+    ROOT / "plant.py",             # 2026-11-17: 种植/收获业务闭环
+    ROOT / "buy_seed.py",          # 2026-11-17: 购买种子独立功能
+    ROOT / "fairyland.py",         # 2026-11-17: 花仙乐园领取
+    ROOT / "ui_ops.py",            # 2026-11-17: 通用截图/精识/输入原语
+    ROOT / "navigation.py",        # 2026-11-17: 通用家园归位原语
+    *sorted((ROOT / "core").glob("*.py")),   # 2026-11-17 Stage 3: EnginePort 端口
+    *sorted((ROOT / "config").glob("*.py")),  # 2026-11-17 Stage 2: 配置 schema 单源
+    *sorted((ROOT / "app").glob("*.py")),    # 2026-11-17 Stage 1: 应用服务层
+    *sorted((ROOT / "transport").rglob("*.py")),  # 2026-11-17 Stage 3: HTTP 路由 mixin
+    *sorted((ROOT / "tests").glob("*.py")),  # 2026-11-17 Stage 0: 离线测试基线
     ROOT / "webui.py",
     ROOT / "webui_app.py",          # 原生窗口壳(Q03, 2026-11-13 批): 此前不在闸门内, 语法 11/11 -> 12/12
     ROOT / "tools",
@@ -71,6 +97,7 @@ PY_SOURCES = [
 FLOW_DOC_HINT = {
     "flow_startup.json": "§1 开始启动",
     "flow_plant.json": "§3 种植 / 花田",
+    "flow_buy_seed.json": "§3.4 购买种子（独立手动流程）",
     "flow_social.json": "§4 社交任务",
     "flow_energy.json": "§5 体力任务",
     "flow_daily_task.json": "§6 每日任务",
@@ -96,8 +123,10 @@ FAA 项目地图（仓库根 = FlowerAutoAssistant/）
 核心代码
   ocr_engine/ 包   引擎：run_step 分派步骤类型（改引擎=改"动作原子"; E01 拆包 Mixin 纵切,
                    根 ocr_engine.py 为 CLI shim + facade 再导出）
+  app/lifecycle_service.py  服务进程探测/拉起/就绪等待/优雅停/父进程看护（Stage 4）
   ocr_ui.py        RapidOCR 单例
-  pollin.py        好友采粉闭环（步骤 friend_pollin）
+  pollin/ 包       好友采粉闭环（步骤 friend_pollin）: constants/primitives/popups/
+                   navigation/list_panel/collect/runner；根 pollin.py 为 CLI shim
   community_like.py 社区点赞闭环（步骤 community_like）
   webui.html / tpltool.html / start_webui.bat  WebUI 前端与标注页
 
@@ -444,16 +473,36 @@ def check_webui_contract(errors: list[str], warns: list[str], verbose: bool,
         warns.append(f"[webui] webui.py 语法错误({e.lineno}: {e.msg}), 契约校验跳过（语法检查另报）")
         _log("    webui.py 语法错误, 契约校验跳过")
         return
+    try:
+        router_tree = _ast_tree_of(HTTP_ROUTER)
+    except SyntaxError as e:
+        errors.append(f"[webui] transport/http/router.py 语法错误({e.lineno}: {e.msg})")
+        return
+    try:
+        common_tree = _ast_tree_of(HTTP_COMMON)
+    except SyntaxError as e:
+        errors.append(f"[webui] transport/http/common.py 语法错误({e.lineno}: {e.msg})")
+        return
 
-    # F06+W03(batch-04): 白名单/⚙meta 优先走元数据表锚点(_CONFIG_KEYS/_MODULE_SETTINGS),
-    # 提取不到时回退旧结构字面量提取(宁漏勿噪)。
-    whitelist = _module_dict_keys(tree, "_CONFIG_KEYS") or _set_config_whitelist_keys(tree)
-    handled = _handled_post_apis(tree)
-    routes = _post_routes_whitelist(tree)
-    meta = _module_settings_table_keys(tree) or _module_settings_meta_keys(tree)
+    # F06+W03(batch-04): 白名单/⚙meta 优先走配置 schema（Stage 2 单源）；
+    # schema 不可用时回退 app/config_service.py / webui.py 的 AST 提取。
+    if config_schema is not None:
+        whitelist = set(config_schema.SETTABLE_KEYS)
+        meta = {k for k, spec in config_schema.CONFIG_KEYS.items() if spec.get("meta")}
+        wl_anchor = "schema"
+        meta_anchor = "schema"
+    else:
+        try:
+            cfg_tree = _ast_tree_of(CONFIG_SERVICE) if CONFIG_SERVICE.exists() else tree
+        except SyntaxError:
+            cfg_tree = tree
+        whitelist = _module_dict_keys(cfg_tree, "_CONFIG_KEYS") or _set_config_whitelist_keys(tree)
+        meta = _module_settings_table_keys(cfg_tree) or _module_settings_meta_keys(tree)
+        wl_anchor = "表" if _module_dict_keys(cfg_tree, "_CONFIG_KEYS") else "if-chain兜底"
+        meta_anchor = "表" if _module_settings_table_keys(cfg_tree) else "_module_settings兜底"
+    handled = _handled_post_apis(router_tree)
+    routes = _post_routes_whitelist(common_tree)
     html_keys = _html_set_config_keys(WEBUI_HTML)
-    wl_anchor = "表" if _module_dict_keys(tree, "_CONFIG_KEYS") else "if-chain兜底"
-    meta_anchor = "表" if _module_settings_table_keys(tree) else "_module_settings兜底"
 
     degraded = []
     if not whitelist:
@@ -561,6 +610,89 @@ def check_native(errors: list[str], warns: list[str], verbose: bool) -> None:
         _log("    dotnet build 退出码 0 ✓")
 
 
+def walk_step_dicts(node, path: str):
+    """递归产出 (步骤dict, 位置说明)，供需要读取步骤参数的检查复用。"""
+    if isinstance(node, list):
+        for i, item in enumerate(node):
+            yield from walk_step_dicts(item, f"{path}[{i}]")
+    elif isinstance(node, dict):
+        t = node.get("type")
+        if isinstance(t, str) and t:
+            yield node, path
+        for k, v in node.items():
+            if isinstance(v, (list, dict)):
+                yield from walk_step_dicts(v, f"{path}.{k}")
+
+
+def check_flow_config_keys(errors: list[str], warns: list[str], verbose: bool) -> None:
+    """8) flow 的 if_config 键 ↔ config.example / WebUI ⚙ / WPF 三方对账。
+
+    历史教训（里程碑 87）：`enable_mine`/`enable_rabbit` 在 flow 里用了，
+    但 WebUI set_config 白名单漏了 → 勾选被静默丢弃。本检查把「flow 用了什么键」
+    作为源头，提前暴露缺键/缺控件。
+    """
+    _log("  config 键一致性(if_config):")
+    flow_keys: dict[str, list[str]] = {}
+    for f in sorted(FLOWS_DIR.rglob("*.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for step, loc in walk_step_dicts(data, _rel(f)):
+            if step.get("type") != "if_config":
+                continue
+            key = step.get("key")
+            if isinstance(key, str) and key:
+                flow_keys.setdefault(key, []).append(loc)
+
+    try:
+        example = json.loads((DATA_DIR / "config.example.json").read_text(encoding="utf-8"))
+        example_keys = {k for k in example if not k.startswith("_")}
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"[config键] 读取 config.example.json 失败: {e}")
+        return
+
+    if config_schema is not None:
+        for e in config_schema.validate_example(example):
+            errors.append(f"[config键] config.example.json: {e}")
+        unknown = sorted(set(flow_keys) - set(config_schema.ALL_KEYS))
+        if unknown:
+            errors.append(f"[config键] flow 使用 schema 未定义键: {unknown}")
+
+    meta_keys: set[str] = set()
+    if config_schema is not None:
+        meta_keys = {k for k, spec in config_schema.CONFIG_KEYS.items() if spec.get("meta")}
+    else:
+        try:
+            src = CONFIG_SERVICE if CONFIG_SERVICE.exists() else WEBUI
+            tree = ast.parse(src.read_text(encoding="utf-8"))
+            meta_keys = _module_settings_table_keys(tree) or _module_settings_meta_keys(tree)
+        except Exception as e:  # noqa: BLE001
+            warns.append(f"[config键] 无法解析 WebUI 面板键: {e}")
+
+    wpf_keys: set[str] = set()
+    try:
+        wpf_keys = _wpf_set_config_keys()
+    except Exception as e:  # noqa: BLE001
+        warns.append(f"[config键] 无法解析 WPF SetConfigKeys: {e}")
+
+    missing_example = sorted(set(flow_keys) - example_keys)
+    missing_meta = sorted(set(flow_keys) - meta_keys) if meta_keys else []
+    missing_wpf = sorted(set(flow_keys) - wpf_keys) if wpf_keys else []
+
+    _log(f"    flow if_config {len(flow_keys)} 键 / example {len(example_keys)} 键"
+         f" / 面板 {len(meta_keys)} 键 / WPF {len(wpf_keys)} 键")
+    for k in missing_example:
+        errors.append(f"[config键] flow 使用 '{k}' 但 config.example.json 缺键 @ {flow_keys[k][0]}")
+    for k in missing_meta:
+        warns.append(f"[config键] flow 使用 '{k}' 但 WebUI ⚙ 面板无控件（确认是否仅命令行）")
+    for k in missing_wpf:
+        warns.append(f"[config键] flow 使用 '{k}' 但 WPF SetConfigKeys 未包含")
+    if verbose:
+        for k in sorted(flow_keys):
+            _log(f"      {k}: {len(flow_keys[k])} 处")
+
+
 def check_collab(errors: list[str], verbose: bool) -> None:
     """5) 协作开发区预检：inbox 待合并清单 + JSON 硬判 + 步骤类型软提示。"""
     inbox = COLLAB_DIR / "inbox"
@@ -569,7 +701,9 @@ def check_collab(errors: list[str], verbose: bool) -> None:
         return
 
     dirs = lambda p: [d for d in sorted(p.iterdir()) if d.is_dir()] if p.exists() else []  # noqa: E731
-    pending = dirs(inbox)
+    inbox_dirs = dirs(inbox)
+    ledgers = [d for d in inbox_dirs if d.name in COLLAB_LEDGER_DIRS]
+    pending = [d for d in inbox_dirs if d.name not in COLLAB_LEDGER_DIRS]
     merged = dirs(COLLAB_DIR / "merged")
 
     # JSON 硬判：inbox 里的 flow 必须先能解析，否则合并必炸（merged/ 已归档，不重复校验）
@@ -583,6 +717,8 @@ def check_collab(errors: list[str], verbose: bool) -> None:
             errors.append(f"[协作区] JSON 解析失败: {_rel(f)} -> {e}")
 
     _log(f"  协作开发区: 待合并 {len(pending)} 份 / 已归档 {len(merged)} 份; inbox JSON {ok}/{len(jsons)} 可解析")
+    if ledgers:
+        _log(f"    常驻台账 {len(ledgers)} 份（不计待合并）: " + "、".join(d.name for d in ledgers))
 
     if pending:
         for d in pending:
@@ -618,12 +754,29 @@ def doc_hint() -> None:
         _log(f"      {name:<22} -> docs/FLOWS.md {sec}")
 
 
+def check_tests(errors: list[str], verbose: bool) -> None:
+    """9) 离线单元测试：tests/ 下 stdlib unittest，不联网、不连 ADB。"""
+    _log("  离线单元测试(tests/):")
+    r = subprocess.run(
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", "."],
+        cwd=ROOT, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+    )
+    if r.returncode != 0:
+        errors.append(f"[tests] unittest 失败 (rc={r.returncode})\n{r.stdout}\n{r.stderr}")
+        return
+    tail = (r.stderr or "").strip().splitlines()
+    _log("    " + (tail[-1] if tail else "OK"))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="FAA 项目校验 / 合并闸门")
     ap.add_argument("--map", action="store_true", help="只打印项目地图，不校验")
     ap.add_argument("-v", "--verbose", action="store_true", help="打印逐项明细")
     ap.add_argument("--strict-webui", action="store_true",
                     help="webui 面板键↔set_config 白名单一致性由 WARN 升 FAIL（Q03 观察期结束后切默认）")
+    ap.add_argument("--with-tests", action="store_true",
+                    help="额外运行 tests/ 离线单元测试（不联网、不连 ADB）")
     args = ap.parse_args(argv)
 
     # Windows 控制台默认 GBK，确保中文输出不炸
@@ -645,7 +798,10 @@ def main(argv: list[str] | None = None) -> int:
     check_syntax(errors, args.verbose)
     check_collab(errors, args.verbose)
     check_webui_contract(errors, warns, args.verbose, strict=args.strict_webui)
+    check_flow_config_keys(errors, warns, args.verbose)
     check_native(errors, warns, args.verbose)
+    if args.with_tests:
+        check_tests(errors, args.verbose)
     doc_hint()
     _log("-" * 46)
 

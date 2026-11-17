@@ -1,12 +1,15 @@
 """
 FlowerAutoAssistant - 原生窗口外壳（WebView2 / pywebview）
 =======================================================
-把现有的 Web UI 装进一个独立桌面窗口。webui.py / webui.html 的既有逻辑**一行不改**。
+把现有 Web UI 装进一个独立桌面窗口。webui.html / webui.py 的既有逻辑**一行不改**。
 
-行为:
-- 端口已有 FAA 实例在跑 -> 直接连上, 不再起第二个服务(避免端口冲突/重复进程)
-- 端口空闲 -> 在本进程内起一个与 webui.py **完全相同**的 HTTP 服务
+Stage 4（2026-11-17）生命周期口径 —— 一个后台服务进程 + 多客户端:
+- 端口已有 FAA 实例 -> 直接连上, 不再起第二个服务(避免端口冲突/重复进程)
+- 端口空闲 -> 拉起**独立后台服务进程**(venv python webui.py --port N --parent-pid 壳PID),
+  等 /api/health 就绪后再开窗；壳不再 import webui / 不持有 OCREngine
 - 端口被别的程序占用 -> 明确提示后退出, 不静默失败
+- 关窗 = 停掉**本窗口拉起**的那个服务进程(复用已有实例时不动它); --parent-pid 看护
+  兜底: 壳被强杀时服务随父进程退出, 不留孤儿监听端口
 - 菜单「🌐 切回浏览器」-> 用系统默认浏览器打开同一地址(只开一次)
 - 启动时**不**额外打开浏览器
 - **下载桥(2026-11-09, zcode-20261109-15)**: WebView2 无下载管理器, 页面 `_downloadBlob` 的
@@ -22,19 +25,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import socket
 import sys
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
+from app import lifecycle_service as lifecycle
+
 BASE = Path(__file__).parent
-DEFAULT_PORT = 8765
+DEFAULT_PORT = lifecycle.DEFAULT_PORT
 APP_TITLE = "FAA 小花仙挂机助手"
 
-# 进程内状态: 是否自己托管服务 / 窗口对象 / 浏览器是否已打开(保证只开一次)
-_STATE = {"owns_server": False, "server": None, "window": None,
+# 进程内状态: 服务句柄(仅自己拉起时非空) / 窗口对象 / 浏览器是否已打开(保证只开一次)
+_STATE = {"owns_service": False, "service": None, "window": None,
           "browser_opened": False, "port": DEFAULT_PORT,
           "close_confirmed": False, "ask_in_progress": False}
 _LOCK = threading.Lock()
@@ -53,59 +56,32 @@ def _msgbox(title: str, text: str, icon: int = 0x40) -> None:
         print(f"[FAA] {title}: {text}")
 
 
-def _probe(port: int, timeout: float = 3.0) -> str:
-    """探测端口归属: 'faa'=已有 FAA 实例 / 'other'=被别的程序占 / 'free'=空闲。"""
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
-            pass
-    except OSError:
-        return "free"
-    # 端口在监听: 用 /api/status 的独有字段判断是不是 FAA Web UI
-    try:
-        with urllib.request.urlopen(_url(port) + "api/status", timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        if isinstance(data, dict) and "flow_dir" in data and "ui_build" in data:
-            return "faa"
-    except Exception:
-        pass
-    return "other"
+def _ensure_service(port: int):
+    """确保端口上有 FAA 服务：已有则复用，空闲则拉起独立后台进程并等就绪。
 
-
-def _start_server(port: int):
-    """在本进程内复用 webui.py 的 Handler 起服务(等效于 python webui.py --port N)。
-
-    只调用 webui 的既有函数, 不改其逻辑; 服务跑在 daemon 线程, 窗口关闭即随进程退出。
+    Stage 4：壳不再 import webui、不持有 OCREngine —— 服务是独立进程，壳只做
+    HTTP 客户端。`--parent-pid` 让服务在壳被强杀时随父进程退出。
     """
-    if str(BASE) not in sys.path:
-        sys.path.insert(0, str(BASE))
-    import webui  # 延迟导入: 只连现有实例时不必加载 OCR 相关依赖
-    from http.server import ThreadingHTTPServer
-
-    webui._log_reset_history()          # 与 webui.main() 同样从干净日志状态起步
-    webui._set_running(False)
-    srv = ThreadingHTTPServer(("127.0.0.1", port), webui.Handler)
-    webui._SERVER = srv                 # 让页面「关闭服务」按钮照常生效
-    threading.Thread(target=srv.serve_forever, daemon=True, name="faa-webui-http").start()
-    webui.log_append(f"[webui] 服务启动 {time.strftime('%Y-%m-%d %H:%M:%S')} "
-                     f"-> {_url(port)} (原生窗口外壳)\n")
-    _STATE["owns_server"] = True
-    _STATE["server"] = srv
-    return srv
+    state, svc = lifecycle.ensure_service(port, timeout=120.0, parent_pid=os.getpid())
+    _STATE["owns_service"] = svc is not None
+    _STATE["service"] = svc
+    if state == "faa":
+        if svc is None:
+            print(f"[FAA] 已连接现有实例 {_url(port)}, 不重复起服务")
+        else:
+            print(f"[FAA] 未发现运行中的实例, 已在后台启动服务 {_url(port)}")
+    return state, svc
 
 
-def _stop_server() -> None:
-    """关窗口时把本进程托管的服务退干净(释放 8765, 不留孤儿监听)。"""
-    srv, _STATE["server"] = _STATE["server"], None
-    if srv is None:
+def _stop_service() -> None:
+    """关窗时只停本窗口拉起的服务进程（复用已有实例时不动它）。"""
+    svc, _STATE["service"] = _STATE["service"], None
+    _STATE["owns_service"] = False
+    if svc is None:
         return
-    try:
-        srv.shutdown()      # 等 serve_forever 退出(轮询间隔 <1s)
-    except Exception:
-        pass
-    try:
-        srv.server_close()  # 关监听 socket, 端口立刻可复用
-    except Exception:
-        pass
+    print("[FAA] 正在停止本窗口托管的服务...")
+    how = svc.stop(graceful_timeout=15.0)
+    print(f"[FAA] 服务已停({how})")
 
 
 class _Bridge:
@@ -290,7 +266,7 @@ def _ask_close_dialog(text: str) -> bool:
 
 
 def _finish_close() -> None:
-    _stop_server()                  # 关闭窗口 = 服务一起退出, 不留孤儿端口
+    _stop_service()                 # 关闭窗口 = 停掉本窗口拉起的服务, 不留孤儿端口
     threading.Thread(target=_exit_soon, daemon=True).start()
 
 
@@ -314,12 +290,8 @@ def _on_closing() -> bool:
         return True                 # 允许关闭
 
     running = False
-    if _STATE["owns_server"]:
-        try:
-            import webui
-            running = bool(webui._running())
-        except Exception:
-            running = False
+    if _STATE["owns_service"]:
+        running = bool((lifecycle.health(_STATE["port"], timeout=1.0) or {}).get("running"))
 
     if not (running or _page_confirm_enabled()):
         _finish_close()
@@ -330,7 +302,7 @@ def _on_closing() -> bool:
 
     text = ("流程正在运行中, 关闭窗口将失去实时监控。" if running
             else "确定要关闭 FAA 窗口吗?")
-    if _STATE["owns_server"]:
+    if _STATE["owns_service"]:
         text += "\n\n关闭窗口会同时停止本窗口托管的 Web 服务。"
 
     _STATE["ask_in_progress"] = True
@@ -371,8 +343,8 @@ def _boot_window(url: str) -> int:
 def _fallback(url: str, reason: str) -> int:
     """降级方案: 明确提示原因, 再用默认浏览器打开原页面。"""
     text = f"{reason}\n\n无法建立原生窗口, 将改用系统默认浏览器打开:\n{url}"
-    if _STATE["owns_server"]:
-        text += "\n\n注意: Web 服务由本进程托管, 关闭此控制台窗口会同时停止服务。"
+    if _STATE["owns_service"]:
+        text += "\n\n注意: Web 服务由后台进程托管; 关闭此控制台窗口时服务会随之停止。"
     print("[FAA] " + text)
     _msgbox("FAA 原生窗口不可用", text, 0x30)
     if not _STATE["browser_opened"]:
@@ -382,7 +354,7 @@ def _fallback(url: str, reason: str) -> int:
             import webbrowser
             webbrowser.open(url)
         _STATE["browser_opened"] = True
-    if _STATE["owns_server"]:           # 托管服务时必须留在前台, 否则浏览器里的页面会失联
+    if _STATE["owns_service"]:           # 托管服务时必须留在前台, 否则浏览器里的页面会失联
         print("[FAA] 服务运行中... 按 Ctrl+C 退出")
         try:
             while True:
@@ -403,29 +375,30 @@ def main() -> int:
     port = args.port
     _STATE["port"] = port
 
-    state = _probe(port)
+    state, svc = _ensure_service(port)
     if state == "other":
         text = (f"端口 {port} 已被占用, 但未能识别为 FAA Web UI(可能正在启动, 或是别的程序)。\n\n"
                 f"请稍后重试, 或先关闭占用该端口的程序; 也可用 --port 指定其它端口。")
         print("[FAA] " + text)
         _msgbox("FAA 原生窗口", text, 0x10)
         return 2
-    if state == "free":
-        try:
-            _start_server(port)
-        except OSError as e:
-            text = f"无法在端口 {port} 启动 Web 服务: {e}"
-            print("[FAA] " + text)
-            _msgbox("FAA 原生窗口", text, 0x10)
-            return 3
-        print(f"[FAA] 未发现运行中的实例, 已在端口 {port} 启动服务")
-    else:
-        print(f"[FAA] 已连接现有实例 {_url(port)}, 不重复起服务")
+    if state != "faa":
+        tail = svc.tail() if svc is not None else ""
+        text = (f"无法在端口 {port} 启动 Web 服务。\n"
+                + (f"\n服务输出:\n{tail}\n" if tail else "")
+                + "\n可先手动运行 webui.py 查看具体报错。")
+        print("[FAA] " + text)
+        _msgbox("FAA 原生窗口", text, 0x10)
+        if svc is not None:
+            svc.stop(graceful_timeout=3.0)
+        _STATE["service"] = None
+        _STATE["owns_service"] = False
+        return 3
 
     try:
         return _boot_window(_url(port))
     finally:
-        _stop_server()              # 任何退出路径都不留监听端口
+        _stop_service()              # 任何退出路径都不留监听端口
 
 
 if __name__ == "__main__":

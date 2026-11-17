@@ -10,7 +10,8 @@ if "%PORT%"=="" set PORT=8765
 
 echo [FAA] Native window  http://127.0.0.1:%PORT%/
 echo [FAA] An existing instance on this port will be reused (no duplicate server).
-echo [FAA] Closing this window stops the shell.
+echo [FAA] Otherwise the service runs as a separate background process.
+echo [FAA] Closing this window stops the shell and the service it started.
 
 if exist .venv\Scripts\python.exe (
     .venv\Scripts\python.exe webui_app.py --port %PORT%

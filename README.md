@@ -44,22 +44,45 @@
 ```
 FlowerAutoAssistant/
 ├── main.py              # CLI 入口：连接、选流程、循环执行、断线重连、Ctrl+C 停止
-├── webui.py             # 本地 WebUI 后端（标准库 http.server，端口 8765）
+├── webui.py             # HTTP 服务兼容入口（Stage 3 后仅启动/导出 Handler；实现见 transport/http/）
+├── transport/http/      # Handler 路由 mixin：base/router/pages/template/device/status/meta/run/log
 ├── webui.html           # WebUI 前端：使用界面 / 测试界面（实时画面+OCR标注+日志）
 ├── tpltool.html         # 人机协同标注页 /tpltool：只产出坐标标注，不直接存模板
 ├── start_webui.bat      # 双击启动 WebUI（优先用 .venv，自动开浏览器）
-├── webui_app.py         # 原生窗口外壳（WebView2/pywebview）：复用同一 WebUI 服务，启动不自开浏览器
+├── webui_app.py         # 原生窗口外壳（WebView2/pywebview）：复用或拉起独立服务进程，启动不自开浏览器
 ├── start_webui_app.bat  # 双击启动原生窗口（优先用 .venv；端口缺省 8765）
 ├── native/FAA.WpfGui/   # 原生桌面壳（WPF/C#，第二套「原生窗口」实现，见「两个原生窗口（术语区分）」）
-├── ocr_engine.py        # 核心引擎：连接/截图/OCR定位/颜色/模板/点击/知识库/流程执行
+├── ocr_engine/          # 核心引擎包：连接/截图/OCR定位/颜色/模板/点击/知识库/流程执行
+│   └── engine/_layers.py #   Stage 3 职责层（device/ocr/locator/action/flow）
 ├── ocr_ui.py            # RapidOCR 单例（模型只初始化一次）
-├── pollin.py            # 好友采粉闭环模块（引擎步骤 friend_pollin 的实现；可 python pollin.py state|all 单独调试）
+├── pollin.py            # 好友采粉兼容入口（`python pollin.py state|all`）；实现见 pollin/
+├── pollin/              # 好友采粉分包（Stage 5）：constants/primitives/popups/navigation/
+│                        #   list_panel/collect/runner（facade 再导出旧符号）
+├── plant.py             # 种植/收获闭环（步骤 plant_flower / plant_harvest）
+├── buy_seed.py          # 购买种子闭环（步骤 buy_seed；独立流程 flow_buy_seed.json）
+├── fairyland.py         # 花仙乐园领取闭环（步骤 fairyland_claim）
+├── ui_ops.py            # 通用 UI 原语（截图 / 小区域精识 / 输入框聚焦与输入）
+├── navigation.py        # 通用导航原语（任意家园归位；plant 的「自己家园」仍走流程三态）
+├── core/                # 核心端口（Stage 3）
+│   └── ports.py         #   EnginePort / UiPort / TemplatePort / JudgePort / ConfigPort
+├── app/                 # 应用服务层（Stage 1）：engine/log/failcache/config/status/run/lifecycle
+│   ├── engine_service.py
+│   ├── log_service.py
+│   ├── failcache_service.py
+│   ├── config_service.py
+│   ├── status_service.py
+│   ├── run_service.py
+│   └── lifecycle_service.py   # Stage 4：服务探测/拉起/就绪等待/优雅停/父进程看护
+├── config/              # 配置 schema 单源（Stage 2）
+│   └── schema.py        #   键/默认值/⚙meta/日志文案/示例校验
 ├── flows/               # 数据驱动流程（改 JSON 不改代码）
 │   ├── daily.json       #   编排：7 大模块按序调度
 │   ├── flow_*.json      #   各模块流程（startup/plant/social/energy/claim/daily_task/idle）
 │   └── common/entries.json  # 公共导航注册表（navigate 步骤引用）
 ├── tools/               # 项目校验 / 合并闸门
-│   └── check_project.py #   静态校验 JSON + 步骤类型 + 语法（合并前必跑，--map 打印项目地图）
+│   └── check_project.py #   静态校验 + config 键门禁；--with-tests 跑 tests/；--map 打印项目地图
+├── tests/               # 离线 unittest 基线（不联网/不连 ADB）
+├── docs/                # 流程手册 FLOWS.md / 架构路线 ARCHITECTURE_ROADMAP.md / API 契约 API_CONTRACT.md
 ├── data/
 │   ├── click_log.json      # 按钮知识库（v2 场景两层嵌套 + 均值/样本数）
 │   ├── close_buttons.json  # 关闭按钮-特殊逻辑注册表
@@ -124,7 +147,9 @@ start_webui_app.bat        # 或双击原生窗口
 ```
 
 > **推荐原生窗口**（`start_webui_app.bat` / `python webui_app.py`）：同一套 `webui.py` 服务装进独立 WebView2 窗口；
-> 端口已有 FAA 实例则**直接复用、不重复起服务**，**启动不自动开浏览器**，关窗即停服（不留孤儿端口）。
+> 端口已有 FAA 实例则**直接复用、不重复起服务**，否则在**后台拉起独立服务进程**
+> （`webui.py --port N --parent-pid 壳PID`，壳不加载引擎）；**启动不自动开浏览器**，
+> 关窗即停掉本窗口拉起的服务（父进程看护兜底，不留孤儿端口）。
 > 原生窗口内「保存日志」走**原生另存为对话框**（WebView2 无浏览器下载管理器，由壳层 js_api 落盘）。
 > `start_webui.bat` 仍保留（浏览器模式，会自动开浏览器）。
 
@@ -134,7 +159,7 @@ start_webui_app.bat        # 或双击原生窗口
 
 | | 壳 1 · `webui_app.py`（Python） | 壳 2 · `native/FAA.WpfGui`（C#/WPF） |
 |---|---|---|
-| 技术栈 | WebView2 / pywebview，Python 单文件（~314 行） | WPF + CommunityToolkit.Mvvm（48 文件，cs+xaml 7712 行） |
+| 技术栈 | WebView2 / pywebview，Python 单文件（~405 行） | WPF + CommunityToolkit.Mvvm（48 文件，cs+xaml 7712 行） |
 | 自称 | 模块 docstring「原生窗口外壳」 | 窗口标题/弹框标题 **`FAA 原生窗口`**（`DialogService.cs` DefaultTitle、`App.xaml.cs` FindWindow 按此标题单实例激活） |
 | 启动 | `python webui_app.py` / `start_webui_app.bat` | 构建后运行 `native/FAA.WpfGui`（`build_native.bat`）；后端仍复用同一 `webui.py` 服务 |
 | 状态 | 已入仓可运行（HEAD「新增原生窗口外壳」） | 批 16-22 + 收尾批交付，构建需 .NET SDK（闸门 `check_project.py` 原生 UI 预检，无 SDK 降级 WARN） |
@@ -157,10 +182,10 @@ start_webui_app.bat        # 或双击原生窗口
 | 模块 id | 流程 | 说明 |
 |---|---|---|
 | `startup` | flow_startup.json | 开始启动（资源更新守卫 → 登录进游戏 → 可选「切换账号」→ 签到） |
-| `plant` | flow_plant.json | 种植作业 |
+| `plant` | flow_plant.json | 种植作业（桃花系花种可选 `plant_flower_type`；种植/收获/关面板归位已实现，授粉占位） |
 | `social` | flow_social.json | 社交任务 = ①家族活动（摇钱树/矿洞探险/闪耀委托挑战/守望兔子）②好友采粉（`enable_pollin`）；社区点赞已于里程碑 90 迁入每日任务 |
 | `energy` | flow_energy.json | 体力任务（闪耀变身循环速通） |
-| `claim` | flow_claim.json | 领取奖励（在线礼包 `claim_online` / 花灵派对 `claim_party` / 奇妙花宝 `claim_hb`——含奇妙特权三档与**花神之契周/月礼包**） |
+| `claim` | flow_claim.json | 领取奖励（在线礼包 `claim_online` / 花灵派对 `claim_party` / 奇妙花宝 `claim_hb`——含奇妙特权三档与**花神之契周/月礼包** / **花仙乐园 `claim_fairyland`**——在线骰子+每日任务，含仙豆补购闭环） |
 | `daily` | flow_daily_task.json | 每日任务（手账 v2 闭环，含社区点赞） |
 | `idle` | flow_idle.json | 挂机 |
 
@@ -169,10 +194,14 @@ start_webui_app.bat        # 或双击原生窗口
 ```json
 {
   "enable_switch": false, "target_tail": "",
-  "claim_online": true, "claim_party": true, "enable_shine": false,
-  "enable_pollin": true
+  "claim_online": true, "claim_party": true, "claim_hb": false,
+  "claim_fairyland": true, "enable_shine": false, "enable_pollin": true,
+  "plant_flower": false, "plant_flower_type": "桃花",
+  "plant_pollinate": false, "plant_harvest": false, "plant_buy_seed": false
 }
 ```
+
+完整键位与默认值见 [`data/config.example.json`](data/config.example.json)；`data/config.json` 缺失新键时按各步骤的 `default`/缺键语义执行（如 `claim_fairyland` 默认 true、`enable_water` 缺键视为开启）。
 
 ---
 
@@ -212,7 +241,7 @@ start_webui_app.bat        # 或双击原生窗口
 | 等待/停顿 | `wait_text`、`wait_text_gone`（可 `require_seen`）、`wait_update_done`（资源更新守卫）、`sleep`、`wait_scene`（可传场景列表） |
 | 条件分支 | `if_text`、`if_account_tail`、`if_fraction`、`if_greater`、`if_config`、`if_time`、`if_weekday`、`if_scene`、`count_text`、`if_color_count`、`if_collected`、`if_count` |
 | 循环 | `loop_text`、`loop_fraction`、`loop_times`、`retry_loop` |
-| 状态/其它 | `store_fraction`、`close_dialog`、`ensure_menu`、`ensure_home`、`navigate`、`friend_pollin`、`plant_flower`（种植花朵阶段1+2：搜索→精点白色桃花→数量1→随机种植→详情确认→回读 d-1/肥力-2）、`plant_harvest`（收获花朵：可收获/可授粉判定→无待授粉才一键收花→关奖励弹窗）、`fairyland_claim`（花仙乐园：在线骰子+每日任务兑换/浇水/仙豆，按钮底色置灰判据）、`buy_seed`（购买种子：搜索→选种→数量→购买→二次确认→关弹窗）、`community_like`、`claim_scroll`、`dump_text`、`reward_dialog`、`count_probe`、`touch_drag`、`slide`、`dump_frame`（手动故障存证）、`buy_item`（花宝受控购买）、`fail_flow` |
+| 状态/其它 | `store_fraction`、`close_dialog`、`ensure_menu`、`ensure_home`、`navigate`、`friend_pollin`、`plant_flower`（种植花朵阶段1+2：搜索→按 `plant_flower_type` 精点目标花种→数量1→随机种植→详情确认→回读 d-1/肥力变化→关面板归位）、`plant_harvest`（收获花朵：可收获/可授粉判定→无待授粉才一键收花→关奖励弹窗→关面板归位）、`fairyland_claim`（花仙乐园：在线骰子+每日任务兑换/浇水/仙豆，按钮底色置灰判据）、`buy_seed`（购买种子：搜索→选种→数量→价格/余额校验→购买→二次确认→关弹窗；参数 `seed`/`count`/`times`）、`community_like`、`claim_scroll`、`dump_text`、`reward_dialog`、`count_probe`、`touch_drag`、`slide`、`dump_frame`（手动故障存证）、`buy_item`（花宝受控购买）、`fail_flow` |
 
 - **公共导航**：`navigate` 引用 [`flows/common/entries.json`](flows/common/entries.json) 的 target（已登记 家族活动 / 闪耀变身 / 花灵派对），把"归位→逐层导航→目标命中→脱困重试"收敛到一处，避免各流程重复内嵌进入链。
 - **知识库（可选）**：默认 `log_click_pos=false`，运行时不写 `data/click_log.json`；显式开启后，OCR/颜色命中才会按 `scene` + `category` 分组并累积 `mean_rel` 均值样本。缓存回退不作为命中证据、不落库。

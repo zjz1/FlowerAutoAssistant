@@ -124,7 +124,8 @@ public sealed class FaaProcessHost : IDisposable
         var psi = new ProcessStartInfo
         {
             FileName = venvPython,
-            Arguments = $"\"{webUiScript}\" --port {port}",
+            // Stage 4: --parent-pid 让服务在壳被强杀时随父进程退出(不留孤儿监听端口)
+            Arguments = $"\"{webUiScript}\" --port {port} --parent-pid {Environment.ProcessId}",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,

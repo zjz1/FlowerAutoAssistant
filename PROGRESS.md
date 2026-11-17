@@ -661,6 +661,11 @@
 
 ## 4. 待办任务（按优先级）
 
+> **权威台账（2026-11-17 起）**：本节保留早期（2026-08/09）历史条目，仅作沿革参考。
+> 当前“待实机回归/遗留功能/日志分诊”以 `_collab/inbox/zcode-developing/`
+> 的 **C 类（待实机回归）/ B 类（遗留观察）/ D 类（日志分诊）** 为唯一权威清单；
+> 新增待办请写入对应台账，并在本节只保留指向说明，避免两处漂移。
+
 ### 🔴 高优先级（下一步）
 
 - [x] **修正流程名匹配歧义**（**已修** — 2026-10-01 复核）：`select_flow`（[`ocr_engine.py`](ocr_engine.py#L1820-L1833)）现为“先精确名匹配（`name == key`），再关键字子串匹配”，`--flow 种植` 不再误选「进入种植界面」。`main.py` 与 `ocr_engine.main` 共用该函数。原 2026-09-23「仍未修」结论已过期。
@@ -2817,7 +2822,429 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
   （`_pick_confirm_button` 返回「确定」[776,470]）。
 - 步骤注册：`STEP_TYPES` 46 种，`buy_seed` 已通过 `_step_buy_seed` 分派；`check_project.py` 通过。
 - 证据：`debug/shop_00_entry.png`、`debug/plant_buy_confirm_*.png`、`debug/buy_seed_test_20261117.log`。
-- **未覆盖**：`count>1` 的实际数量输入、多次连续购买、切换种子（兑换种子→购买种子）、付费种子的价格/余额校验。
+- **未覆盖**：~~`count>1`、多次连续、切换种子、付费价格/余额~~ → 已于**里程碑 120** 实机覆盖。
+
+## 2026-11-17 · 里程碑 120：P0-2/P0-3 收尾 + 一致性问题修复 + P2 小批（实机）
+
+**范围**（用户指令：P0 做 2/3、P2 做、一致性问题修复）：购买种子收尾、种植名称库/关面板、
+6 项一致性修复、性能小批、原生 UI 关窗停服、claim/daily 回归。
+
+### 120.1 一致性问题（6 项）
+
+1. `flow_claim.json` 花仙乐园 `_note` 阈值 30→**40**（实机采样 灰 7~11 / 模糊 37 / 可点 47~48）。
+2. `README.md`：claim 行补 `claim_fairyland`；plant 行改「桃花系花种可选」；配置示例补 plant/claim 键；
+   步骤表 `plant_flower`/`plant_harvest`/`buy_seed` 说明同步（`buy_seed` 参数 `seed/count/times`）。
+3. `PROGRESS.md` §4 顶部加「权威台账指向 `_collab/.../B/C/D 类`」说明。
+4. `tools/check_project.py`：新增 `COLLAB_LEDGER_DIRS={zcode-developing,zcode-handover}`，
+   常驻台账不再计入「待合并」和缺 `files/REPORT.md` 告警（本轮输出：待合并 0 / 台账 2）。
+5. `data/config.json` 补齐显式键：`plant_pollinate/plant_buy_seed/claim_fairyland/enable_water/enable_baobao_buy`。
+6. 文档同步：`docs/FLOWS.md` §3.2（名称库/粉色实机）、§3.3（关面板）、§3.4（购买种子补测）更新。
+
+### 120.2 P0-2 购买种子收尾
+
+- 新增 `flows/flow_buy_seed.json`（独立手动流程，不挂 `daily.json`）；步骤参数 `seed/count/times`。
+- `run_buy_seed` 支持 `times` 连续购买；每次重设数量并复核详情。
+- **价格/余额**：读顶部余额与详情「消耗」，但**详情价常被金币图标多读一位**（6→69）；
+  故预检只记录，真正闸门在二次确认：解析「确定要花费N仙豆」为权威价，余额不足则关闭弹窗、不点确定。
+- **搜索框三态**：占位符 → 旧关键字（点框内文字）→ 全空（「购买工具」锚点相对定位）。
+- **详情精确匹配**：搜索无结果时右侧保留旧种子，子串会误判；改为去空白/标点后**全等**，并新增
+  `_select_seed` 在网格中显式点选目标种子。
+- **已拥有**：只取「已拥有」同排右侧数字，避免误取下方「消耗」；读不到时如实返回 None。
+
+### 120.3 P0-3 种植收尾
+
+- `plant.SEED_LIBRARY`：白色桃花（cost=2）、粉色桃花/绿色桃花（cost=None，未标定不校验肥力）。
+  `plant_flower_type` 支持「桃花/白色桃花/粉色桃花/绿色桃花」，搜索词取基础花名「桃花」。
+- 数量角标全图读不到时，对名称块邻近区域 2x 精识（绿色角标仍 None，如实不选）。
+- `run_plant_flower` / `run_plant_harvest` 改为 try/finally：结束（成功/失败）若面板仍开则关闭归位；
+  `_close_plant_panel` 先检测面板特征，未打开时零动作。
+
+### 120.4 P2 小批
+
+- 性能：拆分缓存 LRU 400→**1000**（`_ocr.py` + `_findtext.py`）；`click_account_tail` 改
+  `need_split=False`（该调用从不使用子块，原拆分纯浪费）。**整轮 OCR 统计度量待下次 daily 补**。
+- 原生 UI：`FAA.WpfGui.exe` 默认模式 3s 起监听 8765；`CloseMainWindow()` 后 WPF 与后端进程均退出、
+  8765 释放（约 20s 完成优雅停服）。
+
+### 120.5 实机证据
+
+- 购买种子（`debug/buy_seed_verify_20261117.log`、`buy_seed_multi_20261117_b.log`、`buy_seed_paid_b_20261117.log`）：
+  白色铃兰 x1 `152→153`；x2×2 `153→155→157`；蓝色牵牛花 x1 两次各 `余额 -6`（权威价 6，详情误读 69）；
+  不存在种子拒绝购买；空/旧搜索框与切换种子均通过。
+- 粉色桃花（`debug/plant_pink_verify_20261117.log`）：搜索 白459/粉448/绿None → 精确选粉 → 1/60 →
+  详情「粉色桃花花种 1/60」→ `可种 60→59、肥力 354→352、已选 0` → 面板关闭；流程完成无失败。
+- 领取奖励回归（`debug/claim_regression_20261117.log`）：时间礼盒 50 领取、30/10 置灰跳过；花灵派对 6/6；
+  奇妙花宝每日领取、周/月已领；花仙乐园在线置灰跳过、兑换/浇水/仙豆已完成项正确跳过；关闭回园。
+- 每日任务回归（`debug/daily_regression_20261117.log`）：手账 8 轮到顶、两段各领 1 个；热卖套装翻页→前往→关闭；
+  社区点赞 2 次、退出并归位；全流程无失败登记。
+- 离线桩测（`_coagent/FAA_basis-trae/analysis/test_p0_20261117.py`）：**21/21 PASS**。
+- 闸门：`check_project.py` exit 0（JSON 16/16、步骤 46 种/385 处/未知 0、语法 42/42）。
+
+### 120.6 仍未覆盖
+
+- 付费种子 `count>1`（本轮付费只测 x1）；蓝色牵牛花「已拥有」不显示，库存复核走余额兜底。
+- 绿色桃花角标仍读不到（保持 strict，不选中）；更多花名入库。
+- 真实收花奖励弹窗、浇水 5/5、12-01 月礼包（C61）、花宝 0 库存购买（C62，本轮主动关闭）。
+- 整轮 daily 的 `[OCR统计]` 性能对照（拆分缓存 1000 的收益）。
+
+## 2026-11-17 · 里程碑 121：P0 重构（UI 原语抽离 + 详情单次 OCR + 常量收敛 + config 键门禁）
+
+**范围**：用户指定开发上一轮梳理的 P0 全部 4 项；目标是把近期三个业务模块的重复原语与
+校验缺口清掉，行为保持等价。
+
+### 121.1 P0-1 共享 UI 原语 `ui_ops.py`
+
+- 新增 `ui_ops.py`：`save_shot` / `texts` / `fine_blocks` / `click_text_fine` /
+  `clear_focused` / `focus_input` / `input_text_ime`。
+- `plant.py` 删除本地定义，改为 `from ui_ops import ... as _save_shot/_texts/_fine_blocks/_click_text_fine`
+  （内部调用零改动）；`buy_seed.py` / `fairyland.py` 不再 `from plant import` 私有函数，
+  依赖链从 `fairyland -> buy_seed -> plant -> ocr_engine` 变为
+  `fairyland -> buy_seed -> ui_ops` / `plant -> ui_ops`。
+- 日志前缀统一：截图 `[截图]`、精识/输入 `[UI]`；截图文件名仍保持 `plant_*` 前缀，
+  既有 `debug/plant_*.png` 证据路径不变。精识的 OCR 统计来源标签由 `plant_fine`
+  改为 `ui_fine`（仅统计归属变化，不改变识别结果）。
+
+### 121.2 P0-2 购买种子详情单次 OCR
+
+- 新增 `_read_detail(eng)`：一次 OCR 返回 `{blocks, texts, owned, cost}`。
+- `_verify_detail_name` / `_read_owned` / `_read_detail_cost` / `_select_seed` / `_precheck_affordable`
+  支持传入 detail 复用；每次购买由「标题 1 次 + 已拥有 1 次 + 消耗 1 次」降为
+  「标题/选中 1 次 + 数量后 1 次」，少 1~2 次区域 OCR。
+
+### 121.3 P0-3 常量收敛
+
+- `IME_OK_REGION`、`REWARD_REGION_WIDE` 统一到 `ui_ops.py`（plant 仍保留自己的
+  收获奖励小区域，语义不同不混用）。
+- 拆分/精识缓存上限统一为 `ocr_engine/_constants.py: SPLIT_CACHE_MAX = 1000`，
+  `_ocr.py` / `_findtext.py` 不再各写一个 1000。
+
+### 121.4 P0-4 config 键门禁 + 闸门补漏
+
+- `check_project.py` 新增 `check_flow_config_keys`：遍历 flow 的 `if_config.key`，
+  与 `config.example.json`（缺键=FAIL）、WebUI ⚙ 面板、WPF `SetConfigKeys`（缺控件=WARN）对账。
+- `PY_SOURCES` 补 `plant.py` / `buy_seed.py` / `fairyland.py` / `ui_ops.py`
+  —— 此前这四个业务文件不在语法闸门内（语法数 42→46）。
+- `tools/review_batch.py` T2 标记与 `docs/REVIEW_RULES.md` 增加 `ui_ops.py`。
+
+### 121.5 验证
+
+- `check_project.py` exit 0：JSON 16/16、步骤 46 种/385 处/未知 0、语法 **46/46**；
+  config 键：flow 18 键全部存在于 example（面板 20 / WPF 28），零缺口。
+- 离线桩测 `test_p0_20261117.py`：**21/21 PASS**。
+- 实机冒烟（`debug/p0_refactor_buy_20261117.log`）：购买白色铃兰 x1，
+  `[UI] adb input text` + 精识「确定」正常；详情单次 OCR 命中；`已拥有 157→158`；
+  二次确认花费 0、奖励弹窗关闭。日志前缀已变为 `[UI]`/`[截图]`，截图文件名不变。
+
+## 2026-11-17 · 里程碑 122：P1-5/6/7（导航/奖励弹窗收敛 + 长函数拆分）
+
+**范围**：用户指定开发 P1 的 5-7；**P1-8 不做**（用户明确：调试截图保存不应嵌进工作逻辑，
+调试可依赖工作逻辑、工作逻辑不能依赖调试，且性能收益有限）。
+
+### 122.1 P1-5 花园归位统一 `navigation.py`
+
+- 新增 `navigation.py: ensure_any_garden(eng)`：右下角有「离开」即在家园，否则点「家园」等 8s。
+- `buy_seed._ensure_garden` / `fairyland._ensure_garden` 改成薄封装（保留各自失败日志前缀）。
+- plant 的「必须自己家园」三态语义不同，仍在 `flow_plant.json` 阶段0，不混用。
+
+### 122.2 P1-6 奖励弹窗关闭统一
+
+- `ui_ops.close_reward_popup(eng, keywords, region_rel, tag, confirm, fallback_close, fine_fallback)`：
+  - 收获奖励：`("确定","点击任意处关闭")` + `fine_fallback=True`（保留旧精识兜底）
+  - 花仙乐园：`("恭喜获得","点击任意处关闭")` + `confirm=True`（点后复检）
+  - 购买种子：`("恭喜获得","点击任意处关闭","确定")`
+- 三个模块的重复循环/回退 `close_dialog` 收敛到该原语；按模块保留不同关键词与复检强度。
+
+### 122.3 P1-7 长函数拆分
+
+- `plant.py`：
+  - 新增 `PlantTarget` dataclass（seed/detail/search_kw/cost），`_resolve_seed` 返回该对象。
+  - `_run_plant_flower`（原 134 行）拆为：
+    `_open_plant_panel`（进面板）/ `_search_target`（阶段1）/ `_plant_target`（阶段2编排）/
+    `_choose_quantity`（选种+数量）/ `_random_plant_and_confirm`（随机+详情）。
+- `buy_seed.py`：
+  - `_buy`（原 89 行）拆为：`_confirm_purchase`（购买+二次确认+点确定）/
+    `_wait_and_close_reward`（奖励弹窗）/ `_verify_purchase`（库存+余额复核）/
+    `_buy`（8 行编排）。
+- 所有阶段函数保留原日志、原 `_save_shot` 证据点与返回语义；拆分只做结构，不改判据。
+
+### 122.4 验证
+
+- `check_project.py` exit 0：JSON 16/16、步骤 46 种/385 处/未知 0、语法 **47/47**；
+  config 键 18 个 flow 键全部在 example/面板/WPF 中。
+- 离线桩测：**21/21 PASS**（`_resolve_seed` 断言已改为 `PlantTarget` 属性）。
+- 实机购买（`debug/p1_refactor_buy_20261117.log`）：白色铃兰 x1，`已拥有 158→159`；
+  导航/输入/奖励关闭/拆分后的 `_buy` 全链正常。
+- 实机种植（`debug/p1_refactor_plant_20261117.log`）：白色桃花 x1，阶段1 `白459/粉447/绿None`，
+  精确选白 → 1/59 → 详情核对 → `可种 59→58、肥力 352→350、已选 0` → 面板关闭；
+  拆分后的阶段函数与 `PlantTarget` 全链正常。
+
+## 2026-11-17 · 里程碑 129：Stage 5 `pollin.py` 分包
+
+**范围**：按 `docs/ARCHITECTURE_ROADMAP.md` Stage 5，把 1500 行的 `pollin.py`
+按职责拆为 `pollin/` 包；`pollin.py` 保留兼容 shim，`python pollin.py state|all` 仍可用。
+
+### 129.1 包结构与依赖
+
+- `pollin/constants.py`：全部模板名/阈值/相对区域/行结构/滑动参数（含标定注释）。
+- `pollin/primitives.py`：`has` / `has_social` / `wait_until` / `frame_diff` /
+  `wait_screen_change` / `wait_stable` / `click_btn_fine` / `save_escape_evidence` / `adb_*`。
+- `pollin/popups.py`：`no_pollen_popup` / `dismiss_no_pollen_popup` /
+  `dismiss_reward_popup` / `escape_overlay`。
+- `pollin/navigation.py`：场景判据 / `wait_enter_garden` / `click_top_right_close` /
+  `ensure_home` 归位链 / `leave_garden` / `leave_friend_list`。
+- `pollin/list_panel.py`：`open_friend_list` / `switch_tab` / 翻页 /
+  `scan_marks` / `slot_of` / `_rescan_skip_failed`。
+- `pollin/collect.py`：`collect_one`。
+- `pollin/runner.py`：`run_category` / `run_friend_pollin` / `main`。
+- 依赖单向：constants → primitives → popups → navigation → list_panel → collect → runner；无循环。
+- `pollin/__init__.py` facade 再导出全部旧公开符号；根 `pollin.py` 13 行 shim。
+- 失败存证/诊断路径从 `__file__` 改为仓库根 `BASE/debug`（拆包后 `__file__` 层级变化）。
+
+### 129.2 验证
+
+- 离线测试：**68/68 PASS**（`test_pollin_symbols.py` 改为 facade 契约：
+  公共符号/常量/瘦 shim/子模块存在性）。
+- 闸门：`check_project.py --with-tests` exit 0；语法 **97/97**；
+  步骤类型 46 种、385 处 0 未知。
+- 导入面：`import pollin` / `from pollin import ensure_home` 正常；
+  `run_friend_pollin` 的 `EnginePort` 标注保留；
+  `pollin.run_friend_pollin.__module__ == "pollin.runner"`。
+- 未跑实机：本阶段为结构性迁移，函数体逐行原样搬迁；实机采粉留待下次运行验证。
+
+## 2026-11-17 · 里程碑 128：Stage 4 客户端与服务生命周期统一
+
+**范围**：按 `docs/ARCHITECTURE_ROADMAP.md` Stage 4，把“一个后台服务进程 + 多客户端”
+落地；壳只连接，不持有引擎。
+
+### 128.1 服务生命周期单源
+
+- 新增 `app/lifecycle_service.py`（只依赖标准库，不 import 引擎 / `http.server`）：
+  `probe`（faa/other/free，health 优先、status 回退）、`health`、`wait_ready`、
+  `spawn`（`webui.py --port N --parent-pid P`，stderr 尾行留诊断）、
+  `ServiceProcess.stop`（POST `/api/shutdown` → 等待 → `taskkill /T /F` 兜底）、
+  `wait_stopped`、`ensure_service`（并发拉起竞态收口）、`watch_parent`。
+- 端口绑定即单实例锁；并发拉起时落败方重探后按“复用已有实例”返回，不产生双服务。
+
+### 128.2 服务端 health/ready
+
+- 新增 `transport/http/meta.py`：`GET /api/health`、`GET /api/ready`；
+  两者只用 `peek_engine()`，探测绝不创建引擎。
+- `health` 字段：`service="faa"`、`pid`、`port`、`uptime_s`、`running`、`engine_loaded`。
+- `transport/http/server.py`：新增 `--parent-pid`；绑定失败退出码 2；
+  正常退出补 `server_close()`。
+
+### 128.3 壳改为独立进程
+
+- `webui_app.py` 不再 `import webui` / 不建 `OCREngine`：
+  `ensure_service` 拉起后台进程并等 health 就绪；关窗只停自己拉起的服务；
+  复用已有实例时不动它；启动失败展示子进程 stderr 尾行。
+- WPF `ProbeService` 改为 health 握手（status 回退）；`FaaProcessHost` spawn 加
+  `--parent-pid`。
+
+### 128.4 验证
+
+- 离线测试：**65/65 PASS**（新增 `test_lifecycle_service.py` 9 项、health/ready 契约 2 项）。
+- 闸门：`check_project.py --with-tests` exit 0；语法 **89/89**；WPF 键 28 一致。
+- 生命周期冒烟：
+  - 拉起 8767 → health/ready 正常 → shutdown → 端口释放；
+  - 并发 8769：A 拉起、B 复用（`("faa", None)`），无双服务；
+  - 父进程退出 8768 → 3s 内服务自动停、端口释放（父进程看护生效）；
+  - `webui.py --help` / `webui_app.py --help` 正常。
+
+## 2026-11-17 · 里程碑 127：Stage 3 第二阶段（引擎分层 + Handler 路由 mixin）
+
+**范围**：按用户要求，先拆 `OCREngine` Mixin，再把 Handler 拆为路由 mixin、
+`webui.py` 收薄为兼容入口；API 路径/字段不变。
+
+### 127.1 OCREngine 职责分层
+
+- 新增 `ocr_engine/engine/_layers.py`，把原 19 个 Mixin 收敛为 5 层：
+  - `DeviceLayer`：Registry/Config/ClickLog/Device；
+  - `OcrLayer`：Ocr/Collect；
+  - `LocatorLayer`：CloseButton/Reward/FindText/Judge/Template；
+  - `ActionLayer`：Guard；
+  - `FlowLayer`：FlowExec/StepHandlers/Buy/BuySeed/Plant/Fairyland/Orchestrate。
+- `OCREngine` 基类由 19 个降为 5 个；`__init__` 与公有方法面不变。
+- 已核对 19 个 Mixin 无方法重名、无 `super()` 协作调用，分层不改变 MRO 可见方法。
+
+### 127.2 Handler 路由 mixin
+
+- 新增 `transport/http/`：
+  - `base.py`（send/read/query/SSE/do_GET/do_POST/log_message）；
+  - `router.py`（`_route` 路由表）；
+  - `pages.py` / `template.py` / `device.py` / `status.py` / `run.py` / `log.py`；
+  - `handler.py`（组合 Handler）；`server.py`（启动入口）；`common.py`（共享依赖面）。
+- `webui.py` 880 → **31 行**兼容入口：导出 `Handler`/`main`/`_POST_ROUTES`/
+  `_CONFIG_KEYS`/`_MODULE_SETTINGS`/`_LOG_MAX_LINES`，保留 `set_server` 与
+  `_SERVER` 只读兼容；`webui_app.py` 改为 `webui.set_server(srv)`。
+- `check_project.py` 契约解析源改为 `transport/http/router.py`（`_route`）与
+  `transport/http/common.py`（`_POST_ROUTES`），`transport/**` 纳入语法闸门。
+
+### 127.3 验证
+
+- 离线测试：**54/54 PASS**（新增 `test_engine_layers.py` 3 项、
+  `test_http_handler.py` 3 项）。
+- 闸门：`check_project.py --with-tests` exit 0；语法 **86/86**；
+  webui 契约 27⊆28、POST 15↔15、WPF 28 键一致；config schema 通过。
+- HTTP 冒烟（8766）：`/`、`/tpltool` 200；`/api/status`/`flows`/`daily`/`log`/
+  `set_config`/`stop` 正常；`screen`/`tplt_init` 503；`tplt_load` 路径穿越 400；
+  `tplt_submit` 缺尺寸 400；`/api/stream` 正常推送 `event: log`。
+- 未跑实机：本阶段为结构性迁移，HTTP 冒烟已覆盖适配器；引擎分层无逻辑变更。
+
+## 2026-11-17 · 里程碑 126：Stage 3 第一阶段 EnginePort 端口化
+
+**范围**：按 `docs/ARCHITECTURE_ROADMAP.md` Stage 3，定义核心端口并让业务模块
+依赖 Protocol 而非具体 `OCREngine`；运行时行为不变。
+
+### 126.1 `core/ports.py`
+
+- `UiPort`：screenshot / ocr_blocks / ocr_direct / locate / locate_fine /
+  click_abs / click_text / close_dialog；
+- `TemplatePort`：locate_template / locate_template_all / click_template；
+- `JudgePort`：judge_scene / set_scene / parse_count_at / parse_fraction_at /
+  pink_ratio_at / has_reward_popup / reward_dialog / get_ocr_stat；
+- `DevicePort`：connect / swipe_rel / click_rel / screen_w/h / adb_path / address；
+- `ConfigPort`：config / update_config；
+- `FlowPort`：run_flow / run_daily；
+- `EnginePort`：以上能力的组合，`runtime_checkable`。
+
+### 126.2 业务模块标注
+
+- plant/buy_seed/fairyland/pollin/community_like 的 `eng` 参数统一标注
+  `EnginePort`（共 129 处）；
+- ui_ops/navigation 标注 `UiPort`（8 处）；
+- 仅类型标注，不改任何调用、判据或日志；`from __future__ import annotations`
+  保证运行时零开销。
+
+### 126.3 验证
+
+- 离线测试：**48/48 PASS**（新增 `test_engine_port.py`：
+  FullFake 结构化匹配 / 半实现不匹配 / 业务入口标注 / UI 原语标注 /
+  OCREngine 端口方法完整性）。
+- 闸门：`check_project.py --with-tests` exit 0；语法 **70/70**；
+  webui 契约、config schema、WPF 对账均保持通过。
+- 未跑实机：本阶段无运行时逻辑变更；后续拆 OCREngine Mixin 时再做帧集回归与实机冒烟。
+
+## 2026-11-17 · 里程碑 125：Stage 2 配置 schema 单源
+
+**范围**：按 `docs/ARCHITECTURE_ROADMAP.md` Stage 2，把配置键从
+`app/config_service.py` 抽到 `config/schema.py`，让示例配置、flow `if_config`、
+WebUI ⚙、WPF `SetConfigKeys` 全部对照同一份 schema。
+
+### 125.1 `config/schema.py` 唯一事实源
+
+- 原 `_CONFIG_KEYS`/`_MODULE_SETTINGS`/日志键序/日志后缀原样迁入；
+- 新增 `FILE_ONLY_KEYS`：`baobao_buy_floor/baobao_buy_max/guard_reuse/region_ocr`
+  （只存在 config.json/example，不进 set_config 白名单）；
+- 新增 `DEFAULTS`、`EXAMPLE_ORDER`、`example_config()`、`validate_example()`；
+- 统计：32 个配置键（28 可 set + 4 文件级）、31 个示例键、20 个 ⚙ meta 键。
+- 提供 `python -m config.schema --check` / `--print`。
+
+### 125.2 config_service 只保留应用逻辑
+
+- `app/config_service.py` 235 → **109 行**：只保留 `set_mode`、
+  `_apply_config_key`、日志文案、回显；数据全部从 schema import。
+- `webui.py` 的 `_CONFIG_KEYS`/`_MODULE_SETTINGS` 兼容别名保持不变。
+
+### 125.3 闸门与示例
+
+- `check_project.py` 优先 import `config.schema`：
+  - webui 白名单 28 / ⚙meta 20 均由 schema 提供；
+  - `config.example.json` 做键集/类型/默认值校验（缺键、多余键、默认漂移均 FAIL）；
+  - flow `if_config` 键必须存在于 `ALL_KEYS`；
+  - WPF `SetConfigKeys` 继续与 28 个可 set 键对账。
+- `data/config.example.json` 补 `ocr_execution_provider` / `use_angle_cls` 两键
+  （31 个示例键），与 schema 完全一致。
+
+### 125.4 验证
+
+- `python -m config.schema --check`：✓ 一致。
+- 离线测试：**43/43 PASS**（新增 `test_config_schema.py` 5 项）。
+- 闸门：`check_project.py --with-tests` exit 0；语法 **67/67**；
+  webui 契约 27⊆28（schema）、POST 15↔15、WPF 28 键一致；example 31 / flow 18。
+- HTTP 冒烟（8766）：`/api/status`、`/api/daily` 7 模块、`/api/set_config` 正常。
+
+## 2026-11-17 · 里程碑 124：Stage 1 服务层提取
+
+**范围**：按 `docs/ARCHITECTURE_ROADMAP.md` 的 Stage 1，把 `webui.py` 的模块级
+状态/逻辑迁到 `app/` 应用服务层，HTTP 适配器只保留路由与序列化；API 路径/字段不变。
+
+### 124.1 新增 app/ 服务层
+
+- `engine_service.py`：`ENGINE` 单例、`get_engine/peek_engine/configure_engine`、
+  `is_connected`、`img_to_jpeg_b64`、`ocr_boxes`。
+- `log_service.py`：日志环形缓冲、磁盘备份、增量游标、`TeeOut`、`HTTP_LOG_FILE`。
+- `failcache_service.py`：缓存统计、清理、归档、提示状态。
+- `config_service.py`：`_CONFIG_KEYS`/`_MODULE_SETTINGS`、校验应用、日志文案、回显、
+  `set_mode`。
+- `status_service.py`：`/api/status` 聚合与 `ui_build`。
+- `run_service.py`：运行互斥门、后台线程、stdout/stderr 换轨、单流程/每日编排启动。
+
+### 124.2 webui.py 适配器化
+
+- 模块级重复实现删除，改为 import 服务层；保留 `_SERVER`/`_POST_ROUTES`/Handler。
+- `webui.py` 1671 → **879 行**；Handler 856 → **755 行**（路由/页面/模板工具仍在，
+  下一阶段可继续按路由组拆 mixin，但不再承载日志/配置/运行/状态逻辑）。
+- `_log`/`_stream`/`_log_download`/`_log_clear` 改走 `log_service`；
+  `_run`/`_run_daily_sel` 改走 `run_service`；`_status` 改走 `status_service`；
+  `screen/ocr/connect` 改走 `engine_service`。
+- `check_project.py` 契约解析源改为 `app/config_service.py`（`_CONFIG_KEYS`/
+  `_MODULE_SETTINGS`），并纳入 `app/*.py` 语法闸门。
+
+### 124.3 验证
+
+- 离线测试：**38/38 PASS**（新增 `test_run_service.py`：互斥门/冲突/流程与编排启动；
+  `test_log_service.py`：增量游标/SSE 原子增量/缓冲重置）。
+- 闸门：`check_project.py --with-tests` exit 0；语法 **64/64**；webui 契约 27⊆28、
+  POST 15↔15、WPF 28 键一致；config 键 18/18。
+- HTTP 契约冒烟（8766）：`/api/status` 字段完整、`/api/flows` 9 个、`/api/daily` 字段完整、
+  `/api/log` 增量、`/api/fail_cache_info`、`/api/set_config`、`/api/run_daily` 空选择 400、
+  `/api/run` 不存在流程 400、`/api/stop` 正常。
+- ⚠ 冒烟调用 `/api/log_clear` 时按既有语义同时清理了 `data/fail_cache` 截图像素
+  （被清理项进入系统回收站；如需保留请手动还原）。
+
+## 2026-11-17 · 里程碑 123：Stage 0 测试基线与 API 契约清单
+
+**背景**：用户明确「`webui.py` 不能反复做治标式文件拆分，必须做长期架构规划」。
+据此新增 `docs/ARCHITECTURE_ROADMAP.md`（目标架构：核心 → 应用服务 → 适配器 → 客户端），
+并把 P2 重新定位为 Stage 0/1/5。本里程碑只做 Stage 0，不改生产行为。
+
+### 123.1 架构计划
+
+- 新增 `docs/ARCHITECTURE_ROADMAP.md`：
+  - 问题定性、目标分层、四条依赖规则、契约三件套；
+  - 短期 Stage 0-2、中长期 Stage 3-5；
+  - 架构护栏：不再向 `webui.py` 加业务逻辑、提取必须建契约、不以行数拆文件。
+
+### 123.2 测试基线（tests/）
+
+- 新增 `tests/`（stdlib `unittest`，不联网、不连 ADB）：
+  - `fake_engine.py`：假引擎（ocr_blocks/click_text/locate/click_abs/close_dialog）。
+  - `test_plant_buy_helpers.py`：花种解析、详情精确匹配、已拥有/消耗同行读取、
+    权威价格解析、二次确认精确按钮。
+  - `test_ui_ops.py`：文本清洗、输入框三态聚焦、奖励弹窗关闭/回退。
+  - `test_navigation.py`：任意家园归位三分支。
+  - `test_webui_contract.py`：POST 路由集合、配置键元数据、模块设置归属。
+  - `test_config_contract.py`：flow `if_config` 键 ⊆ `config.example.json`。
+  - `test_pollin_symbols.py`：pollin 公共符号清单（为后续分包兜底）。
+- 共 **30 个用例**，`Ran 30 tests ... OK`。
+- 测试发现一个真实边界：`_cost_from_blocks` 原按 x 距离排序，可能取到上一行
+  「已拥有」数字；已改为 `(y 距离, x 距离)` 同行优先，测试覆盖。
+
+### 123.3 API 契约清单
+
+- 新增 `docs/API_CONTRACT.md`：
+  - 页面路由、状态/配置、运行控制、日志/SSE、失败清单、截图缓存、画面/OCR、模板工具；
+  - 通用错误约定（409 运行互斥、503 未连接、502 连接失败）；
+  - SSE 四类事件（log/status/failures/frame）与心跳；
+  - 全局状态清单（ENGINE/_RUNNING/_LOGS/fail_cache/...）与生命周期（CLI/pywebview/WPF）。
+- 定位为 v0 现状清单，Stage 1 提取服务时逐项对照。
+
+### 123.4 闸门接入
+
+- `tools/check_project.py` 新增 `--with-tests`，运行 `unittest discover -s tests -t .`；
+- `PY_SOURCES` 纳入 `tests/*.py`，语法闸门 47→**55**；
+- `check_project.py --with-tests` exit 0，唯一 WARN 仍是本机 dotnet 不在 PATH。
 
 ## 2026-11-17 · 领取奖励·花仙乐园（里程碑 118）
 

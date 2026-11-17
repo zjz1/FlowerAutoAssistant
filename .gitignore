@@ -26,7 +26,10 @@ _probe_*.png
 _tmp_*.py
 
 # ---------- 测试区/运行产物：MAA 本机运行选项(每次启动由 Toolkit.init_option 重写) ----------
-config/
+# Stage 2 起 config/ 下新增 Python 源码（schema 单源），只忽略本机运行选项文件。
+config/*
+!config/__init__.py
+!config/schema.py
 
 # ---------- 测试区：data/ 只提交示例配置与手工维护的知识库，其余为本机运行状态 ----------
 data/*

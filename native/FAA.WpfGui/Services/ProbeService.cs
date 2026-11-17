@@ -9,15 +9,16 @@ namespace FAA.WpfGui.Services;
 
 /// <summary>
 /// 端口归属探测服务: 三态 "faa"(已有 FAA 实例) / "other"(被别的程序占用) / "free"(空闲)。
-/// 语义逐条对照 FlowerAutoAssistant/webui_app.py 的 _probe(port, timeout=3.0) (56-71 行):
+/// Stage 4 起以 `GET /api/health` 的 `service == "faa"` 为唯一握手点(对齐
+/// FlowerAutoAssistant/app/lifecycle_service.py 的 probe); health 不可用时回退
+/// `GET /api/status` 的 flow_dir+ui_build 两键(兼容 health 上线前已在跑的旧实例):
 ///   py  socket.create_connection(("127.0.0.1", port), timeout) 失败 → "free"
 ///       【这里: TcpClient.ConnectAsync 失败或 3s 超时 → "free"】
-///   py  urllib.request.urlopen(_url(port) + "api/status") 读 JSON
-///       【这里: 静态单例 HttpClient GET http://127.0.0.1:{port}/api/status, 3s 超时】
-///   py  isinstance(data, dict) and "flow_dir" in data and "ui_build" in data → "faa"
-///       【这里: JSON 根是 object 且同时含 flow_dir、ui_build 两键 → "faa"】
-///   py  HTTP/JSON 任何异常或缺键 → "other"
-///       【这里: 同语义, 一律 "other"】
+///   py  GET /api/health → JSON 含 service="faa" → "faa"
+///       【这里: 同语义; 否则继续回退 status】
+///   py  GET /api/status → JSON 同时含 flow_dir、ui_build 两键 → "faa"
+///       【这里: 同语义】
+///   其余(HTTP/JSON 任何异常或缺键) → "other"
 /// </summary>
 public static class ProbeService
 {
@@ -51,7 +52,14 @@ public static class ProbeService
             }
         } // using 出口: 探测完立即释放连接, 对应 py 的 with 自动 close
 
-        // —— 第 2 步: GET /api/status(对应 py urlopen(_url(port) + "api/status")) ——
+        // —— 第 2 步: GET /api/health(Stage 4 唯一握手点) ——
+        var (healthOk, healthDetail) = await CheckHealthAsync(port, outer);
+        if (healthOk)
+        {
+            return ("faa", healthDetail);
+        }
+
+        // —— 第 3 步: 回退 GET /api/status(兼容 health 上线前已在跑的旧实例) ——
         using var httpTimeout = CancellationTokenSource.CreateLinkedTokenSource(outer);
         httpTimeout.CancelAfter(TimeoutMs);
         try
@@ -72,12 +80,38 @@ public static class ProbeService
             }
 
             // JSON 合法但缺 faa 独有键(或根不是 object) → other
-            return ("other", $"http {(int)resp.StatusCode}, /api/status 缺 faa 独有键");
+            return ("other", $"{healthDetail}; http {(int)resp.StatusCode}, /api/status 缺 faa 独有键");
         }
         catch (Exception ex)
         {
             // 对应 py: except Exception: pass → return "other"
-            return ("other", $"http-failed({ex.GetType().Name}: {ex.Message})");
+            return ("other", $"{healthDetail}; http-failed({ex.GetType().Name}: {ex.Message})");
+        }
+    }
+
+    /// <summary>GET /api/health: 2xx 且 JSON 根含 service="faa" 才算命中。</summary>
+    private static async Task<(bool Ok, string Detail)> CheckHealthAsync(int port, CancellationToken outer)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(outer);
+        cts.CancelAfter(TimeoutMs);
+        try
+        {
+            using var resp = await Http.GetAsync($"http://127.0.0.1:{port}/api/health", cts.Token);
+            resp.EnsureSuccessStatusCode();
+            await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("service", out var svc)
+                && svc.ValueKind == JsonValueKind.String
+                && svc.GetString() == "faa")
+            {
+                return (true, $"http {(int)resp.StatusCode}, /api/health service=faa");
+            }
+            return (false, $"http {(int)resp.StatusCode}, /api/health 缺 service=faa");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"health-failed({ex.GetType().Name})");
         }
     }
 

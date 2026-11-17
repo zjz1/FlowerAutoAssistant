@@ -32,11 +32,15 @@ MERGED = COLLAB / "merged"
 LEDGER = COLLAB / "审阅台账.jsonl"
 
 T2_MARKERS = ("ocr_engine.py", "pollin.py", "plant.py", "fairyland.py", "buy_seed.py",
-              "webui.py", "webui.html", "ocr_ui.py", "community_like.py", "webui_app.py",
+              "ui_ops.py", "navigation.py", "engine_service.py", "log_service.py",
+              "failcache_service.py", "config_service.py", "status_service.py",
+              "run_service.py", "webui.py", "webui.html", "ocr_ui.py",
+              "community_like.py", "webui_app.py",
               "main.py", "FAA.WpfGui.csproj")          # N01: C# 工程文件按 T2 审
 # N01(2026-11-13 批): native/ 前缀整体按 T2 引擎关键路径审阅（WPF 原生壳 ~6.6k 行）。
 # E01(2026-11-14 批): ocr_engine.py 拆包为 ocr_engine/ 包, 包内 .py 同属引擎关键路径。
-T2_PREFIXES = ("native/", "ocr_engine/")
+# Stage 5(2026-11-17): pollin.py 拆包为 pollin/, 包内 .py 同属关键路径。
+T2_PREFIXES = ("native/", "ocr_engine/", "config/", "core/", "transport/", "pollin/")
 DANGER_WORDS = ("屏蔽聊天", "删除好友", "神叶", "灵豆", "星之粉")
 
 

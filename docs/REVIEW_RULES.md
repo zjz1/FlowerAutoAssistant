@@ -15,7 +15,7 @@
 |---|---|---|
 | **T0 文档/注释** | 仅 `docs/**`、`README.md`、`PROGRESS.md`、`*.md`、注释级改动 | 自动检查全过 + 抽读关键段 |
 | **T1 配置/流程/模板** | 仅 `flows/**`、`data/*.json`、`resource/template/**`（无引擎/ pollin/webui 改动） | 语义 diff（字段级）+ 关键断言 + 模板两态分离度 + 闸门；按比例抽样复核 |
-| **T2 引擎/关键路径** | 触及 `ocr_engine.py` / `ocr_engine/**` / `pollin.py` / `plant.py` / `fairyland.py` / `buy_seed.py` / `webui.py(.html)` / `ocr_ui.py` / `community_like.py` / `webui_app.py` / `main.py` / `FAA.WpfGui.csproj` / `native/**`（N01） | **逐 hunk 独立复验** + 规则全扫 + 回归桩测 + 闸门；严格度不降 |
+| **T2 引擎/关键路径** | 触及 `ocr_engine.py` / `ocr_engine/**` / `pollin.py` / `pollin/**` / `plant.py` / `fairyland.py` / `buy_seed.py` / `ui_ops.py` / `navigation.py` / `core/**` / `app/**` / `config/**` / `transport/**` / `webui.py(.html)` / `ocr_ui.py` / `community_like.py` / `webui_app.py` / `main.py` / `FAA.WpfGui.csproj` / `native/**`（N01） | **逐 hunk 独立复验** + 规则全扫 + 回归桩测 + 闸门；严格度不降 |
 
 > 分级是**审阅强度**的分级，不是「信任传递」。T2 永远全量；T1 的抽样不等于免检，
 > 发现一处问题即升级为全量。
