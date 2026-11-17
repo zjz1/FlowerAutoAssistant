@@ -48,6 +48,7 @@
 独立调试：`python community_like.py run|enter|flip|state [--address ...]`（需连模拟器）。
 """
 from __future__ import annotations
+from core.ports import EnginePort
 
 import random
 import sys
@@ -115,11 +116,11 @@ ENTER_WAIT = 10     # 进入页面等待(2026-10-12 实机修订 5s→10s: 首�
 
 # ---------------- 基础工具 ----------------
 
-def has(eng, kws, img=None, min_score=0.4, **kw):
+def has(eng: EnginePort, kws, img=None, min_score=0.4, **kw):
     return eng.locate(kws, img=img, min_score=min_score, **kw) is not None
 
 
-def wait_until(eng, cond, timeout, desc="", interval=1.0):
+def wait_until(eng: EnginePort, cond, timeout, desc="", interval=1.0):
     """轮询等待条件成立。模拟器输入延迟可达数十秒, 故一律轮询而非固定 sleep（沿用 pollin.py）。"""
     t0 = time.time()
     while time.time() - t0 < timeout:
@@ -156,7 +157,7 @@ def _violet_blobs(img, hsv_lo, hsv_hi, y_range, x_range, min_area):
 
 # ---------------- 读页面状态 ----------------
 
-def read_page(eng, img=None):
+def read_page(eng: EnginePort, img=None):
     """读页码 "x/N" -> (cur, total); 未读到返回 None。
 
     复用引擎 parse_fraction_at（OCR 整图找 'a/b' 数字块, 取离目标点最近的一个）。
@@ -165,7 +166,7 @@ def read_page(eng, img=None):
     return eng.parse_fraction_at(PAGE_NUM_REGION, img=img, tol=PAGE_TOL)
 
 
-def read_quota(eng, img=None):
+def read_quota(eng: EnginePort, img=None):
     """读「本期(本周)点赞数：used/cap」-> (used, cap); 未读到返回 None。
 
     ⚠ 不能复用 parse_fraction_at: 它要求 OCR 块**整块**就是 'a/b',
@@ -183,7 +184,7 @@ def read_quota(eng, img=None):
     return None
 
 
-def find_likes(eng, img=None):
+def find_likes(eng: EnginePort, img=None):
     """找当前页**未点赞**的按钮(亮紫胶囊), 返回中心点列表 [(x,y), ...]。"""
     img = img if img is not None else eng.screenshot()
     if img is None:
@@ -198,7 +199,7 @@ def find_likes(eng, img=None):
     return sorted(out)
 
 
-def find_arrow(eng, direction, img=None):
+def find_arrow(eng: EnginePort, direction, img=None):
     """找翻页箭头 -> (x, y); 未找到返回 None。
 
     direction: "next"(向右) / "prev"(向左)。
@@ -219,7 +220,7 @@ def find_arrow(eng, direction, img=None):
     return cand[0][0], cand[0][1]
 
 
-def _entered(eng, img=None):
+def _entered(eng: EnginePort, img=None):
     """进入「种草社区」的判据: 能读到页码, 或左上角有社区页标题。
 
     ⚠ 不得用**不带区域**的「种草社区」做判据: 主界面右侧导航也有这四个字,
@@ -233,7 +234,7 @@ def _entered(eng, img=None):
 
 # ---------------- 环节: 进入 / 退出 ----------------
 
-def escape_to_main(eng):
+def escape_to_main(eng: EnginePort):
     """脱困回主界面（enter_community 每次重试前调用）。
 
     实测踩坑（2026-09-29 里程碑 56）：pollin 翻页用的「跳转页签」是**模态对话框**，会吞掉一切点击 ——
@@ -264,7 +265,7 @@ def escape_to_main(eng):
         time.sleep(1.5)
 
 
-def enter_community(eng, tries=3):
+def enter_community(eng: EnginePort, tries=3):
     """进「种草社区」: 主界面右侧导航文字按钮 -> OCR 定位点击。
 
     不在主界面时走 `escape_to_main()` 归位再试。
@@ -294,7 +295,7 @@ def enter_community(eng, tries=3):
     return False
 
 
-def leave(eng):
+def leave(eng: EnginePort):
     """退出种草社区回主界面。
 
     ⚠ 每个子功能结束**必须归位** —— BUG2 教训: 花灵派对结束后不回家园,
@@ -338,7 +339,7 @@ def leave(eng):
 
 # ---------------- 环节: 翻页 / 点赞 ----------------
 
-def flip(eng, direction=None):
+def flip(eng: EnginePort, direction=None):
     """翻一页。direction: "next" / "prev" / None(=随机, 且尊重页码边界)。
 
     边界规则（用户要求）: 已在第 1 页只能向右, 已在最后一页只能向左。
@@ -368,7 +369,7 @@ def flip(eng, direction=None):
     return True
 
 
-def like_at(eng, x, y):
+def like_at(eng: EnginePort, x, y):
     """点一个「未点赞」按钮, 用**点赞后按钮形态变化**做校验。
 
     实测: 未点赞 = 数字右侧亮紫胶囊; 已点赞 = 胶囊消失 + 数字左侧灰拇指。
@@ -395,7 +396,7 @@ def like_at(eng, x, y):
     return True
 
 
-def like_some(eng, k, clicked):
+def like_some(eng: EnginePort, k, clicked):
     """在当前页**随机**挑 k 个「未点赞」按钮点击, 返回实际确认点中数。
 
     不是点前 k 个, 而是全页候选里随机抽 k 个（用户明确要求"随机点击"）。
@@ -426,7 +427,7 @@ def like_some(eng, k, clicked):
 
 # ---------------- 今日是否已点（待接入每日任务模块） ----------------
 
-def already_liked_today(eng):
+def already_liked_today(eng: EnginePort):
     """「今日已点过 2 次则跳过」的**主体逻辑占位**。
 
     ⚠ 识别方法（用户指定）: 该功能应只在「每日任务」面板里识别到"点赞"任务时触发。
@@ -439,7 +440,7 @@ def already_liked_today(eng):
 
 # ---------------- 主流程 ----------------
 
-def run_community_like(eng):
+def run_community_like(eng: EnginePort):
     """社区点赞主流程（4.3 段）。返回结果字典, 供引擎日志打印。"""
     print("  [社区点赞] ===== 开始 =====")
     res = {"ok": False, "entered": False, "liked": 0, "reason": ""}

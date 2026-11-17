@@ -132,7 +132,7 @@ class _JudgeMixin:
         img = self.screenshot()
         if img is None:
             return False
-        blocks = [b for b in self._ocr_frame(img)[0] if b.get("score", 1) >= min_score]
+        blocks = [b for b in self._ocr_frame(img, need_split=False)[0] if b.get("score", 1) >= min_score]
         # 区域限定
         if region_rel:
             w, h = self.screen_w, self.screen_h

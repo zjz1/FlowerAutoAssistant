@@ -1,7 +1,8 @@
-"""plant_flower 步骤处理器: 种植花朵(当前仅桃花)阶段1。
+"""plant_flower 步骤处理器: 种植花朵(桃花系, 花种由 plant_flower_type 选择)。
 
 阶段0『确保在自己家园』由 flow_plant.json 的既有步骤完成; 本步骤负责:
-点「一键种植」→ 采集页面信息 → 搜索桃花 → 保存名称/是否搜出/数量。
+点「一键种植」→ 采集页面信息 → 搜索基础花名 → 精确点选目标颜色变体 →
+数量1 → 随机种植 → 详情确认 → 回读校验 → 关面板归位。
 具体实现见仓库根 plant.py(与 pollin.py 同型: 业务闭环在独立模块)。
 """
 from __future__ import annotations
@@ -15,7 +16,7 @@ class _PlantMixin:
         from plant import run_plant_flower
 
         flower = str(step.get("flower") or self.config.get("plant_flower_type", "桃花") or "桃花")
-        print(f"{pad}[种植] 种植花朵阶段1: 花种={flower}")
+        print(f"{pad}[种植] 种植花朵: 花种={flower}")
         try:
             ok = run_plant_flower(self, flower)
         except Exception as e:

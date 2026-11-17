@@ -12,19 +12,22 @@
   -> 阈值 S>=40 判可点（37 的模糊态按不可领处理，避免空点）。
 """
 from __future__ import annotations
+from core.ports import EnginePort
 
 import re
 import time
 
+from navigation import ensure_any_garden
 from ocr_engine import stop_requested
-from plant import _save_shot, _texts
+from ui_ops import (REWARD_REGION_WIDE, close_reward_popup,
+                    save_shot as _save_shot, texts as _texts)
 from buy_seed import buy_seed_in_shop
 
 # ---- 区域（相对坐标，实机标定 2026-11-17） ----
 MENU_REGION = [0.0, 0.0, 0.25, 0.16]            # 左上角「菜单」
 FAIRYLAND_ENTRY_REGION = [0.0, 0.0, 0.35, 0.70]  # 菜单内「花仙乐园」
 TAB_REGION = [0.10, 0.04, 0.45, 0.18]           # 在线领取/每日任务 标签
-REWARD_REGION = [0.20, 0.10, 0.85, 0.98]        # 奖励弹窗
+REWARD_REGION = REWARD_REGION_WIDE               # 奖励弹窗（通用大区域）
 SAT_TH = 40                                      # 按钮底色饱和度阈值: >=40 可点, <40 置灰/不可领
 
 NUM_PAIR_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
@@ -32,7 +35,7 @@ NUM_PAIR_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 
 # ---------------- 基础 ----------------
 
-def _button_enabled(eng, block, img=None) -> bool:
+def _button_enabled(eng: EnginePort, block, img=None) -> bool:
     """按钮底色饱和度判据（用户确认置灰=底色变灰）。"""
     try:
         import cv2
@@ -58,24 +61,15 @@ def _button_enabled(eng, block, img=None) -> bool:
         return False
 
 
-def _ensure_garden(eng) -> bool:
-    """自己/好友家园均可: 右下角有「离开」即在家园; 否则户外点「家园」。"""
-    if eng.locate(["离开"], region_rel=[0.78, 0.85, 1.0, 1.0],
-                  need_refine=False, log_miss=False):
-        return True
-    if eng.click_text(["家园"], region_rel=[0.78, 0.85, 1.0, 1.0],
-                      min_score=0.4, no_fallback=True):
-        t0 = time.time()
-        while time.time() - t0 < 8:
-            if eng.locate(["离开"], region_rel=[0.78, 0.85, 1.0, 1.0],
-                          need_refine=False, log_miss=False):
-                return True
-            time.sleep(1.0)
-    print("    [乐园] 未能进入家园场景")
-    return False
+def _ensure_garden(eng: EnginePort) -> bool:
+    """自己/好友家园均可：统一走 navigation.ensure_any_garden。"""
+    ok = ensure_any_garden(eng)
+    if not ok:
+        print("    [乐园] 未能进入家园场景")
+    return ok
 
 
-def _open_fairyland(eng) -> bool:
+def _open_fairyland(eng: EnginePort) -> bool:
     """已打开则复用；否则 家园 -> 菜单 -> 花仙乐园。"""
     blocks = eng.ocr_blocks(None)
     joined = " ".join(str(b.get("text", "")) for b in blocks)
@@ -121,7 +115,7 @@ def _open_fairyland(eng) -> bool:
     return False
 
 
-def _click_tab(eng, name: str) -> bool:
+def _click_tab(eng: EnginePort, name: str) -> bool:
     if not eng.click_text([name], region_rel=TAB_REGION,
                           min_score=0.3, no_fallback=True):
         print(f"    [乐园] 未找到标签「{name}」")
@@ -130,7 +124,7 @@ def _click_tab(eng, name: str) -> bool:
     return True
 
 
-def _reward_wait(eng, timeout=8.0):
+def _reward_wait(eng: EnginePort, timeout=8.0):
     t0 = time.time()
     while time.time() - t0 < timeout:
         if stop_requested():
@@ -145,23 +139,13 @@ def _reward_wait(eng, timeout=8.0):
     return None
 
 
-def _close_reward(eng) -> bool:
+def _close_reward(eng: EnginePort) -> bool:
     # 点标题区, 避免点页脚穿透底层(项目既有约定)
-    for text in ("恭喜获得", "点击任意处关闭"):
-        if eng.click_text([text], region_rel=REWARD_REGION,
-                          min_score=0.3, no_fallback=True):
-            time.sleep(1.2)
-            joined = " ".join(str(b.get("text", "")) for b in eng.ocr_blocks(None))
-            if "恭喜获得" not in joined and "点击任意处关闭" not in joined:
-                print("    [乐园] 奖励弹窗已关闭")
-                return True
-    print("    [乐园] 奖励弹窗未确认关闭, 回退 close_dialog")
-    eng.close_dialog()
-    time.sleep(1.2)
-    return True
+    return close_reward_popup(eng, ("恭喜获得", "点击任意处关闭"),
+                              REWARD_REGION, tag="乐园", confirm=True)
 
 
-def _claim_online(eng) -> None:
+def _claim_online(eng: EnginePort) -> None:
     print("\n[乐园] --- 在线领取 ---")
     if not _click_tab(eng, "在线领取"):
         return
@@ -184,7 +168,7 @@ def _claim_online(eng) -> None:
 
 # ---------------- 每日任务 ----------------
 
-def _read_task_row(eng, name: str):
+def _read_task_row(eng: EnginePort, name: str):
     """任务名行锚定: 返回 (name_block, progress(n,total), button_block) 或 None。"""
     blocks = eng.ocr_blocks(None)
     h = eng.screen_h or 1
@@ -208,7 +192,7 @@ def _read_task_row(eng, name: str):
     return name_b, prog, btn
 
 
-def _handle_exchange(eng, name: str) -> None:
+def _handle_exchange(eng: EnginePort, name: str) -> None:
     print(f"\n[乐园] --- 兑换: {name} ---")
     row = _read_task_row(eng, name)
     if row is None:
@@ -228,7 +212,7 @@ def _handle_exchange(eng, name: str) -> None:
         _close_reward(eng)
 
 
-def _handle_water(eng) -> None:
+def _handle_water(eng: EnginePort) -> None:
     print("\n[乐园] --- 给他人浇水5次 ---")
     row = _read_task_row(eng, "给他人浇水5次")
     if row is None:
@@ -251,7 +235,7 @@ def _handle_water(eng) -> None:
         _close_reward(eng)
 
 
-def _return_to_daily(eng) -> bool:
+def _return_to_daily(eng: EnginePort) -> bool:
     """购买种子界面关闭后回到花仙乐园每日任务页。"""
     joined = " ".join(str(b.get("text", "")) for b in eng.ocr_blocks(None))
     if "累计在线时间" in joined or "每日任务" in joined:
@@ -265,7 +249,7 @@ def _return_to_daily(eng) -> bool:
     return _open_fairyland(eng) and _click_tab(eng, "每日任务")
 
 
-def _handle_bean(eng) -> None:
+def _handle_bean(eng: EnginePort) -> None:
     print("\n[乐园] --- 园艺店仙豆兑换花种3次 ---")
     row = _read_task_row(eng, "园艺店仙豆兑换花种3次")
     if row is None:
@@ -330,7 +314,7 @@ def _handle_bean(eng) -> None:
         _close_reward(eng)
 
 
-def _close_fairyland(eng) -> bool:
+def _close_fairyland(eng: EnginePort) -> bool:
     """关闭花仙乐园: 先关奖励面板(在线领取/每日任务), 再关花仙乐园主界面, 复核回家园。
 
     实机 2026-11-17: close_dialog 两次可分别关掉奖励面板与主界面棋盘;
@@ -361,7 +345,7 @@ def _close_fairyland(eng) -> bool:
 
 # ---------------- 主入口 ----------------
 
-def run_fairyland_claim(eng) -> bool:
+def run_fairyland_claim(eng: EnginePort) -> bool:
     print("\n[乐园] ===== 花仙乐园领取 =====")
     if stop_requested():
         return False

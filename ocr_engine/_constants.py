@@ -20,6 +20,10 @@ TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "resource" / "template"
 NAV_ENTRIES_PATH = FLOW_DIR / "common" / "entries.json"
 NAV_SCENES_PATH = FLOW_DIR / "common" / "scenes.json"
 
+# 过宽块拆分/定向精识共用 LRU 上限（2026-11-17 由 400 扩至 1000；C47 实测单轮拆分
+# 1470 次/1737s、缓存命中 312 次，扩大热工作集可把跨屏重复的静态碎片转为命中）。
+SPLIT_CACHE_MAX = 1000
+
 # ---------------------------------------------------------------------------
 # 步骤类型白名单（E02, 2026-11-13 批）: run_step 分派支持的步骤类型显式导出。
 # 值由 tools/check_project.py known_step_types() 现跑输出机械生成(46 种; 2026-11-16 新增

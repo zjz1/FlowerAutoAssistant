@@ -1,22 +1,27 @@
 # -*- coding: utf-8 -*-
-"""种植模块 · 种植花朵（当前仅桃花）阶段1：进种植页 → 采集信息 → 搜索花种。
+"""种植模块：种植花朵（桃花系）+ 花朵收获。
 
-本模块只做用户 2026-11-16 指定的第 2-4 步（第1步『确保在自己家园』在 flow_plant.json 阶段0）：
-  2. 在自己家园点「一键种植」进种植页；
-  3. 区域 OCR 采集：天气 / 肥力 a/b / 当前已选 c/d；
-  4. 点「请输入关键字」→ 输入花名（桃花）→ 确定 → 读取筛选出的花种名称/数量。
-不做选种/种植/关面板（后续阶段）。
+阶段0「确保在自己家园」在 flow_plant.json；本模块负责：
+  种植：一键种植 → 采集天气/肥力/已选 → 按 plant_flower_type 搜索基础花名
+        → 精确点选目标颜色变体 → 数量1 → 随机种植 → 详情确认 → 回读 → 关面板归位；
+  收获：照料页可收获/可授粉判定 → 无待授粉才一键收花 → 关奖励弹窗 → 关面板归位。
 
 区域常量均为相对坐标（0~1），只限定 OCR/点击判据，点击仍取实时命中坐标。
-初版数值待实机标定：`plant_*` 截图与 `[种植]` 日志会打印实际块坐标。
+通用截图/精识原语在 ui_ops.py（2026-11-17 P0 重构）。
 """
 from __future__ import annotations
+from core.ports import EnginePort
 
 import re
 import subprocess
 import time
+from dataclasses import dataclass
 
 from ocr_engine import ADB_ADDRESS, ADB_PATH, stop_requested
+from ui_ops import (IME_OK_REGION, close_reward_popup,
+                    click_text_fine as _click_text_fine,
+                    fine_blocks as _fine_blocks, save_shot as _save_shot,
+                    texts as _texts)
 
 # ---- 区域（相对坐标；实机标定后收紧） ----
 PLANT_ENTRY_REGION = [0.70, 0.88, 1.0, 1.0]       # 自己家园底栏「一键种植」带
@@ -25,7 +30,6 @@ PLANT_STATUS_REGION = [0.35, 0.10, 0.75, 0.15]    # 天气 / 肥力值 a/b（实
 PLANT_SELECTED_REGION = [0.16, 0.82, 0.35, 0.91]  # 当前已选 c/d（实机标定 2026-11-16）
 PLANT_SEARCH_DIALOG_REGION = [0.30, 0.30, 0.75, 0.70]  # 关键字输入框/确定
 PLANT_SEED_RESULT_REGION = [0.27, 0.15, 0.95, 0.82]    # 筛选后的种子列表（实机标定 2026-11-16）
-IME_OK_REGION = [0.85, 0.88, 1.0, 1.0]            # 系统键盘右下「确定」
 
 PANEL_READY_KWS = ("请输入关键字", "肥力值", "当前已选")
 WEATHER_KWS = ("晴", "雨", "阴", "雪")
@@ -37,10 +41,29 @@ SEED_COUNT_DX_REL = 0.015
 SEED_COUNT_DY_REL = -0.040
 SEED_COUNT_RADIUS_REL = 0.02
 
-# ---- 阶段2: 种白色桃花（2026-11-17 用户确认） ----
-TARGET_COLOR = "白色"
+# ---- 阶段2: 种植花朵（2026-11-17 用户确认） ----
 TARGET_COUNT = 1
-TARGET_COST = 2          # 白色桃花每株消耗 2 点肥力（用户给定）
+DEFAULT_SEED = "白色桃花"
+# 花种名称库（当前仅桃花系）。cost=None 表示肥力消耗尚未实机标定：
+# 只校验「可种 d-1 / 已选归零」，不校验肥力精确变化，避免用未测数据误拦截。
+SEED_LIBRARY = {
+    "白色桃花": {"detail": "白色桃花花种", "cost": 2},
+    "粉色桃花": {"detail": "粉色桃花花种", "cost": None},
+    "绿色桃花": {"detail": "绿色桃花花种", "cost": None},
+}
+SUPPORTED_SEEDS = "、".join(SEED_LIBRARY)
+COLOR_PREFIX_RE = re.compile(r"^(白色|粉色|绿色|黄色|紫色|蓝色|红色|黑色|橙色|彩色)")
+
+
+@dataclass(frozen=True)
+class PlantTarget:
+    """一次种植的目标花种（解析结果，供阶段函数共享）。"""
+    seed: str                 # 网格块精确名称，如「粉色桃花」
+    detail: str               # 详情窗口名称，如「粉色桃花花种」
+    search_kw: str            # 搜索框输入的基础花名，如「桃花」
+    cost: int | None          # 肥力消耗；None=未标定，不校验肥力精确值
+
+
 QUANTITY_DIALOG_REGION = [0.23, 0.20, 0.77, 0.80]   # 数量窗口（实机标定 2026-11-17: 标题 y≈0.215, 确认 y≈0.729）
 DETAIL_DIALOG_REGION = [0.25, 0.25, 0.80, 0.78]     # 种植详情二次确认窗口（待实机标定）
 DETAIL_CLOSE_DX_REL = 0.278   # 详情窗口右上角 X 相对名称块的偏移（实机 585,250 -> 941,158）
@@ -54,60 +77,7 @@ HARVEST_BTN_REGION = [0.92, 0.35, 1.0, 0.48]         # 右侧「一键收花」
 REWARD_REGION = [0.25, 0.25, 0.80, 0.78]             # 奖励弹窗
 
 
-# ---------------- 基础 ----------------
-
-def _save_shot(eng, tag: str):
-    """保存当前帧到 debug/ 供区域标定；失败静默（不影响流程）。"""
-    try:
-        import cv2
-        img = eng.screenshot()
-        if img is None:
-            return None
-        from pathlib import Path
-        d = Path(__file__).resolve().parent / "debug"
-        d.mkdir(exist_ok=True)
-        p = d / f"plant_{tag}_{time.strftime('%Y%m%d_%H%M%S')}.png"
-        cv2.imwrite(str(p), img)
-        print(f"    [种植] 截图 -> {p}")
-        return img
-    except Exception as e:
-        print(f"    [种植] 截图失败(不影响流程): {e}")
-        return None
-
-
-def _texts(blocks) -> list[str]:
-    return [str(b.get("text", "")).strip() for b in blocks]
-
-
-def _fine_blocks(eng, region_rel, scale: int = 2, img=None):
-    """小区域放大 OCR（状态栏/已选这类小字号），坐标映射回全图。
-
-    实机 2026-11-16: 全图 OCR 会把「当前为…晴天…肥力值 120/120…」合并成一块且数字误读,
-    裁片 2x 后可稳定读出 120/120；已选区全图常漏读, 2x 后可读「当前已选：0/60」。
-    """
-    try:
-        import cv2
-        img = img if img is not None else eng.screenshot()
-        if img is None:
-            return []
-        w, h = eng.screen_w or 1, eng.screen_h or 1
-        x1, y1, x2, y2 = region_rel
-        cx1, cy1 = int(x1 * w), int(y1 * h)
-        cx2, cy2 = int(x2 * w), int(y2 * h)
-        crop = img[cy1:cy2, cx1:cx2]
-        if crop.size == 0:
-            return []
-        up = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-        blocks = eng.ocr_direct(up, "plant_fine")
-        for b in blocks:
-            b["center"] = [int(b["center"][0] / scale + cx1), int(b["center"][1] / scale + cy1)]
-            b["box"] = [int(b["box"][0] / scale + cx1), int(b["box"][1] / scale + cy1),
-                        int(b["box"][2] / scale + cx1), int(b["box"][3] / scale + cy1)]
-        return blocks
-    except Exception as e:
-        print(f"    [种植] 放大 OCR 失败(回退全图): {e}")
-        return eng.ocr_blocks(None, region_rel)
-
+# ---------------- 基础（通用截图/精识在 ui_ops.py） ----------------
 
 def _has_kw(blocks, kw: str) -> bool:
     return any(kw in t for t in _texts(blocks))
@@ -134,7 +104,7 @@ def _pair_near(blocks, anchor_kw: str):
     return pairs[0]
 
 
-def read_panel_info(eng, img=None) -> dict:
+def read_panel_info(eng: EnginePort, img=None) -> dict:
     """区域 OCR 采集种植页面信息。缺失字段记 None, 不猜。"""
     status = _fine_blocks(eng, PLANT_STATUS_REGION, 2, img)
     selected = _fine_blocks(eng, PLANT_SELECTED_REGION, 2, img)
@@ -191,7 +161,7 @@ def read_panel_info(eng, img=None) -> dict:
     return info
 
 
-def _wait_panel_ready(eng, timeout=10.0) -> bool:
+def _wait_panel_ready(eng: EnginePort, timeout=10.0) -> bool:
     t0 = time.time()
     while time.time() - t0 < timeout:
         if stop_requested():
@@ -207,7 +177,7 @@ def _wait_panel_ready(eng, timeout=10.0) -> bool:
     return False
 
 
-def _wait_dialog(eng, timeout=12.0) -> bool:
+def _wait_dialog(eng: EnginePort, timeout=12.0) -> bool:
     t0 = time.time()
     while time.time() - t0 < timeout:
         if stop_requested():
@@ -222,7 +192,7 @@ def _wait_dialog(eng, timeout=12.0) -> bool:
     return False
 
 
-def _adb_input_text(eng, text: str) -> bool:
+def _adb_input_text(eng: EnginePort, text: str) -> bool:
     """ADB input text 输入（中文是否支持需实机验证；返回进程成功不等于输入生效）。"""
     adb = getattr(eng, "adb_path", ADB_PATH)
     addr = getattr(eng, "address", ADB_ADDRESS)
@@ -236,7 +206,7 @@ def _adb_input_text(eng, text: str) -> bool:
         return False
 
 
-def _input_flower(eng, flower: str) -> bool:
+def _input_flower(eng: EnginePort, flower: str) -> bool:
     _adb_input_text(eng, flower)
     time.sleep(1.0)
     img = eng.screenshot()
@@ -250,19 +220,7 @@ def _input_flower(eng, flower: str) -> bool:
     return False
 
 
-def _click_text_fine(eng, text: str, region_rel) -> bool:
-    """小区域精识后按块中心点击（系统键盘「确定」等小字号按钮）。"""
-    blocks = _fine_blocks(eng, region_rel, 2)
-    b = next((x for x in blocks if text in str(x.get("text", ""))), None)
-    if b is None:
-        return False
-    x, y = b["center"]
-    print(f"    [种植] 精识点击「{text}」-> ({x},{y})")
-    eng.click_abs(int(x), int(y))
-    return True
-
-
-def _confirm_search(eng) -> bool:
+def _confirm_search(eng: EnginePort) -> bool:
     for reg in (IME_OK_REGION, PLANT_SEARCH_DIALOG_REGION):
         if _click_text_fine(eng, "确定", reg):
             time.sleep(1.5)
@@ -271,7 +229,7 @@ def _confirm_search(eng) -> bool:
     return False
 
 
-def _wait_search_result(eng, flower: str, timeout=10.0) -> bool:
+def _wait_search_result(eng: EnginePort, flower: str, timeout=10.0) -> bool:
     t0 = time.time()
     while time.time() - t0 < timeout:
         if stop_requested():
@@ -285,7 +243,7 @@ def _wait_search_result(eng, flower: str, timeout=10.0) -> bool:
     return False
 
 
-def read_search_result(eng, flower: str) -> dict:
+def read_search_result(eng: EnginePort, flower: str) -> dict:
     """读取筛选后的全部花种名称/是否搜出/数量；数量按固定相对偏移取最近数字块。"""
     img = eng.screenshot()
     blocks = eng.ocr_blocks(img, PLANT_SEED_RESULT_REGION)
@@ -295,20 +253,7 @@ def read_search_result(eng, flower: str) -> dict:
     results = []
     for name in names:
         nx, ny = name["center"]
-        expected = (nx + SEED_COUNT_DX_REL * w, ny + SEED_COUNT_DY_REL * h)
-        best = None
-        best_d = 1e9
-        for b in blocks:
-            m = NUM_RE.match(str(b.get("text", "")))
-            if not m:
-                continue
-            cx, cy = b["center"]
-            d = abs(cx - expected[0]) + abs(cy - expected[1])
-            if d > SEED_COUNT_RADIUS_REL * (w + h):
-                continue
-            if d < best_d:
-                best_d = d
-                best = (int(m.group(1)), b)
+        best = _badge_for(eng, name, blocks)
         results.append({
             "name": str(name.get("text", "")).strip(),
             "count": best[0] if best else None,
@@ -328,35 +273,88 @@ def read_search_result(eng, flower: str) -> dict:
     return res
 
 
-# ---------------- 阶段2: 种白色桃花 ----------------
+# ---------------- 阶段2: 种植目标花种 ----------------
 
-def _find_grid_seed(eng, seed_exact: str):
+def _resolve_seed(flower: str) -> PlantTarget | None:
+    """配置值 -> PlantTarget；不支持返回 None。
+
+    兼容写法: 「桃花」(默认白色)、「白色桃花」、「白色桃花种子/花种」。
+    未带颜色的其它花名按「白色+花名」查库；查不到即如实拒绝，不猜颜色。
+    """
+    raw = str(flower or "").strip()
+    for suffix in ("种子", "花种"):
+        if raw.endswith(suffix) and len(raw) > len(suffix):
+            raw = raw[:-len(suffix)]
+    if not raw:
+        raw = "桃花"
+    if raw == "桃花":
+        seed = DEFAULT_SEED
+    elif raw in SEED_LIBRARY:
+        seed = raw
+    elif COLOR_PREFIX_RE.match(raw):
+        print(f"    [种植] 花种「{raw}」不在名称库; 可选: {SUPPORTED_SEEDS}")
+        return None
+    else:
+        candidate = "白色" + raw
+        if candidate not in SEED_LIBRARY:
+            print(f"    [种植] 花种「{raw}」不在名称库; 可选: {SUPPORTED_SEEDS}")
+            return None
+        seed = candidate
+    info = SEED_LIBRARY[seed]
+    search_kw = COLOR_PREFIX_RE.sub("", seed) or seed
+    return PlantTarget(seed=seed, detail=info["detail"],
+                       search_kw=search_kw, cost=info["cost"])
+
+
+def _nearest_badge(blocks, nx, ny, w, h, radius_rel=SEED_COUNT_RADIUS_REL):
+    """按名称->数量固定偏移找最近的纯数字角标块。返回 (count, block) 或 None。"""
+    expected = (nx + SEED_COUNT_DX_REL * w, ny + SEED_COUNT_DY_REL * h)
+    best = None
+    best_d = 1e9
+    for b in blocks:
+        m = NUM_RE.match(str(b.get("text", "")))
+        if not m:
+            continue
+        cx, cy = b["center"]
+        d = abs(cx - expected[0]) + abs(cy - expected[1])
+        if d > radius_rel * (w + h):
+            continue
+        if d < best_d:
+            best_d = d
+            best = (int(m.group(1)), b)
+    return best
+
+
+def _badge_for(eng: EnginePort, name_block, blocks):
+    """取名称块对应的数量角标；全图 OCR 读不到时对该块邻近区域做 2x 精识重试。
+
+    实机 2026-11-16: 绿色桃花角标为小字号, 全图 OCR 常漏读; 2x 裁片可读。
+    """
+    w, h = eng.screen_w or 1, eng.screen_h or 1
+    nx, ny = name_block["center"]
+    best = _nearest_badge(blocks, nx, ny, w, h)
+    if best:
+        return best
+    x1 = max(0.0, (nx - 0.06 * w) / w)
+    y1 = max(0.0, (ny - 0.065 * h) / h)
+    x2 = min(1.0, (nx + 0.09 * w) / w)
+    y2 = min(1.0, (ny + 0.035 * h) / h)
+    fine = _fine_blocks(eng, [x1, y1, x2, y2], 2)
+    return _nearest_badge(fine, nx, ny, w, h, radius_rel=0.03)
+
+
+def _find_grid_seed(eng: EnginePort, seed_exact: str):
     """在种子结果区找精确同名的网格块（带数量角标），返回 (name_block, count) 或 None。
 
     用户要求: 页面至少两个「种子名称」文字, 必须精准 OCR; 选“带数量角标的种子网格块”。
     其余同名块(如选中列表/提示)因找不到固定偏移的数量角标而被排除。
     """
     blocks = eng.ocr_blocks(None, PLANT_SEED_RESULT_REGION)
-    w, h = eng.screen_w or 1, eng.screen_h or 1
     cands = [b for b in blocks if str(b.get("text", "")).strip() == seed_exact]
     print(f"    [种植] 精确匹配「{seed_exact}」: {len(cands)} 块 "
           f"{[b['center'] for b in cands]}")
     for name in cands:
-        nx, ny = name["center"]
-        expected = (nx + SEED_COUNT_DX_REL * w, ny + SEED_COUNT_DY_REL * h)
-        best = None
-        best_d = 1e9
-        for b in blocks:
-            m = NUM_RE.match(str(b.get("text", "")))
-            if not m:
-                continue
-            cx, cy = b["center"]
-            d = abs(cx - expected[0]) + abs(cy - expected[1])
-            if d > SEED_COUNT_RADIUS_REL * (w + h):
-                continue
-            if d < best_d:
-                best_d = d
-                best = (int(m.group(1)), b)
+        best = _badge_for(eng, name, blocks)
         if best:
             print(f"    [种植] 选中网格块 center={name['center']} 角标={best[0]} "
                   f"(角标块 {best[1]['center']})")
@@ -364,7 +362,7 @@ def _find_grid_seed(eng, seed_exact: str):
     return None
 
 
-def _read_quantity_pair(eng, timeout=8.0):
+def _read_quantity_pair(eng: EnginePort, timeout=8.0):
     """等数量窗口的 m/n（m=将种个数, n=已有该种子数）。返回 (m,n,block) 或 None。"""
     t0 = time.time()
     last = []
@@ -391,7 +389,7 @@ def _read_quantity_pair(eng, timeout=8.0):
     return None
 
 
-def _adjust_quantity_to_one(eng, pair) -> bool:
+def _adjust_quantity_to_one(eng: EnginePort, pair) -> bool:
     """把将种个数调到 1。+/- 是图标: 先尝试 OCR 的 -/－/−, 再用 m/n 块左侧相对位置。"""
     m, n, block = pair
     if n < 1:
@@ -428,7 +426,7 @@ def _adjust_quantity_to_one(eng, pair) -> bool:
     return False
 
 
-def _confirm_quantity(eng) -> bool:
+def _confirm_quantity(eng: EnginePort) -> bool:
     for reg in (QUANTITY_DIALOG_REGION,):
         if eng.click_text(["确认"], region_rel=reg, no_fallback=True):
             time.sleep(1.2)
@@ -440,17 +438,21 @@ def _confirm_quantity(eng) -> bool:
     return False
 
 
-def _wait_after_quantity(eng, base: dict, timeout=8.0):
+def _wait_after_quantity(eng: EnginePort, base: dict, cost=None, timeout=8.0):
     """数量确认后的状态。返回 (info, mode): mode='selected'=已选1待随机;
-    mode='planted'=确认后已直接完成种植(实机可能出现)。"""
+    mode='planted'=确认后已直接完成种植(实机可能出现)。
+
+    cost=None（该花种肥力消耗未标定）时跳过肥力数值判据, 只按已选/可种判断。
+    """
     t0 = time.time()
     while time.time() - t0 < timeout:
         if stop_requested():
             return None
         info = read_panel_info(eng)
-        a_ok = (info["fertility_remaining"] is not None
-                and base["fertility_remaining"] is not None
-                and info["fertility_remaining"] == base["fertility_remaining"] - TARGET_COST)
+        a_ok = (cost is None
+                or (info["fertility_remaining"] is not None
+                    and base["fertility_remaining"] is not None
+                    and info["fertility_remaining"] == base["fertility_remaining"] - cost))
         if a_ok and info["selected_count"] == TARGET_COUNT:
             print("    [种植] 数量确认后: 已选=1, 待随机种植")
             return info, "selected"
@@ -458,14 +460,14 @@ def _wait_after_quantity(eng, base: dict, timeout=8.0):
                 and info["plantable_total"] is not None
                 and base["plantable_total"] is not None
                 and info["plantable_total"] == base["plantable_total"] - TARGET_COUNT):
-            print("    [种植] 数量确认后: 已直接完成种植(可种-1, 肥力-2)")
+            print("    [种植] 数量确认后: 已直接完成种植(可种-1)")
             return info, "planted"
         time.sleep(1.0)
     print("    [种植] 数量确认后状态不符(已选/肥力/可种), 不继续")
     return None
 
 
-def _wait_detail_window(eng, detail_name: str, timeout=10.0):
+def _wait_detail_window(eng: EnginePort, detail_name: str, timeout=10.0):
     t0 = time.time()
     while time.time() - t0 < timeout:
         if stop_requested():
@@ -479,7 +481,7 @@ def _wait_detail_window(eng, detail_name: str, timeout=10.0):
     return None
 
 
-def _verify_detail(eng, blocks, detail_name: str) -> bool:
+def _verify_detail(eng: EnginePort, blocks, detail_name: str) -> bool:
     """详情窗口: 目标行「白色桃花花种」+ 数量=1；出现计划外花种行则拒绝确认。
 
     实机 2026-11-17: 单种子时布局为 顶部名称「白色桃花花种」+ 底部「已选择：1/58」+「确认种植」,
@@ -528,7 +530,7 @@ def _verify_detail(eng, blocks, detail_name: str) -> bool:
     return got == TARGET_COUNT
 
 
-def _close_detail_window(eng, blocks, detail_name: str) -> bool:
+def _close_detail_window(eng: EnginePort, blocks, detail_name: str) -> bool:
     """详情不符时点右上角 X（由名称块实时坐标 + 相对偏移推导, 非屏幕写死坐标）。"""
     w, h = eng.screen_w or 1, eng.screen_h or 1
     name = next((b for b in blocks if detail_name in str(b.get("text", ""))), None)
@@ -549,7 +551,7 @@ def _close_detail_window(eng, blocks, detail_name: str) -> bool:
     return False
 
 
-def _confirm_detail(eng) -> bool:
+def _confirm_detail(eng: EnginePort) -> bool:
     for text in ("确认种植", "确认"):
         if eng.click_text([text], region_rel=DETAIL_DIALOG_REGION, no_fallback=True):
             time.sleep(1.5)
@@ -561,7 +563,7 @@ def _confirm_detail(eng) -> bool:
     return False
 
 
-def _wait_detail_closed(eng, detail_name: str, timeout=8.0) -> bool:
+def _wait_detail_closed(eng: EnginePort, detail_name: str, timeout=8.0) -> bool:
     t0 = time.time()
     while time.time() - t0 < timeout:
         if stop_requested():
@@ -574,23 +576,30 @@ def _wait_detail_closed(eng, detail_name: str, timeout=8.0) -> bool:
     return False
 
 
-def _verify_after_plant(eng, base: dict) -> bool:
-    """回读校验: d-1, 肥力 a/b 同步-2, c=0（2026-11-17 实机: 356/356 -> 354/354）。"""
+def _verify_after_plant(eng: EnginePort, base: dict, cost=None) -> bool:
+    """回读校验: d-1、c=0；肥力消耗已标定的花种另校验 a/b 同步 -cost。
+
+    cost=None（未标定）时只校验可种-1/已选归零, 肥力变化如实打印不参与判定。
+    """
     after = read_panel_info(eng)
     eng.plant_panel_after = after
     d_ok = (after["plantable_total"] is not None
             and base["plantable_total"] is not None
             and after["plantable_total"] == base["plantable_total"] - TARGET_COUNT)
-    a_ok = (after["fertility_remaining"] is not None
-            and base["fertility_remaining"] is not None
-            and after["fertility_remaining"] == base["fertility_remaining"] - TARGET_COST)
-    b_ok = (after["fertility_total"] is not None
-            and base["fertility_total"] is not None
-            and after["fertility_total"] == base["fertility_total"] - TARGET_COST)
+    if cost is not None:
+        a_ok = (after["fertility_remaining"] is not None
+                and base["fertility_remaining"] is not None
+                and after["fertility_remaining"] == base["fertility_remaining"] - cost)
+        b_ok = (after["fertility_total"] is not None
+                and base["fertility_total"] is not None
+                and after["fertility_total"] == base["fertility_total"] - cost)
+    else:
+        a_ok = b_ok = True
     c_ok = after["selected_count"] == 0
     print(f"    [种植] 种植前后: 可种 {base['plantable_total']}->{after['plantable_total']} "
           f"(期望-{TARGET_COUNT}) 肥力 {base['fertility_remaining']}/{base['fertility_total']}"
-          f"->{after['fertility_remaining']}/{after['fertility_total']} (期望 a/b 各-{TARGET_COST}) "
+          f"->{after['fertility_remaining']}/{after['fertility_total']} "
+          f"({'期望各-' + str(cost) if cost is not None else '消耗未标定, 仅记录'}) "
           f"已选={after['selected_count']}")
     ok = d_ok and a_ok and b_ok and c_ok
     print(f"    [种植] 种植判据: 可种{'OK' if d_ok else 'FAIL'} "
@@ -601,29 +610,54 @@ def _verify_after_plant(eng, base: dict) -> bool:
 
 # ---------------- 主入口 ----------------
 
-def run_plant_flower(eng, flower: str = "桃花") -> bool:
-    """阶段1+2: 搜索白色桃花 -> 精确点选 -> 数量1 -> 随机种植 -> 详情确认 -> 回读校验。"""
-    print(f"\n[种植] ===== 种植花朵(白色+{flower}): 阶段1+2 =====")
+def run_plant_flower(eng: EnginePort, flower: str = "桃花") -> bool:
+    """种植花朵: 解析目标花种 -> 阶段1搜索 -> 阶段2精确点选/数量/随机种植/详情确认 -> 回读校验。
+
+    结束（无论成功/失败）若种植面板仍打开, 统一关闭面板归位, 便于模块串联。
+    """
+    state = {"opened": False}
+    try:
+        return _run_plant_flower(eng, flower, state)
+    finally:
+        if state["opened"]:
+            _close_plant_panel(eng)
+
+
+def _run_plant_flower(eng: EnginePort, flower: str, state: dict) -> bool:
+    target = _resolve_seed(flower)
+    if target is None:
+        return False
+    print(f"\n[种植] ===== 种植花朵: {target.seed} (搜索词={target.search_kw}) =====")
     if stop_requested():
         return False
+    if not _open_plant_panel(eng, state):
+        return False
+    if not _search_target(eng, target):
+        return False
+    return _plant_target(eng, target)
 
-    # 2. 点「一键种植」进种植页
+
+def _open_plant_panel(eng: EnginePort, state: dict) -> bool:
+    """点「一键种植」并等待种植页就绪；点击一发出即标记 opened，便于 finally 收尾。"""
     if not eng.click_text(["一键种植"], region_rel=PLANT_ENTRY_REGION,
                           min_score=0.4, no_fallback=True):
         print("    [种植] 未找到「一键种植」, 中止")
         _save_shot(eng, "no_entry")
         return False
+    state["opened"] = True
     _save_shot(eng, "entry_clicked")
     if not _wait_panel_ready(eng, 10.0):
         _save_shot(eng, "panel_timeout")
         return False
+    return True
 
-    # 3. 采集页面信息
+
+def _search_target(eng: EnginePort, target: PlantTarget) -> bool:
+    """阶段1：采集页面信息 → 搜索基础花名 → 确认 → 读取筛选结果。"""
     img = _save_shot(eng, "panel")
     info = read_panel_info(eng, img)
     eng.plant_panel_info = info
 
-    # 4. 搜索花种
     if not eng.click_text(["请输入关键字"], region_rel=PLANT_PANEL_REGION,
                           min_score=0.35, no_fallback=True):
         print("    [种植] 未找到「请输入关键字」, 中止")
@@ -633,75 +667,86 @@ def run_plant_flower(eng, flower: str = "桃花") -> bool:
         _save_shot(eng, "dialog_timeout")
         return False
     _save_shot(eng, "dialog")
-    if not _input_flower(eng, flower):
+    if not _input_flower(eng, target.search_kw):
         _save_shot(eng, "input_failed")
         return False
     if not _confirm_search(eng):
         _save_shot(eng, "confirm_failed")
         return False
-    if not _wait_search_result(eng, flower, 10.0):
+    if not _wait_search_result(eng, target.search_kw, 10.0):
         _save_shot(eng, "result_timeout")
         return False
 
-    res = read_search_result(eng, flower)
+    res = read_search_result(eng, target.search_kw)
     eng.plant_search_result = res
     _save_shot(eng, "result")
     print(f"[种植] ===== 阶段1完成: found={res['found']} 结果数={len(res['results'])} =====")
-    if not res["found"]:
-        return False
+    return res["found"]
 
-    # ---------------- 阶段2: 种白色桃花 ----------------
-    seed_exact = TARGET_COLOR + flower
-    if seed_exact != "白色桃花":
-        print(f"    [种植] 目前仅支持「白色桃花」, 目标={seed_exact!r}; 中止")
-        return False
-    detail_name = seed_exact + "花种"
-    print(f"\n[种植] ===== 阶段2: {seed_exact} x{TARGET_COUNT} =====")
 
+def _plant_target(eng: EnginePort, target: PlantTarget) -> bool:
+    """阶段2：基线读取 → 选种/数量 → 随机种植/详情确认 → 回读校验。"""
+    print(f"\n[种植] ===== 阶段2: {target.seed} x{TARGET_COUNT} =====")
     base = read_panel_info(eng)
     eng.plant_panel_baseline = base
     if base["plantable_total"] is None or base["fertility_remaining"] is None:
         print("    [种植] 基线 a/d 未读到, 中止(不点种子)")
         return False
 
-    # 精确点选网格块（带数量角标）
-    grid = _find_grid_seed(eng, seed_exact)
-    if grid is None:
-        print(f"    [种植] 未找到带数量角标的精确块「{seed_exact}」, 中止; 不点其它变体")
-        _save_shot(eng, "seed_not_found")
+    mode = _choose_quantity(eng, target, base)
+    if mode is None:
         return False
+    if mode == "planted":
+        ok = _verify_after_plant(eng, base, target.cost)
+        _save_shot(eng, "after_plant")
+        print(f"[种植] ===== 阶段2{'完成' if ok else '失败'}: {target.seed} x{TARGET_COUNT} "
+              f"(数量确认即完成种植) =====")
+        return ok
+
+    if not _random_plant_and_confirm(eng, target):
+        return False
+
+    ok = _verify_after_plant(eng, base, target.cost)
+    _save_shot(eng, "after_plant")
+    cost_desc = f"消耗 {target.cost} 肥力" if target.cost is not None else "肥力消耗未标定"
+    print(f"[种植] ===== 阶段2{'完成' if ok else '失败'}: "
+          f"{target.seed} x{TARGET_COUNT} {cost_desc} =====")
+    return ok
+
+
+def _choose_quantity(eng: EnginePort, target: PlantTarget, base: dict) -> str | None:
+    """精确点选网格块 → 数量窗口调到 1 → 确认；返回 selected/planted 或 None。"""
+    grid = _find_grid_seed(eng, target.seed)
+    if grid is None:
+        print(f"    [种植] 未找到带数量角标的精确块「{target.seed}」, 中止; 不点其它变体")
+        _save_shot(eng, "seed_not_found")
+        return None
     name_block, badge = grid
     _save_shot(eng, "before_seed_click")
     eng.click_abs(int(name_block["center"][0]), int(name_block["center"][1]))
     time.sleep(1.2)
     _save_shot(eng, "quantity_dialog")
 
-    # 数量窗口
     pair = _read_quantity_pair(eng, 8.0)
     if pair is None:
         print("    [种植] 数量窗口未就绪, 中止")
-        return False
+        return None
     if not _adjust_quantity_to_one(eng, pair):
         _save_shot(eng, "quantity_failed")
-        return False
+        return None
     if not _confirm_quantity(eng):
         _save_shot(eng, "quantity_confirm_failed")
-        return False
+        return None
 
-    # 中间态: 已选=1 待随机；或数量确认已直接完成种植（实机可能）
-    state = _wait_after_quantity(eng, base, 8.0)
-    if state is None:
+    state_mid = _wait_after_quantity(eng, base, target.cost, 8.0)
+    if state_mid is None:
         _save_shot(eng, "selected_state_failed")
-        return False
-    mid, mode = state
-    if mode == "planted":
-        ok = _verify_after_plant(eng, base)
-        _save_shot(eng, "after_plant")
-        print(f"[种植] ===== 阶段2{'完成' if ok else '失败'}: {seed_exact} x{TARGET_COUNT} "
-              f"(数量确认即完成种植) =====")
-        return ok
+        return None
+    return state_mid[1]
 
-    # 随机种植
+
+def _random_plant_and_confirm(eng: EnginePort, target: PlantTarget) -> bool:
+    """点随机种植 → 等详情窗口 → 核对名称/数量 → 确认种植 → 等窗口关闭。"""
     if not eng.click_text(["随机种植"], region_rel=PLANT_PANEL_REGION,
                           min_score=0.4, no_fallback=True):
         print("    [种植] 未找到「随机种植」, 中止")
@@ -710,34 +755,27 @@ def run_plant_flower(eng, flower: str = "桃花") -> bool:
     time.sleep(1.2)
     _save_shot(eng, "detail_dialog")
 
-    # 二次确认: 白色桃花花种 = 1
-    blocks = _wait_detail_window(eng, detail_name, 10.0)
+    blocks = _wait_detail_window(eng, target.detail, 10.0)
     if blocks is None:
         _save_shot(eng, "detail_timeout")
         return False
-    if not _verify_detail(eng, blocks, detail_name):
+    if not _verify_detail(eng, blocks, target.detail):
         print("    [种植] 详情核对不符 -> 关闭窗口(右上角X), 不确认")
         _save_shot(eng, "detail_mismatch")
-        _close_detail_window(eng, blocks, detail_name)
+        _close_detail_window(eng, blocks, target.detail)
         return False
     if not _confirm_detail(eng):
         _save_shot(eng, "detail_confirm_failed")
         return False
-    if not _wait_detail_closed(eng, detail_name, 8.0):
+    if not _wait_detail_closed(eng, target.detail, 8.0):
         _save_shot(eng, "detail_not_closed")
         return False
-
-    # 回读: d-1, 当前肥力-2, c=0
-    ok = _verify_after_plant(eng, base)
-    _save_shot(eng, "after_plant")
-    print(f"[种植] ===== 阶段2{'完成' if ok else '失败'}: "
-          f"{seed_exact} x{TARGET_COUNT} 消耗 {TARGET_COST} 肥力 =====")
-    return ok
+    return True
 
 
 # ---------------- 花朵收获 ----------------
 
-def _wait_panel_or_open(eng) -> bool:
+def _wait_panel_or_open(eng: EnginePort) -> bool:
     """面板已开(左侧有「照料」)则复用；否则点「一键种植」打开。"""
     if eng.locate(["照料"], region_rel=HARVEST_LEFT_NAV_REGION,
                   need_refine=False, log_miss=False):
@@ -751,7 +789,7 @@ def _wait_panel_or_open(eng) -> bool:
     return True
 
 
-def _click_left_nav(eng, text: str) -> bool:
+def _click_left_nav(eng: EnginePort, text: str) -> bool:
     if not eng.click_text([text], region_rel=HARVEST_LEFT_NAV_REGION,
                           min_score=0.4, no_fallback=True):
         print(f"    [收获] 左侧未找到「{text}」")
@@ -760,7 +798,7 @@ def _click_left_nav(eng, text: str) -> bool:
     return True
 
 
-def _read_harvest_tabs(eng):
+def _read_harvest_tabs(eng: EnginePort):
     """读取照料页顶部「可收获(x)」「可授粉(y)」。返回 (x, y, texts)。
 
     实机 2026-11-17: 标签带裁片 2x 会把 5 个标签粘成一块并误读; 全图 OCR 能逐块读准,
@@ -790,7 +828,7 @@ def _read_harvest_tabs(eng):
     return x, y, texts
 
 
-def _wait_care_tabs(eng, timeout=6.0):
+def _wait_care_tabs(eng: EnginePort, timeout=6.0):
     t0 = time.time()
     while time.time() - t0 < timeout:
         if stop_requested():
@@ -803,7 +841,7 @@ def _wait_care_tabs(eng, timeout=6.0):
     return None
 
 
-def _wait_pollinate_page(eng, timeout=6.0) -> bool:
+def _wait_pollinate_page(eng: EnginePort, timeout=6.0) -> bool:
     t0 = time.time()
     while time.time() - t0 < timeout:
         if stop_requested():
@@ -817,28 +855,39 @@ def _wait_pollinate_page(eng, timeout=6.0) -> bool:
     return False
 
 
-def _read_pollinate_page(eng):
+def _read_pollinate_page(eng: EnginePort):
     blocks = _fine_blocks(eng, HARVEST_POLLEN_REGION, 2)
     print(f"    [收获] 授粉页左侧实读: {_texts(blocks)[:20]}")
     return blocks
 
 
-def _close_plant_panel(eng) -> bool:
-    """关闭种植面板（走 close_dialog 通用出口, 点后复核面板特征是否消失）。"""
-    print("    [收获] 关闭种植面板")
+def _close_plant_panel(eng: EnginePort) -> bool:
+    """关闭种植面板（走 close_dialog 通用出口, 点后复核面板特征是否消失）。
+
+    面板未打开时直接返回 True, 避免在其它界面误操作。
+    """
+    blocks = eng.ocr_blocks(None)
+    still = any(("照料" in str(b.get("text", ""))
+                 or "可收获" in str(b.get("text", ""))
+                 or "当前已选" in str(b.get("text", ""))) for b in blocks)
+    if not still:
+        print("    [种植面板] 面板未打开, 无需关闭")
+        return True
+    print("    [种植面板] 关闭种植面板")
     eng.close_dialog()
     time.sleep(1.5)
     blocks = eng.ocr_blocks(None)
     still = any(("照料" in str(b.get("text", ""))
-                 or "可收获" in str(b.get("text", ""))) for b in blocks)
+                 or "可收获" in str(b.get("text", ""))
+                 or "当前已选" in str(b.get("text", ""))) for b in blocks)
     if still:
-        print("    [收获] 面板关闭未确认, 仍见 照料/可收获")
+        print("    [种植面板] 面板关闭未确认, 仍见 照料/可收获/当前已选")
         return False
-    print("    [收获] 面板已关闭")
+    print("    [种植面板] 面板已关闭")
     return True
 
 
-def _wait_harvest_result(eng, timeout=8.0):
+def _wait_harvest_result(eng: EnginePort, timeout=8.0):
     """点「一键收花」后的结果: ('reward'|'no_harvest'|'unknown', blocks) 或 None。
 
     实机 2026-11-17: 已有已授粉花朵时, 可收获(x)>0 而可授粉(y)=0, 点一键收花会弹
@@ -865,7 +914,7 @@ def _wait_harvest_result(eng, timeout=8.0):
     return None
 
 
-def _close_no_harvest_popup(eng) -> bool:
+def _close_no_harvest_popup(eng: EnginePort) -> bool:
     """关闭「没有能收获的花朵」失败提示（点确定/确认, 点后复核文案消失）。"""
     for text in ("确定", "确认"):
         if eng.click_text([text], region_rel=REWARD_REGION, min_score=0.3,
@@ -888,28 +937,31 @@ def _close_no_harvest_popup(eng) -> bool:
     return True
 
 
-def _close_reward_popup(eng) -> bool:
-    for text in ("确定", "点击任意处关闭"):
-        if eng.click_text([text], region_rel=REWARD_REGION, min_score=0.3,
-                          no_fallback=True):
-            time.sleep(1.2)
-            return True
-        if _click_text_fine(eng, text, REWARD_REGION):
-            time.sleep(1.2)
-            return True
-    print("    [收获] 奖励弹窗无「确定/点击任意处关闭」, 回退 close_dialog")
-    eng.close_dialog()
-    time.sleep(1.2)
-    return True
+def _close_reward_popup(eng: EnginePort) -> bool:
+    return close_reward_popup(eng, ("确定", "点击任意处关闭"),
+                              REWARD_REGION, tag="收获", fine_fallback=True)
 
 
-def run_plant_harvest(eng) -> bool:
-    """花朵收获：照料页读可收获(x) → x=0 关面板；x>0 查可授粉(y) → y=0 收花并关弹窗。"""
+def run_plant_harvest(eng: EnginePort) -> bool:
+    """花朵收获：照料页读可收获(x) → x=0 关面板；x>0 查可授粉(y) → y=0 收花并关弹窗。
+
+    结束（无论成功/失败）若种植面板仍打开, 统一关闭面板归位。
+    """
+    state = {"opened": False}
+    try:
+        return _run_plant_harvest(eng, state)
+    finally:
+        if state["opened"]:
+            _close_plant_panel(eng)
+
+
+def _run_plant_harvest(eng: EnginePort, state) -> bool:
     print("\n[收获] ===== 花朵收获 =====")
     if stop_requested():
         return False
     if not _wait_panel_or_open(eng):
         return False
+    state["opened"] = True
 
     # 1. 照料子界面
     if not _click_left_nav(eng, "照料"):

@@ -15,6 +15,7 @@ import numpy as np
 
 from pathlib import Path
 
+from .._constants import SPLIT_CACHE_MAX
 from .._geometry import Point
 from ocr_ui import ocr_find
 
@@ -63,7 +64,7 @@ class _FindTextMixin:
                           int(nb["box"][3] / scale) + oy]
             subs.append(nb2)
         with self._split_lock:
-            if len(self._split_cache) >= 400:
+            if len(self._split_cache) >= SPLIT_CACHE_MAX:
                 self._split_cache.pop(next(iter(self._split_cache)))
             self._split_cache[key] = subs
         return [dict(nb) for nb in subs]

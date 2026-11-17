@@ -12,6 +12,7 @@ import time
 
 import numpy as np
 
+from .._constants import SPLIT_CACHE_MAX
 from .._geometry import Point
 from .._stat import _stat_add
 from ocr_ui import get_engine, get_engine_mixed, get_engine_region, ocr_image
@@ -263,10 +264,10 @@ class _OcrMixin:
                 crop = img[max(0, y1 - 10):y2 + 10, max(0, x1 - 10):x2 + 10]
                 if crop.size:
                     import cv2
-                    # 拆分缓存(2026-10-07 性能批 zcode-20261007-15): 拆分环节实测 7.5~9.6s/帧
-                    # (占单轮 OCR 60~85%), 而过宽块多为静态 UI 碎片逐帧原样重现却帧帧重拆。
                     # 按裁片像素指纹缓存拆分结果: 内容没变直接复用(等价幂等), 变了(跑马灯/滚动)
-                    # 自动重拆 —— 行为与逐帧拆分完全一致。命中重插=简单 LRU 续期, 上限 400 条。
+                    # 自动重拆 —— 行为与逐帧拆分完全一致。命中重插=简单 LRU 续期。
+                    # 2026-11-17(P2 性能): 上限 400→1000。C47 实测单轮拆分 1470 次/1737s,
+                    # 缓存命中仅 312 次; 扩大热工作集可把跨屏重复的静态碎片转为命中(内存可忽略)。
                     origin = (max(0, x1 - 10), max(0, y1 - 10))
                     # ⚠ 键必须含**裁片位置**（主 agent 修订, 里程碑 83）：缓存值存的是**全帧绝对坐标**
                     # (/2 + origin)，若同一像素内容出现在不同位置（重复 UI 元素 / 移动中的横幅，
@@ -301,7 +302,7 @@ class _OcrMixin:
                                       int(nb["box"][3] / 2) + max(0, x1 - 10)]
                         newly.append(nb2)
                     with self._split_lock:
-                        if len(self._split_cache) >= 400:
+                        if len(self._split_cache) >= SPLIT_CACHE_MAX:
                             self._split_cache.pop(next(iter(self._split_cache)))
                         self._split_cache[key] = newly
                     sub_blocks.extend(dict(nb) for nb in newly)
