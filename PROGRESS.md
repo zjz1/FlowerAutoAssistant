@@ -2984,6 +2984,9 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 
 - dotnet SDK **8.0.427**（用户级安装 `%LOCALAPPDATA%\Microsoft\dotnet`，未进 PATH）。
 - `dotnet build native/FAA.WpfGui/FAA.WpfGui.sln -c Release`：**0 警告 0 错误**。
+- `dotnet publish ... -r win-x64 --self-contained true -p:PublishSingleFile=true`：成功，
+  `native/dist/FAA.WpfGui.exe` **154,360,900 字节（约 147 MB）**；发布产物
+  `--probe-test`（8794=faa / 8793=free）**SELFTEST PASS**。
 - `dotnet test native/FAA.WpfGui.Tests`：**65/65 PASS**。
 - `run_selftest.ps1 --probe-test`：8794=`faa`（`/api/health service=faa`）、
   8793=`free` → **SELFTEST PASS**。
