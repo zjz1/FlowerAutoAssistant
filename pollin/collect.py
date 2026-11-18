@@ -47,6 +47,21 @@ def close_quick_action_menu(eng: EnginePort, img=None) -> bool:
     return True
 
 
+def _no_pollen_after_timeout(eng: EnginePort, img) -> bool:
+    """5s 无显著帧差后的复核：弹窗在屏 -> 关掉并按 empty 处理(返回 True)。
+
+    2026-11-18 实机：`点采粉后画面变化` 5s 超时，但下一步 open_friend_list 立即
+    发现「没有花粉」提示框 —— 小/半透明弹窗的帧差可能低于 0.02，或弹窗晚于窗口
+    出现。这里在判 fail 前补一次弹窗复核，避免把 empty 误记为 fail；不改变点击/
+    等待逻辑，查不到弹窗仍按 fail 处理。
+    """
+    if not no_pollen_popup(eng, img):
+        return False
+    print("    [采集] 5s 无显著帧差, 但「没有花粉」提示框在屏 -> 按 empty 处理")
+    dismiss_no_pollen_popup(eng, img)
+    return True
+
+
 def collect_one(eng: EnginePort, x, y):
     """进好友家园 -> 快捷操作 -> 采粉。返回 ok / empty / fail。
 
@@ -121,22 +136,25 @@ def collect_one(eng: EnginePort, x, y):
     base = eng.screenshot()
     changed = wait_until(eng, lambda: frame_diff(base, eng.screenshot()) >= 0.02, 5,
                          desc="点采粉后画面变化", interval=0.5)
-    if not changed:
-        print("    [采集] 点采粉后 5s 画面无变化(点击可能被吞/被气泡遮挡), 本槽位跳过")
-        return "fail"
     img = eng.screenshot()
-    empty = no_pollen_popup(eng, img)
-    if empty:
-        dismiss_no_pollen_popup(eng, img)
-    elif has(eng, "采粉", img=img):
-        # 画面已变化但「一键采粉」菜单仍在(2026-10-04, 协作区 zcode-20261004):
-        # 旧判据把它当"未确认失败"→ 当晚 7 槽位全 fail、采粉 0 收获。实机观察:
-        # 「一键采粉」点击后菜单**不会自动关闭**, 菜单残留属正常态; 点采粉后画面已变化
-        # 即采集生效(花粉动画/数值变化)。菜单残留≠失败 —— 判定放宽为成功,
-        # 下方统一收菜单。(是否真采到以游戏内花粉数为准, 待实机确认)
-        print("    [采集] 采集生效(画面已变化; 快捷菜单未自动关闭属正常), 继续收菜单")
+    if not changed:
+        if not _no_pollen_after_timeout(eng, img):
+            print("    [采集] 点采粉后 5s 画面无变化(点击可能被吞/被气泡遮挡), 本槽位跳过")
+            return "fail"
+        empty = True
     else:
-        print("    [采集] 静默成功(有花粉)")
+        empty = no_pollen_popup(eng, img)
+        if empty:
+            dismiss_no_pollen_popup(eng, img)
+        elif has(eng, "采粉", img=img):
+            # 画面已变化但「一键采粉」菜单仍在(2026-10-04, 协作区 zcode-20261004):
+            # 旧判据把它当"未确认失败"→ 当晚 7 槽位全 fail、采粉 0 收获。实机观察:
+            # 「一键采粉」点击后菜单**不会自动关闭**, 菜单残留属正常态; 点采粉后画面已变化
+            # 即采集生效(花粉动画/数值变化)。菜单残留≠失败 —— 判定放宽为成功,
+            # 下方统一收菜单。(是否真采到以游戏内花粉数为准, 待实机确认)
+            print("    [采集] 采集生效(画面已变化; 快捷菜单未自动关闭属正常), 继续收菜单")
+        else:
+            print("    [采集] 静默成功(有花粉)")
 
     # 收「快捷操作」菜单(否则挡住底栏「社交」): 专用区域 + exact ——
     # 旧 click_text(["快捷操作"]) 会命中 OCR 合并块(如「快捷操作种植箱」)并取其中心, 该点可能
