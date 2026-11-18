@@ -2978,6 +2978,32 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
   精确选白 → 1/59 → 详情核对 → `可种 59→58、肥力 352→350、已选 0` → 面板关闭；
   拆分后的阶段函数与 `PlantTarget` 全链正常。
 
+## 2026-11-18 · 里程碑 131：WPF 编译/自测补验 + fail_cache_info 缓存污染修复
+
+### 131.1 WPF 编译与自测
+
+- dotnet SDK **8.0.427**（用户级安装 `%LOCALAPPDATA%\Microsoft\dotnet`，未进 PATH）。
+- `dotnet build native/FAA.WpfGui/FAA.WpfGui.sln -c Release`：**0 警告 0 错误**。
+- `dotnet test native/FAA.WpfGui.Tests`：**65/65 PASS**。
+- `run_selftest.ps1 --probe-test`：8794=`faa`（`/api/health service=faa`）、
+  8793=`free` → **SELFTEST PASS**。
+- `run_selftest.ps1 --host-selftest 8793`：venv-check / probe before / spawn(1.1s) /
+  probe after spawn(faa) / graceful shutdown / probe after stop(free) → **全 PASS**。
+- `run_selftest.ps1 --api-selftest get-only`：首轮 27/28（见 131.2），修复后 **28/28 PASS**。
+- `run_selftest.ps1 -RunUnitTests` 路径修正（测试工程与 `FAA.WpfGui` 同级）；
+  `.ps1` 改为 **UTF-8 BOM + LF** —— PowerShell 5.1 对无 BOM 的 UTF-8 脚本按 ANSI 解码，
+  中文注释会导致解析异常（实测丢变量赋值，报 `Test-Path` 空路径）。
+
+### 131.2 fail_cache_info 缓存污染修复
+
+- 根因：`/api/fail_cache_info` 里 `st = _fail_cache_stat(); st["files"] = sorted(...)`
+  原地改写 stat 缓存；之后 `/api/status` 的 `cst["files"] <= arc["files"]` 变成
+  `list <= set` → `TypeError`；`/api/tplt_init` 未连接分支调用 `_status()` → 500。
+- 修复：`st = dict(_fail_cache_stat())` 复制后再排序，缓存保持 set 语义。
+- 回归：`tests/test_http_handler.py` 新增
+  `test_fail_cache_info_does_not_mutate_stat_cache`（临时 fail_cache 目录 + 缓存类型断言）。
+- 验证：**73/73** 离线测试、闸门 **98/98**、WPF API 自测 **28/28 PASS**。
+
 ## 2026-11-18 · 里程碑 130：修复「快捷操作」收菜单区域
 
 **背景**：2026-11-17 23:25 实机日志暴露：`[采集] 收「快捷操作」菜单` 使用的是
@@ -3009,10 +3035,8 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 - pywebview 壳（8766）冒烟：启动后 `/api/health` 返回 `service=faa`；
   服务日志出现 `[webui] 已登记父进程看护 (pid=66216)`；强杀壳进程后 5s 内
   服务退出、端口释放，无孤儿监听（无 `webui.py --port 8766` 残留）。
-- WPF：本机 `dotnet` 不在 PATH，无法重建；仓库内预构建 exe 为 2026-11-16，
-  早于 2026-11-17 的 `ProbeService` / `FaaProcessHost` 改动，不能用于验证
-  Stage 4 的 health 握手与 `--parent-pid`。待装 .NET SDK 的机器补做
-  `dotnet build` / `--probe-test` / `--host-selftest`。
+- WPF：2026-11-18 已补验（dotnet 8.0.427 用户级安装、不在 PATH；用全路径构建），
+  编译/单元测试/自测见里程碑 131。此前“预构建 exe 早于源码改动”的记录保留作历史参考。
 - pywebview 定位：冻结保留为轻量备用/开发壳；主推 WPF；不再为 pywebview 增加新功能。
 
 ## 2026-11-17 · 里程碑 129：Stage 5 `pollin.py` 分包

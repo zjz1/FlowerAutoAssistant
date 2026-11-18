@@ -94,8 +94,11 @@ class RouterMixin:
             return self._log_clear()
         # ---- 故障存证截图: 缓存信息 / 清理 / 浏览目录 (里程碑 94) ----
         if api == "fail_cache_info" and self.command == "GET":
-            st = _fail_cache_stat()
-            st["files"] = sorted(st["files"])  # D7(方案批 D 表 D7): set 不可 JSON 序列化致本接口 500, 进 JSON 前转有序列表; _status() 内部仍用原 set 做子集比对, 故不改 _fail_cache_stat 返回类型
+            # D7(方案批 D 表 D7): set 不可 JSON 序列化 -> 复制一份再转有序列表。
+            # ⚠ 2026-11-18: 不能原地改 stat() 的缓存 dict —— 否则 files 变 list,
+            # 紧随的 /api/status 里 set<=set 子集比对会抛 TypeError(自测实测 500)。
+            st = dict(_fail_cache_stat())
+            st["files"] = sorted(st["files"])
             thr = float(get_engine().config.get("fail_cache_prompt_mb", 100) or 100)
             return self._send_json({**st, "mb": st["bytes"] / 1048576, "threshold_mb": thr,
                                     "exceed": st["bytes"] / 1048576 >= thr})

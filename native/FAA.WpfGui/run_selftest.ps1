@@ -1,4 +1,4 @@
-# run_selftest.ps1 - FAA.WpfGui 自测启动器(批 21; N02/batch-06 增 -RunUnitTests 分支)。
+﻿# run_selftest.ps1 - FAA.WpfGui 自测启动器(批 21; N02/batch-06 增 -RunUnitTests 分支)。
 # 用途: 统一脚本可改调本启动器跑自测 —— 自动补 DOTNET_ROOT(本机 dotnet 为用户级安装
 #       C:\Users\zjz1\AppData\Local\Microsoft\dotnet, 无全局安装; exe 是框架依赖 WinExe,
 #       apphost 靠 DOTNET_ROOT 找 hostfxr, 不设则卡「缺少运行时」且无任何输出)。
@@ -15,7 +15,10 @@ if (-not $env:DOTNET_ROOT) {
 }
 # N02(batch-06): -RunUnitTests → dotnet test Tests 工程(与四条 exe 自测链并列, 结果只看退出码)
 if ($args.Count -gt 0 -and $args[0] -eq '-RunUnitTests') {
-    $testsProj = Join-Path $PSScriptRoot 'FAA.WpfGui.Tests\FAA.WpfGui.Tests.csproj'
+    # 2026-11-18: 测试工程与 FAA.WpfGui 同级（native\FAA.WpfGui.Tests），不是子目录。
+    # PowerShell 5.1 下 -File 调用时 $PSScriptRoot 偶发为空，退回 $MyInvocation 定位脚本目录。
+    $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+    $testsProj = Join-Path (Split-Path $scriptDir -Parent) 'FAA.WpfGui.Tests\FAA.WpfGui.Tests.csproj'
     if (-not (Test-Path $testsProj)) {
         Write-Error "未找到测试工程: $testsProj"
         exit 1

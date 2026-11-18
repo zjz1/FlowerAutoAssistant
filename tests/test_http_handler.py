@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import webui
-from app import engine_service
+from app import engine_service, failcache_service
 from transport.http.base import HandlerBase
 from transport.http.device import DeviceRoutes
 from transport.http.handler import Handler
@@ -75,6 +77,26 @@ class HttpHealthContractTests(unittest.TestCase):
         self.assertTrue(data["ready"])
         self.assertIn("connected", data)
         self.assertIn("engine_loaded", data)
+
+    def test_fail_cache_info_does_not_mutate_stat_cache(self):
+        """2026-11-18 WPF API 自测暴露: router 原地排序 files 把 stat 缓存变成 list,
+        紧随的 /api/status 子集比对 set<=set 抛 TypeError -> /api/tplt_init 500。"""
+        old_dir = failcache_service.FAIL_CACHE_DIR
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                failcache_service.FAIL_CACHE_DIR = Path(td)
+                sess = failcache_service.FAIL_CACHE_DIR / "s1"
+                sess.mkdir()
+                (sess / "fail_20261118_001_x.jpg").write_bytes(b"x")
+                failcache_service.invalidate_stat()
+                failcache_service.stat(force=True)
+
+                data = self._get("/api/fail_cache_info")
+                self.assertIsInstance(data["files"], list)
+                self.assertIsInstance(failcache_service.stat()["files"], set)
+        finally:
+            failcache_service.FAIL_CACHE_DIR = old_dir
+            failcache_service.invalidate_stat()
 
 
 if __name__ == "__main__":
