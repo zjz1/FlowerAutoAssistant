@@ -17,7 +17,7 @@ from .constants import (CHAT_COLLAPSE_REGION, CHAT_COLLAPSE_TH, CHAT_COLLAPSE_TP
                         FRIENDLIST_EXIT_REGION, FRIENDLIST_EXIT_TH,
                         SHELL_CLOSE_REGION, SHELL_CLOSE_TH, TPL_DELEGATE_CLOSE,
                         TPL_FRIENDLIST_EXIT, TPL_SHELL_CLOSE, _PINK_CFG, _PINK_MIN)
-from .popups import dismiss_no_pollen_popup, no_pollen_popup
+from .popups import dismiss_no_pollen_popup, dismiss_reward_popup, no_pollen_popup
 from .primitives import (frame_diff, has_social, save_escape_evidence,
                          wait_screen_change, wait_until)
 
@@ -238,6 +238,16 @@ def _ensure_home_walk(eng: EnginePort):
         if stop_requested():
             return False
         img = eng.screenshot()
+        # 2026-11-19: 升级/解锁全屏弹窗(等级提升 + 点击任意处关闭)会盖住场景与右上角✕,
+        # 旧链在未知场景分支只能放弃归位(2026-11-19 日志 claim/daily 连挂)。先用 reward
+        # 原语关闭(标题优先, 点弹窗内部), 再走原场景判定。
+        if callable(getattr(eng, "has_reward_popup", None)) \
+                and callable(getattr(eng, "reward_dialog", None)) \
+                and eng.has_reward_popup(img=img):
+            print("  [主界面] 检测到奖励/升级全屏弹窗 -> 先关闭")
+            if dismiss_reward_popup(eng, img=img):
+                stale = 0
+                continue
         if at_home_main(eng, img):
             print("  [主界面] 已回到主界面(户外)")
             eng.set_scene("家园主界面")

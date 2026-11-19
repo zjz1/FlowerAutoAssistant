@@ -22,6 +22,9 @@ class _RewardMixin:
     # 本原语统一三件事: ①判据(标题或页脚在屏=成功界面出现) ②收尾(标题优先点击, 页脚仅兜底)
     #   ③上报(未见/关不掉如实 print, required=true 时登记软失败)。范式取自 pollin.dismiss_reward_popup。
     REWARD_TITLE_KW = "恭喜获得"
+    # 2026-11-19: 升级/解锁全屏弹窗没有「恭喜获得」, 标题是「等级提升」, 页脚同为
+    # 「点击任意处关闭」。并入标题优先序 —— 点标题(弹窗内部)不会像点页脚那样穿透。
+    REWARD_LEVELUP_KW = "等级提升"
     REWARD_FOOTER_KW = "点击任意处关闭"
     # 性能批 zcode-20261028-9(两段式区域化): 默认搜索带(相对坐标 [x1,y1,x2,y2], 0~1)。
     # 依据=三源实测落点一致:「恭喜获得」rel(0.499,0.237) —— 10-27 日志「领取成功界面 @(639,171)」
@@ -54,10 +57,11 @@ class _RewardMixin:
         img = img if img is not None else self.screenshot()
         if img is None:
             return None
-        kws = list(kws or [self.REWARD_TITLE_KW, self.REWARD_FOOTER_KW])
+        kws = list(kws or [self.REWARD_TITLE_KW, self.REWARD_LEVELUP_KW, self.REWARD_FOOTER_KW])
         # 显式两段式: locate 只返回首个命中块, 块序不保证按关键字先后 -> 必须标题单独先试
-        order = ([self.REWARD_TITLE_KW] if self.REWARD_TITLE_KW in kws else []) \
-            + [k for k in kws if k != self.REWARD_TITLE_KW]
+        title_kws = (self.REWARD_TITLE_KW, self.REWARD_LEVELUP_KW)
+        order = ([k for k in title_kws if k in kws]
+                 + [k for k in kws if k not in title_kws])
         for kw in order:
             # zcode-20261028-9: 仅「未显式限定 + 闸门开」时按关键字选带; 显式 region_rel
             # (含空列表)原样透传, 与旧版行为逐字节一致(_ocr_candidates 对非 4 元素区域本就走全图)。
@@ -74,7 +78,7 @@ class _RewardMixin:
         return None
 
     def has_reward_popup(self, img=None, region_rel=None, keywords=None) -> bool:
-        """当前画面是否在屏奖励弹窗(标题「恭喜获得」或页脚「点击任意处关闭」)。公开给 pollin 守卫复用。
+        """当前画面是否在屏奖励弹窗(标题「恭喜获得/等级提升」或页脚「点击任意处关闭」)。公开给 pollin 守卫复用。
         O2: 只判存在 -> 不拆分(拆分的唯一用途是给点击提供精确坐标)。
         E1: 强静默 —— 调用点都是「有弹窗才做事」的高频守卫, 未命中是常态, 不逐条打印。"""
         return self._reward_popup_point(img=img, region_rel=region_rel, kws=keywords,

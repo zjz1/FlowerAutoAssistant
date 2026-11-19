@@ -102,27 +102,40 @@ public partial class SettingsViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanShutdownService))]
     private Task ShutdownServiceAsync() => _main.ShutdownServiceAsync();
 
-    /// <summary>「重启后端」可用性(B3): 仅服务由本窗口托管(free 自起)且已连接时可用 —— 外部实例不受本程序
-    /// 托管(Host 无进程句柄), 无从重启(强起会同端口撞车)。</summary>
-    public bool CanRestartBackend => _main.Session.OwnsService && _main.IsServiceConnected;
+    /// <summary>「重启后端」可用性(B3): 仅服务由本窗口托管(free 自起)时可用 —— 外部实例不受本程序
+    /// 托管(Host 无进程句柄), 无从重启(强起会同端口撞车)。**不再要求已连接** —— 服务不可达
+    /// 正是需要重启的时候; 重启执行中禁用防连点。</summary>
+    public bool CanRestartBackend => _main.Session.OwnsService && !_restarting;
+
+    private bool _restarting;
 
     /// <summary>重启后端(B3): 调此前零调用的 FaaProcessHost.RestartAsync(优雅停 → 同端口重探测自起;
     /// 引擎重载需 10-30s) → 成功后状态刷新(轮询恢复, 徽章/按钮自动回到可用态); 失败弹框如实报错。
-    /// 重启期间服务不可达 → IsServiceConnected 置假 → 本按钮经 CanExecute 自动禁用, 防连点。</summary>
+    /// 2026-11-19: 服务不可达时也可点(这是恢复入口); 仅执行期间禁用, 防连点。</summary>
     [RelayCommand(CanExecute = nameof(CanRestartBackend))]
     private async Task RestartBackendAsync()
     {
+        _restarting = true;
+        RestartBackendCommand.NotifyCanExecuteChanged();
         ConnStateText = "重启中…(引擎重载需 10-30s)";
         Services.DebugTrace.Log("settings.restart-backend: begin");
-        var r = await _main.Session.Host.RestartAsync();
-        Services.DebugTrace.Log($"settings.restart-backend: success={r.Success} err={(r.Success ? "" : r.Error)}");
-        if (!r.Success)
+        try
         {
-            ConnStateText = "重启失败";
-            DialogService.Warn($"重启后端失败:\n{r.Error}", "FAA 原生窗口");
-            return;
+            var r = await _main.Session.Host.RestartAsync();
+            Services.DebugTrace.Log($"settings.restart-backend: success={r.Success} err={(r.Success ? "" : r.Error)}");
+            if (!r.Success)
+            {
+                ConnStateText = "重启失败";
+                DialogService.Warn($"重启后端失败:\n{r.Error}", "FAA 原生窗口");
+                return;
+            }
+            await _main.RefreshStatusNowAsync();   // 完成后状态刷新
         }
-        await _main.RefreshStatusNowAsync();   // 完成后状态刷新
+        finally
+        {
+            _restarting = false;
+            RestartBackendCommand.NotifyCanExecuteChanged();
+        }
     }
 
     // ==================== 卡片二: 识别(契约6 唯一回显来源 /api/daily) ====================

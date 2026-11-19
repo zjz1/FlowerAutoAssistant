@@ -431,7 +431,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
             _statusFailStreak++;
             if (_statusFailStreak >= 2)
             {
-                SetBadge($"服务不可达, 重试中… (: {Session.Port})", UiBrushes.Err);
+                // 2026-11-19: 「重试中」只代表继续轮询 HTTP; 托管服务的真正恢复入口是
+                // 「设置 → 重启后端」(服务不可达时保持可用)。外部服务只能等其恢复。
+                SetBadge(Session.OwnsService
+                    ? $"服务不可达, 可在「设置 → 重启后端」恢复 (:{Session.Port})"
+                    : $"服务不可达, 等待外部服务恢复… (:{Session.Port})", UiBrushes.Err);
                 IsServiceConnected = false;   // A3: 连续失败=已断开 → 「关闭服务」入口禁用
             }
             return;

@@ -2978,6 +2978,70 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
   精确选白 → 1/59 → 详情核对 → `可种 59→58、肥力 352→350、已选 0` → 面板关闭；
   拆分后的阶段函数与 `PlantTarget` 全链正常。
 
+## 2026-11-19 · 里程碑 137：服务不可达时「重启后端」不可用修复
+
+**现象**：原生 UI 仍在运行，但后端 8765 不可达时，设置页「重启后端」按钮被禁用，
+状态栏只显示「服务不可达, 重试中…」，无法恢复服务。
+
+**根因**：
+- `SettingsViewModel.CanRestartBackend` 要求 `OwnsService && IsServiceConnected` ——
+  服务断开后 `IsServiceConnected=false`，按钮反而被禁用，恰好失去恢复入口。
+- `StatusLoopAsync` 只重试 HTTP `/api/status`；不会重启托管服务。
+- 普通恢复路径只能等外部服务回来；托管服务进程退出/卡死后无入口。
+
+**修复**：
+- `CanRestartBackend => OwnsService && !_restarting`：服务不可达时仍可点；
+  仅在重启执行期间禁用防连点。
+- 状态栏文案区分托管/外部：托管服务提示「可在设置 → 重启后端恢复」；
+  外部服务提示「等待外部服务恢复」。
+- `RestartBackendAsync` 加 `_restarting` 守卫；`FaaProcessHost.RestartAsync`
+  对已退出/卡死进程走 StopAsync 兜底后同端口重新探测自启。
+
+**验证**：
+- WPF 构建 0 警告 0 错误；单元测试 **65/65**；`native/dist` 已更新。
+- 实机：停掉 8765 → 状态轮询连续失败 → 「重启后端」按钮 `enabled=True` →
+  UI Automation 触发 → `health2=faa`（新 service pid），trace
+  `settings.restart-backend: success=True`；随后通过资源管理器启动的新 UI
+  （PID 32996）与服务（pid 2200）保持运行。
+- 说明：这是**手动恢复**，未加自动重启（避免崩溃循环）；外部服务仍只能等待其恢复。
+
+## 2026-11-19 · 里程碑 136：等级提升全屏弹窗卡死修复 + 诊断工具升级
+
+**日志分析**（`faa_log_20261119_181737.txt`，17:24:20–17:56:01）：
+- 编排 `ok=4 skip=0 fail=2`；claim 4 项、daily 8 项软失败。
+- 17:52:25 起画面仅 4 块 OCR：`等级提升(642,159)` / `147→148` / `已全部解锁` /
+  `点击任意处关闭(640,676)`；`reward_dialog` 无「恭喜获得」标题，点页脚 (640,676)
+  两次仍不关（页脚穿透）；`close_dialog` 无候选；`ensure_home` 未识别场景 →
+  连续 2 次退出无变化 → 放弃；daily 重复 4 轮直至编排结束。
+
+### 136.1 修复
+
+- `ocr_engine/engine/_reward.py`：新增 `REWARD_LEVELUP_KW="等级提升"`，标题优先序；
+  升级弹窗改为点标题 `(642,159)`（弹窗内部），不再点页脚。
+- `ocr_engine/engine/_closebtn.py`：`close_dialog` 无常规关闭按钮时，检测
+  「点击任意处关闭」覆盖层并交给 `reward_dialog` 关闭。
+- `pollin/navigation.py`：`_ensure_home_walk` 每轮先检测奖励/升级弹窗，关闭后重判场景。
+- `flows/flow_startup.json`：签到奖励 keywords 增补「等级提升」。
+- 新增 `tests/test_upgrade_overlay.py`：标题优先、close_dialog 回退、无覆盖层不误点。
+
+### 136.2 诊断工具升级（不新增旁路脚本）
+
+- `_dev/dev_tools/analysis/log_triage.py`：
+  - 新增「全屏升级/解锁覆盖层」异常签名（本次日志 30 次，claim/daily，L1504 起）；
+  - `make_sig` 对覆盖层优先归类，避免被 `[OCR未命中]` 的「实读到」截断吞掉；
+  - 速览末尾新增根因提示：后续 close_dialog/ensure_home/navigate 的 MISS 多为此连锁。
+- `_dev/dev_tools/explore/overlay_probe.py`：实机覆盖层探针/关闭工具
+  （默认只读；`--close` 点击复检；`--image` 离线帧；`--json`）。
+- `debug/upgrade_popup_live.py` 改为薄入口，委托 `overlay_probe.py`，不再复制引擎逻辑。
+
+### 136.3 验证
+
+- 离线：**80/80** 测试；闸门 **100/100**。
+- 实机：`has_reward True` → `point (642,159)` → 一次点击 → `已关闭`，`still False`
+  （`debug/upgrade_popup_live.log`）。
+- 工具：`log_triage` 复跑输出 `30次 全屏升级/解锁覆盖层 [claim, daily]` + 根因提示；
+  `overlay_probe.py --image` 在卡死截图上输出 `has_reward=true`、`point=[643,159]`。
+
 ## 2026-11-19 · 里程碑 135：原生「关于」页改为真实项目地址
 
 - 项目文档 → `https://github.com/zjz1/FlowerAutoAssistant/tree/main/docs`

@@ -234,6 +234,14 @@ class _CloseButtonMixin:
         img = img if img is not None else self.screenshot()
         hits = self.find_all_close_buttons(img=img, only_types=only_types)
         if not hits:
+            # 2026-11-19: 「等级提升 / 已全部解锁 + 点击任意处关闭」全屏覆盖层没有右上角✕。
+            # 旧链在 claim/daily 的 ensure_home 里连续空转直至模块软失败; 交给 reward 原语:
+            # 标题优先点击(弹窗内部, 无穿透), 页脚仅兜底。
+            if self.has_reward_popup(img=img):
+                print("[关闭弹窗] 无常规关闭按钮, 检测到「点击任意处关闭」覆盖层 -> 按奖励弹窗关闭")
+                if self.reward_dialog({"wait": 0.0, "tries": 2, "required": False,
+                                       "quiet": True, "name": "全屏覆盖层"}):
+                    return True
             print("[关闭弹窗(only_types)] 未定位到匹配类型的关闭按钮")
             return False
 
