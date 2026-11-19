@@ -576,11 +576,11 @@
    git branch -vv           # 确认分支与远程领先/落后
    ```
 
-3. **暂存 + 提交**（身份用 `-c` 内联临时指定，与历史一致 `zjz1 <zjz1@users.noreply.github.com>`；本仓库未落盘全局/本地 user.name/email，直接 `git commit` 会报 `Author identity unknown`）：
+3. **暂存 + 提交**（身份用 `-c` 内联临时指定，与历史一致 `<GitHub 用户名> <GitHub noreply 邮箱>`；本仓库未落盘全局/本地 user.name/email，直接 `git commit` 会报 `Author identity unknown`）：
 
    ```powershell
    git add PROGRESS.md webui.py webui.html start_webui.bat data/config.json data/click_log.json
-   git -c user.name="zjz1" -c user.email="zjz1@users.noreply.github.com" commit -m "feat: <一句话主题>
+   git -c user.name="<GitHub 用户名>" -c user.email="<GitHub noreply 邮箱>" commit -m "feat: <一句话主题>
 
    <（可选）详细说明, 分点列出改动, 用空行分隔正文>"
    ```
@@ -2528,7 +2528,7 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
 
 **勘察结论（根因，非"乱放文件"）**：两个协作 agent 框架把 `FAA_basis` 当成了自己的**根**：
 - **office-claw 治理包**：`.office-claw/governance-bootstrap-report.json` 内 `"projectPath"` 写死
-  `E:\my_project\trae project\FAA_basis`（packVersion 2.0.0）→ 在根生成 `BACKLOG.md`、`docs/SOP.md`、
+  `<工作区根>`（packVersion 2.0.0）→ 在根生成 `BACKLOG.md`、`docs/SOP.md`、
   `docs/{features,decisions,discussions}/`。
 - **DeepAgents 风格 agent home**：`AGENT.md` 首句「This folder is home.」，引用
   `SOUL.md`/`IDENTITY.md`/`skills/`/`agents/`/`todo/` → 在根生成 `AGENT.md` `SOUL.md` `IDENTITY.md`

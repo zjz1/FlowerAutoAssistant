@@ -2,11 +2,13 @@
 
 面向页游《小花仙》的**一键挂机**自动化框架。基于 **OCR 文字识别 + 相对坐标** 的数据驱动方案，实现"识别界面 → 定位按钮 → 点击执行 → 循环挂机"。
 
-> ⚠️ **仅供学习与个人使用。** 本项目不包含任何游戏素材、资源包或解包工具，仅含通用自动化逻辑。请遵守游戏服务条款及所在地区法律法规，由此产生的账号风险由使用者自行承担。
+> ⚠️ **仅供学习与个人使用。** 本项目不包含完整游戏素材、资源包或解包工具；`resource/template/` 仅含少量界面识别模板，版权归游戏权利方（见 [ASSETS.md](ASSETS.md)）。请遵守游戏服务条款及所在地区法律法规，由此产生的账号风险由使用者自行承担。
 
 > 🧪 **试验包（`_lab`，LAB-2）**：本目录是 zcode 重构双包中的 OCR 侧，**未进正式版**。
 > `native/` 已拆分到 `_lab/native_ui/`；`webui_app.py` / `PROGRESS.md` 取当前工作树（含 M113）；
 > 性能灰度默认全关、实机 A/B 未执行；详见同目录 `LAB_NOTES.md`。
+>
+> **素材与许可**：代码 MIT；`resource/template/` 下的游戏 UI 截图为识别用途，不属于 MIT，详见 [ASSETS.md](ASSETS.md)；第三方依赖许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ---
 
@@ -103,7 +105,10 @@ FlowerAutoAssistant/
 
 ```bash
 pip install -r requirements.txt
-# maafw, opencv-python, Pillow, pywebview, rapidocr_onnxruntime（OCR 引擎）
+# 运行 CLI/后端：maafw, opencv-python, Pillow, rapidocr_onnxruntime
+
+pip install -r requirements-dev.txt
+# 开发/调试：额外包含 pywebview（WebView 壳，不进入发行包）
 ```
 
 ## 环境
@@ -140,31 +145,37 @@ python main.py --address 127.0.0.1:16384 --adb "D:\Program Files\Netease\MuMu\nx
 ### WebUI
 
 ```bash
+# 主推：WPF 原生窗口（发行包）
+start_faa_native.bat
+# 或 native\dist\FAA.WpfGui.exe
+
+# 备用/调试：浏览器 WebUI
 python webui.py            # 默认 8765
 start_webui.bat            # 或双击：优先用 .venv，启动后自动开浏览器
-python webui_app.py        # 原生窗口（WebView2/pywebview），启动不自开浏览器
-start_webui_app.bat        # 或双击原生窗口
+
+# 仅开发：pywebview WebView 壳（不进入发行包）
+python webui_app.py
+start_webui_app.bat
 ```
 
-> **推荐原生窗口**（`start_webui_app.bat` / `python webui_app.py`）：同一套 `webui.py` 服务装进独立 WebView2 窗口；
-> 端口已有 FAA 实例则**直接复用、不重复起服务**，否则在**后台拉起独立服务进程**
-> （`webui.py --port N --parent-pid 壳PID`，壳不加载引擎）；**启动不自动开浏览器**，
-> 关窗即停掉本窗口拉起的服务（父进程看护兜底，不留孤儿端口）。
-> 原生窗口内「保存日志」走**原生另存为对话框**（WebView2 无浏览器下载管理器，由壳层 js_api 落盘）。
-> `start_webui.bat` 仍保留（浏览器模式，会自动开浏览器）。
+> **发行版主推 WPF 原生窗口**：`native/FAA.WpfGui`（构建后运行 `native/dist/FAA.WpfGui.exe`）。
+> 浏览器 WebUI 保留为备用/调试入口；`webui_app.py` / `start_webui_app.bat` 仅为开发用 WebView 壳，
+> 需要 `requirements-dev.txt`，**不进入发行包**。WPF 与 WebUI 共用同一个 `webui.py` 服务；
+> 端口已有 FAA 实例则复用，否则在后台拉起独立服务进程（父进程看护兜底，不留孤儿端口）。
 
-### 两个原生窗口（术语区分，2026-11-13 N04 补档）
+### 两个窗口实现（发行版只带 WPF）
 
-「原生窗口」一词在本项目里指**两个不同的实现**，注意不要混用：
+「原生窗口」一词在本项目里指**两个不同的实现**，注意不要混用；**发行包只带壳 2**：
 
 | | 壳 1 · `webui_app.py`（Python） | 壳 2 · `native/FAA.WpfGui`（C#/WPF） |
 |---|---|---|
+| 定位 | **开发/备用 WebView 壳，不进入发行包** | **发行版主推原生窗口** |
 | 技术栈 | WebView2 / pywebview，Python 单文件（~405 行） | WPF + CommunityToolkit.Mvvm（48 文件，cs+xaml 7712 行） |
-| 自称 | 模块 docstring「原生窗口外壳」 | 窗口标题/弹框标题 **`FAA 原生窗口`**（`DialogService.cs` DefaultTitle、`App.xaml.cs` FindWindow 按此标题单实例激活） |
-| 启动 | `python webui_app.py` / `start_webui_app.bat` | 构建后运行 `native/FAA.WpfGui`（`build_native.bat`）；后端仍复用同一 `webui.py` 服务 |
-| 状态 | 已入仓可运行（HEAD「新增原生窗口外壳」） | 批 16-22 + 收尾批交付，构建需 .NET SDK（闸门 `check_project.py` 原生 UI 预检，无 SDK 降级 WARN） |
+| 启动 | `python webui_app.py` / `start_webui_app.bat`（需 `requirements-dev.txt`） | `start_faa_native.bat` / `native/dist/FAA.WpfGui.exe` |
+| 状态 | 已入仓可运行；dev-only | 发行版主推；自包含发布件 |
 
-两壳**共用同一个后端**（`webui.py` 的 HTTP 服务，端口 8765），功能等价仅外壳不同；本文档「推荐原生窗口」段落指**壳 1**（当前 README 启动说明所覆盖的实现），壳 2 的工程细节见 `native/FAA.WpfGui/` 与 `PROGRESS.md` WPF 线里程碑索引。
+两壳**共用同一个后端**（`webui.py` 的 HTTP 服务，端口 8765），但发行包只带壳 2；壳 1 仅用于开发调试/备用。
+壳 2 的工程细节见 `native/FAA.WpfGui/` 与 `PROGRESS.md` WPF 线里程碑索引。
 
 浏览器打开 `http://127.0.0.1:8765/`，右上角可切换两个界面：
 

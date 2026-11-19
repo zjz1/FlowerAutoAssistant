@@ -16,9 +16,19 @@ class _ConfigMixin:
     # ---- 用户配置 (data/config.json) ----
     def _load_config(self) -> dict:
         """加载用户配置 (data/config.json)。流程 JSON 中可用 ${key} 占位符引用配置值,
-        例如 ${target_tail} -> config["target_tail"]。缺失字段返回空字符串。"""
+        例如 ${target_tail} -> config["target_tail"]。缺失字段返回空字符串。
+
+        2026-11-20(1.0 #7): 首次运行且 config.json 不存在时, 自动从
+        config.example.json 复制一份, 保证新克隆/发行包开箱有完整默认键;
+        示例缺失时保持旧行为(返回空 dict, 由步骤 default/缺键语义兜底)。
+        """
         cfg = {}
         try:
+            example = CONFIG_PATH.with_name("config.example.json")
+            if not CONFIG_PATH.exists() and example.exists():
+                CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                CONFIG_PATH.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+                print(f"[配置] 首次运行: 已从 {example.name} 生成 {CONFIG_PATH.name}")
             if CONFIG_PATH.exists():
                 with open(CONFIG_PATH, encoding="utf-8") as fp:
                     data = json.load(fp)

@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# 仅开发/调试：pywebview WebView 壳（webui_app.py / start_webui_app.bat）
+pywebview>=6.0

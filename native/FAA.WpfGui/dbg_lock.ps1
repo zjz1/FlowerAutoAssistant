@@ -1,5 +1,5 @@
 ﻿param([string]$Exe, [string]$ProcArgs)
-$env:DOTNET_ROOT = 'C:\Users\zjz1\AppData\Local\Microsoft\dotnet'
+$env:DOTNET_ROOT = Join-Path $env:LOCALAPPDATA 'Microsoft\dotnet'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $p = Start-Process -FilePath $Exe -ArgumentList $ProcArgs -PassThru
