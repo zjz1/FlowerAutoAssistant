@@ -8,7 +8,7 @@ namespace FAA.WpfGui.ViewModels;
 /// <summary>
 /// 「关于」页 ViewModel(批 C2): 版本读自程序集(优先 InformationalVersion —— csproj &lt;Version&gt;0.5.0&lt;/Version&gt;
 /// 即其来源; 缺失回落 Assembly.GetName().Version), 说明/链接/致谢为静态内容。
-/// 链接是**占位**(DocsUrl/GithubUrl, 发布前替换), 打开走系统默认浏览器(与设置页 OpenTplTool 同款
+/// 链接为实际地址(项目文档目录 / GitHub 仓库), 打开走系统默认浏览器(与设置页 OpenTplTool 同款
 /// UseShellExecute 口径), 打不开原生框如实报错。
 /// </summary>
 public partial class AboutViewModel : ObservableObject
@@ -25,11 +25,11 @@ public partial class AboutViewModel : ObservableObject
         "启动时自动探测本机 FAA Web 服务: 已在运行则直连复用, 未运行则托管启动; 也可用 --api-base 直连指定服务。\n" +
         "提供 主页 / 运行日志 / 设置 / 调试 / 流程 / 关于 六个页面, 支持最小化到托盘与单实例互斥。";
 
-    /// <summary>项目文档链接(占位, 发布前替换为实际地址)。</summary>
-    public string DocsUrl { get; } = "https://github.com/placeholder/flower-auto-assistant/wiki";
+    /// <summary>项目文档目录(流程手册 / 架构路线 / API 契约)。</summary>
+    public string DocsUrl { get; } = "https://github.com/zjz1/FlowerAutoAssistant/tree/main/docs";
 
-    /// <summary>GitHub 仓库链接(占位, 发布前替换为实际地址)。</summary>
-    public string GithubUrl { get; } = "https://github.com/placeholder/flower-auto-assistant";
+    /// <summary>GitHub 仓库。</summary>
+    public string GithubUrl { get; } = "https://github.com/zjz1/FlowerAutoAssistant";
 
     /// <summary>致谢文案(只谢代码里实际用到的: MAA 风格参考 + 两个 NuGet 依赖 + 服务端项目本体)。</summary>
     public string Thanks { get; } =

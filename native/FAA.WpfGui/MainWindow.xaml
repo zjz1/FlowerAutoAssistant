@@ -119,10 +119,10 @@
                     <RadioButton GroupName="nav" Style="{StaticResource NavRadio}" Content="📋  流程"
                                  IsChecked="{Binding IsNavFlow, Mode=TwoWay}"
                                  ToolTip="流程下拉与运行 / 流程表 / 知识库"/>
-                    <!-- C2: 「关于」页入口 —— 版本/说明/链接(占位)/致谢 -->
+                    <!-- C2: 「关于」页入口 —— 版本/说明/链接(真实地址)/致谢 -->
                     <RadioButton GroupName="nav" Style="{StaticResource NavRadio}" Content="ℹ  关于"
                                  IsChecked="{Binding IsNavAbout, Mode=TwoWay}"
-                                 ToolTip="应用版本 / 应用说明 / 项目链接(占位) / 致谢"/>
+                                 ToolTip="应用版本 / 应用说明 / 项目链接(真实地址) / 致谢"/>
                 </StackPanel>
             </Border>
             <ContentControl Grid.Column="1" Content="{Binding CurrentPage}"/>
