@@ -52,6 +52,11 @@ class ConfigSchemaTests(unittest.TestCase):
             self.assertNotIn(key, schema.SETTABLE_KEYS)
         self.assertIn("finish_action", schema.SETTABLE_KEYS)
 
+    def test_minimize_to_tray_default_off(self):
+        # 2026-11-19: WPF 设置页开关，默认关闭（最小化保留在任务栏）
+        self.assertIn("minimize_to_tray", schema.SETTABLE_KEYS)
+        self.assertFalse(schema.default_for("minimize_to_tray"))
+
     def test_flow_keys_are_defined(self):
         unknown = _flow_keys() - set(schema.ALL_KEYS)
         self.assertFalse(unknown, f"flow 使用未定义键: {sorted(unknown)}")

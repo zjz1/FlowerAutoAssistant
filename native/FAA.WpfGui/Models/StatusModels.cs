@@ -14,6 +14,7 @@ public sealed record StatusSnapshot(
     [property: JsonPropertyName("running")] bool Running,
     [property: JsonPropertyName("current_module")] string? CurrentModule,
     [property: JsonPropertyName("confirm_page_close")] bool ConfirmPageClose,
+    [property: JsonPropertyName("minimize_to_tray")] bool MinimizeToTray,
     [property: JsonPropertyName("ui_build")] string UiBuild,
     [property: JsonPropertyName("fail_cache")] FailCacheInfo FailCache);
 

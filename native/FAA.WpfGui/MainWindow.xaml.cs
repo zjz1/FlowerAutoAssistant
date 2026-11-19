@@ -14,7 +14,7 @@ namespace FAA.WpfGui;
 ///   ② 关窗确认(契约2): confirm_page_close(缺省 true)开确认; 流程运行中即使关了提醒仍强制确认;
 ///      统一走 DialogService.Confirm(批 C3; 底层 WPF MessageBox/user32, 文案对齐 webui_app.py:316-326)。
 ///      托盘「退出」也走本路径(RequestExit → Show → Close), 全应用只有这一条确认逻辑。
-///   ③ 托盘(NP2 收尾): 最小化 → 隐藏到托盘; 托盘左键恢复; 右键菜单(显示主窗/开始/停止快捷态/退出)。
+///   ③ 托盘(NP2 收尾): 按设置(默认关闭)最小化到托盘; 托盘左键恢复; 右键菜单(显示主窗/开始/停止快捷态/退出)。
 ///   ④ 退出清理: 若服务为本窗口托管(free 自起), 关窗时优雅停(POST /api/shutdown → 超时杀树)
 ///      —— 批 21 起改异步收尾: 不再在 UI 线程同步 Wait(8s), 后台任务跑优雅停 + 8s 超时看护,
 ///      结果异常照常观测(原 ContinueWith 竞态修复语义保留), 进程级兜底杀树仍由 App.OnExit→Dispose 负责。
@@ -64,21 +64,21 @@ public partial class MainWindow : Window
         Activate();
     }
 
-    /// <summary>最小化 → 隐藏到托盘(MAA 式; 隐藏不是关闭, 不触发契约2 确认)。
-    /// 2026-11-19: 仅当托盘图标确认创建(IsAvailable)才隐藏; 否则保持最小化在任务栏,
-    /// 避免图标未注册时窗口彻底失踪、无任何入口。</summary>
+    /// <summary>最小化 → 按设置收进托盘(默认关闭, 保留在任务栏; 开启且图标可用时隐藏)。
+    /// 隐藏不是关闭, 不触发契约2 确认。2026-11-19: 仅当最小化到托盘已启用且托盘图标
+    /// 确认创建(IsAvailable)才隐藏; 否则保持最小化在任务栏, 避免窗口彻底失踪、无任何入口。</summary>
     private void OnStateChanged(object? sender, EventArgs e)
     {
         if (WindowState == WindowState.Minimized)
         {
-            if (_tray?.IsAvailable == true)
+            if (_vm.Session.MinimizeToTray && _tray?.IsAvailable == true)
             {
                 Hide();
                 Services.DebugTrace.Log("tray: minimized -> hidden to tray");
             }
             else
             {
-                Services.DebugTrace.Log("tray: minimized but icon unavailable -> keep in taskbar");
+                Services.DebugTrace.Log("tray: minimized -> keep in taskbar (minimize_to_tray=false or icon unavailable)");
             }
         }
     }

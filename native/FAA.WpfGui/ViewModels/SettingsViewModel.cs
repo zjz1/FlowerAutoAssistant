@@ -10,7 +10,7 @@ namespace FAA.WpfGui.ViewModels;
 /// 设置页 ViewModel —— 连接 / 识别 / 界面 三组卡片(对照 webui.html 右栏「连接设置/识别设置/界面设置」面板)。
 /// 契约6(W1 口径): 识别设置的回显**唯一来源** = GET /api/daily(log_click_pos/use_cache_pos/ocr_threads,
 /// webui.py:994-996; W1 已删 /api/config 死端点); 保存走 POST /api/set_config 单键(19 键白名单过滤在 FaaProxy)。
-/// 界面卡片两项(confirm_page_close / fail_cache_prompt_mb)的回显来自 /api/status —— 与 webui.html:447,490
+/// 界面卡片三项(confirm_page_close / minimize_to_tray / fail_cache_prompt_mb)的回显来自 /api/status —— 与 webui.html:447,490
 /// 同口径(/api/daily 不含这两键); 保存同走 set_config 白名单。
 /// 每控件改动即时保存并显示「已保存 ✓」(2s 自动清空)。
 /// </summary>
@@ -183,6 +183,17 @@ public partial class SettingsViewModel : ObservableObject
 
     partial void OnConfirmPageCloseChanged(bool value) => SaveIfNotEchoing("confirm_page_close", value);
 
+    /// <summary>最小化自动收进托盘(默认关闭; 关闭时最小化保留在任务栏)。</summary>
+    [ObservableProperty]
+    private bool _minimizeToTray;
+
+    partial void OnMinimizeToTrayChanged(bool value)
+    {
+        // 立即生效, 不等下一轮 /api/status; 回显装载时 SaveIfNotEchoing 会跳过回写。
+        _main.Session.MinimizeToTray = value;
+        SaveIfNotEchoing("minimize_to_tray", value);
+    }
+
     [ObservableProperty]
     private string _thresholdText = "100";
 
@@ -335,6 +346,7 @@ public partial class SettingsViewModel : ObservableObject
         {
             // confirm_page_close: /api/status 唯一回显源(webui.html:447,456 同款)
             ConfirmPageClose = s.ConfirmPageClose;
+            MinimizeToTray = s.MinimizeToTray;
             if (!_thresholdEditing)
             {
                 var thr = s.FailCache?.ThresholdMb ?? 100;

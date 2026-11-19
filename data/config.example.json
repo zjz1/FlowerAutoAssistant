@@ -25,6 +25,7 @@
     "use_cache_pos": false,
     "region_ocr": true,
     "confirm_page_close": true,
+    "minimize_to_tray": false,
     "fail_cache_prompt_mb": 100,
     "guard_reuse": true,
     "_comment_guard_reuse": "guard_reuse: 【相邻定位复用】开关(默认 true 开启)。true 时, 若上一步 if_text/wait_text 刚 OCR 命中某文字, 且紧邻的下一步 click_text 的查询参数与之兼容(关键字子集/区域子集/阈值不更松/exact 兼容/未传 img), 则直接复用上一步的命中点位, 免去二次截图 + 全图 OCR —— 实测省 44%~62% 单步耗时, 坐标与重新识别完全一致。false 时完全退化为逐步骤独立识别(与旧版行为一致)。",

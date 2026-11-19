@@ -118,6 +118,7 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="30"/>
                             <RowDefinition Height="40"/>
+                            <RowDefinition Height="40"/>
                         </Grid.RowDefinitions>
 
                         <TextBlock Text="关闭窗口时弹出确认" Style="{StaticResource RowLabel}"
@@ -127,9 +128,17 @@
                             <TextBlock Text="启用" Style="{StaticResource MutedText}" Margin="6,0,0,0" VerticalAlignment="Center"/>
                         </StackPanel>
 
-                        <TextBlock Grid.Row="1" Text="截图缓存提醒阈值 (MB)" Style="{StaticResource RowLabel}"
-                                   ToolTip="打开时缓存 ≥ 该阈值弹提醒; 清理只删像素, index.jsonl 墓碑永留(契约3 属 NP2)"/>
+                        <!-- 2026-11-19: 默认关闭; 开启后最小化才隐藏到托盘 -->
+                        <TextBlock Grid.Row="1" Text="最小化时自动收进托盘" Style="{StaticResource RowLabel}"
+                                   ToolTip="默认关闭: 最小化保留在任务栏; 开启后最小化隐藏到系统托盘(托盘图标不可用时自动留在任务栏)"/>
                         <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <CheckBox IsChecked="{Binding MinimizeToTray, Mode=TwoWay}" VerticalAlignment="Center"/>
+                            <TextBlock Text="启用" Style="{StaticResource MutedText}" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="2" Text="截图缓存提醒阈值 (MB)" Style="{StaticResource RowLabel}"
+                                   ToolTip="打开时缓存 ≥ 该阈值弹提醒; 清理只删像素, index.jsonl 墓碑永留(契约3 属 NP2)"/>
+                        <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                             <TextBox x:Name="ThresholdBox" Width="90" Style="{StaticResource DarkTextBox}"
                                      Text="{Binding ThresholdText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                         </StackPanel>

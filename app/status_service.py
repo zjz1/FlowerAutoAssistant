@@ -39,6 +39,7 @@ def status() -> dict:
         "running": run_service.running(),
         "current_module": getattr(eng, "current_module", None),
         "confirm_page_close": bool(eng.config.get("confirm_page_close", True)),
+        "minimize_to_tray": bool(eng.config.get("minimize_to_tray", False)),
         "ui_build": ui_build(),
         "fail_cache": {"mb": round(cmb, 2), "count": cst["count"], "sessions": cst["sessions"],
                        "oldest": cst["oldest"], "threshold_mb": thr, "exceed": cmb >= thr,

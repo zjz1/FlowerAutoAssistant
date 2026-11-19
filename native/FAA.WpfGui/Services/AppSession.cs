@@ -45,6 +45,12 @@ public sealed class AppSession
     /// </summary>
     public bool ConfirmPageClose { get; set; } = true;
 
+    /// <summary>
+    /// 最小化时自动收进托盘(minimize_to_tray)。缺省 false: 最小化保留在任务栏,
+    /// 仅在设置页手动开启后才隐藏到托盘(托盘图标不可用时仍保留在任务栏)。
+    /// </summary>
+    public bool MinimizeToTray { get; set; }
+
     /// <summary>强制允许关窗(启动失败报错退出路径置位, 绕过契约2确认, 对齐 webui_app.py 报错即退)。</summary>
     public bool ForceClose { get; set; }
 }

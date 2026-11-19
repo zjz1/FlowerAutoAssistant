@@ -258,6 +258,7 @@ public sealed class FaaProxy
         "ocr_execution_provider",                 // OCR 执行后端(OCR3 batch-08; cpu/dml/cuda, 默认 cpu)
         "use_angle_cls",                          // OCR 方向分类(OCR2 batch-10; bool, 默认 true)
         "confirm_page_close", "fail_cache_prompt_mb",  // 页面确认(558)/缓存阈值(561)
+        "minimize_to_tray",                       // 界面: 最小化自动收进托盘(默认 false)
         "finish_action",                          // 完成后动作(批 21 过渡键; 旧后端静默忽略, 批 22 生效)
     ];
 

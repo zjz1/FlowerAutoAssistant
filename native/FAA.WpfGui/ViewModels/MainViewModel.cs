@@ -452,6 +452,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         Session.LastStatus = s;
         // confirm_page_close: webui.html:447 同款口径(非 false 即 true)
         Session.ConfirmPageClose = s.ConfirmPageClose;
+        Session.MinimizeToTray = s.MinimizeToTray;
         ResolutionText = s.Screen is { Length: 2 }
             ? $"{s.Screen[0]}×{s.Screen[1]}"
             : "待读取";

@@ -114,6 +114,9 @@ _CONFIG_KEYS: dict[str, dict] = {
         meta=("摇钱树浇水", "家族活动 4.1.1 · 每日浇水 X/3(含生效复核: 点击被吞自动重试 1 次)"),
         meta_default=True),
     "confirm_page_close": dict(type="bool", meta=None),
+    # 2026-11-19: WPF 原生窗口「最小化时自动收进托盘」开关(默认 false=留在任务栏)。
+    # 仅 WPF 设置页使用; 无 ⚙ meta / 无 [config] 日志行, 经 set_config + /api/status 回显。
+    "minimize_to_tray": dict(type="bool", meta=None),
     # 里程碑 94: 截图缓存提醒阈值(MB) —— 必进白名单, 否则 WebUI 保存被静默丢弃(里程碑 87 教训)
     "fail_cache_prompt_mb": dict(type="float", min_v=1.0, meta=None),
     # 完成动作(2026-11-10, 完成后关闭客户端): 仅接受 none/close_client 二值, 之外一律 400
@@ -214,6 +217,7 @@ DEFAULTS: dict[str, object] = {
     "enable_rabbit": False,
     "enable_water": True,
     "confirm_page_close": True,
+    "minimize_to_tray": False,
     "fail_cache_prompt_mb": 100,
     "finish_action": "none",
     "ocr_execution_provider": "cpu",
@@ -232,7 +236,7 @@ EXAMPLE_ORDER: tuple[str, ...] = (
     "plant_flower_type", "plant_pollinate", "plant_harvest", "plant_buy_seed",
     "baobao_buy_floor", "baobao_buy_max", "claim_hb", "claim_fairyland",
     "log_click_pos", "use_cache_pos", "region_ocr", "confirm_page_close",
-    "fail_cache_prompt_mb", "guard_reuse", "ocr_threads",
+    "minimize_to_tray", "fail_cache_prompt_mb", "guard_reuse", "ocr_threads",
     "ocr_execution_provider", "use_angle_cls",
 )
 

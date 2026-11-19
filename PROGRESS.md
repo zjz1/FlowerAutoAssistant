@@ -2978,6 +2978,34 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
   精确选白 → 1/59 → 详情核对 → `可种 59→58、肥力 352→350、已选 0` → 面板关闭；
   拆分后的阶段函数与 `PlantTarget` 全链正常。
 
+## 2026-11-19 · 里程碑 134：最小化到托盘改为可开关（默认关闭）
+
+**需求**：将「最小化自动收进托盘」做成可开关功能，默认关闭；设置界面可手动开关，
+位置放在「关闭时弹窗确认」下面。
+
+### 134.1 改动
+
+- 设置页「界面」卡片新增「最小化时自动收进托盘」复选框（位于「关闭窗口时弹出确认」
+  下方），默认关闭。
+- 后端 `minimize_to_tray`（bool，默认 false）入 `config/schema.py`、`config.example.json`、
+  `/api/status` 回显与 `set_config` 白名单。
+- WPF：`FaaProxy.SetConfigKeys` / `StatusSnapshot` / `AppSession` / `MainViewModel` /
+  `SettingsViewModel` 全链回显与保存；`MainWindow.OnStateChanged` 仅在
+  `MinimizeToTray && TrayIcon.IsAvailable` 时 `Hide()`，否则最小化保留在任务栏。
+- `SettingsViewModel` 切换时立即更新 `Session` 并走 `set_config`，状态轮询回显不反写。
+
+### 134.2 验证
+
+- Python：**77/77** 测试；闸门 **99/99**（`白名单死键(无面板控件, 仅提示)` 含
+  `finish_action, minimize_to_tray` —— 后者是 WPF 专属设置，WebUI 无面板属预期）。
+- WPF：构建 **0 警告 0 错误**；单元测试 **65/65**；`native/dist` 重新发布。
+- UI 自动化（dist 实机）：
+  - 默认 false：最小化后 `IsWindowVisible=true`，trace `keep in taskbar`；
+  - `set_config minimize_to_tray=true` 后：最小化 `IsWindowVisible=false`，
+    trace `hidden to tray`；
+  - 二次启动：`signaled activate event` → `restore requested`，窗口恢复可见；
+  - 重置 false：最小化回到任务栏；退出后 8765 端口释放。
+
 ## 2026-11-19 · 里程碑 133：修复原生窗口最小化后失踪/无法恢复
 
 **现象**：`start_faa_native.bat` 启动 WPF 原生窗口后点击「最小化」，窗口消失，
