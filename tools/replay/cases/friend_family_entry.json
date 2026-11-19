@@ -1,0 +1,12 @@
+{
+  "name": "friend_family_entry",
+  "description": "好友花园画面：左栏好友/家族入口可定位（好友列表/家族链的公共前置），非阻断层画面",
+  "frame": "data/fail_cache/20261119_204346/fail_20261119_204741_002_miss.jpg",
+  "expect": {
+    "blocker": null,
+    "text_any": ["好友", "家族", "社交"],
+    "locate": [
+      { "keywords": ["家族"], "rel": [0.3305, 0.8264], "tol": 0.02 }
+    ]
+  }
+}

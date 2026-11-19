@@ -182,17 +182,23 @@ NO_DEFAULT = _NO_DEFAULT
 
 # ---- 文件级键：存在 config.json / config.example，但不进 set_config 白名单 ----
 FILE_ONLY_KEYS: dict[str, dict] = {
+    "schema_version": dict(type="int", default=1, settable=False),
     "baobao_buy_floor": dict(type="int", default=10000, settable=False),
     "baobao_buy_max": dict(type="int", default=1, settable=False),
     "guard_reuse": dict(type="bool", default=True, settable=False),
     "region_ocr": dict(type="bool", default=True, settable=False),
 }
 
+# 1.0 #13: 配置版本号。语义 = 程序向 config.json 写入新键/改默认值时 +1, 并在
+# `_MIGRATIONS` 中登记"从上一版升级做了什么"(当前仅补键, 无需逐键迁移函数)。
+CONFIG_SCHEMA_VERSION = 1
+
 ALL_KEYS: dict[str, dict] = {**CONFIG_KEYS, **FILE_ONLY_KEYS}
 SETTABLE_KEYS: tuple[str, ...] = tuple(CONFIG_KEYS)
 
 # ---- 默认值：config.example.json 的权威值 ----
 DEFAULTS: dict[str, object] = {
+    "schema_version": 1,
     "enable_switch": False,
     "target_tail": "",
     "claim_online": True,
@@ -237,7 +243,7 @@ EXAMPLE_ORDER: tuple[str, ...] = (
     "baobao_buy_floor", "baobao_buy_max", "claim_hb", "claim_fairyland",
     "log_click_pos", "use_cache_pos", "region_ocr", "confirm_page_close",
     "minimize_to_tray", "fail_cache_prompt_mb", "guard_reuse", "ocr_threads",
-    "ocr_execution_provider", "use_angle_cls",
+    "ocr_execution_provider", "use_angle_cls", "schema_version",
 )
 
 
@@ -256,6 +262,22 @@ def example_config() -> dict:
     return {k: default_for(k) for k in EXAMPLE_ORDER}
 
 
+def _type_error(key: str, spec: dict, val) -> str | None:
+    """已知键的类型错误文案（validate_example / validate_config / migrate_config 共用）。"""
+    t = spec.get("type", "bool")
+    if t == "bool" and not isinstance(val, bool):
+        return f"{key} 应为 bool, 实为 {type(val).__name__}"
+    if t == "text" and not isinstance(val, str):
+        return f"{key} 应为 text, 实为 {type(val).__name__}"
+    if t == "int" and (isinstance(val, bool) or not isinstance(val, int)):
+        return f"{key} 应为 int, 实为 {type(val).__name__}"
+    if t == "float" and not isinstance(val, (int, float)):
+        return f"{key} 应为 float, 实为 {type(val).__name__}"
+    if t == "enum" and val not in spec.get("enum_values", ()):
+        return f"{key} 不在合法值 {spec.get('enum_values')}: {val!r}"
+    return None
+
+
 def validate_example(data: dict) -> list[str]:
     """校验 config.example.json 的非注释键：键集、类型、默认值。"""
     errs: list[str] = []
@@ -272,20 +294,55 @@ def validate_example(data: dict) -> list[str]:
             continue
         spec = ALL_KEYS[key]
         val = actual[key]
-        t = spec.get("type", "bool")
-        if t == "bool" and not isinstance(val, bool):
-            errs.append(f"{key} 应为 bool, 实为 {type(val).__name__}")
-        elif t == "text" and not isinstance(val, str):
-            errs.append(f"{key} 应为 text, 实为 {type(val).__name__}")
-        elif t == "int" and (isinstance(val, bool) or not isinstance(val, int)):
-            errs.append(f"{key} 应为 int, 实为 {type(val).__name__}")
-        elif t == "float" and not isinstance(val, (int, float)):
-            errs.append(f"{key} 应为 float, 实为 {type(val).__name__}")
-        elif t == "enum" and val not in spec.get("enum_values", ()):
-            errs.append(f"{key} 不在合法值 {spec.get('enum_values')}: {val!r}")
+        err = _type_error(key, spec, val)
+        if err:
+            errs.append(err)
         if val != DEFAULTS.get(key):
             errs.append(f"{key} 默认值漂移: schema={DEFAULTS.get(key)!r} example={val!r}")
     return errs
+
+
+def validate_config(data: dict) -> list[str]:
+    """校验用户 config.json（1.0 #13）。
+
+    与 validate_example 的差别: 不要求键集完整（旧配置允许缺键, 由 migrate_config 补齐）,
+    不比对默认值（用户可改），只校验已知键类型；未知键（含 `_` 注释键）一律允许并保留。
+    """
+    errs: list[str] = []
+    for key, spec in ALL_KEYS.items():
+        if key in data:
+            err = _type_error(key, spec, data[key])
+            if err:
+                errs.append(err)
+    return errs
+
+
+def migrate_config(data: dict) -> tuple[dict, list[str]]:
+    """把任意旧版 config.json 升级到 CONFIG_SCHEMA_VERSION（1.0 #13）。
+
+    规则:
+      - **只补不改不删**：缺失的已知键补 schema 默认值；已有值、未知键、`_` 注释键原样保留；
+      - 版本高于当前（用户回退旧程序）→ 不降级、不动内容，仅在说明里提示；
+      - 幂等：已是当前版本且键齐全时返回空说明，调用方据此跳过写盘。
+    返回 (新配置, 变更说明列表)。
+    """
+    out = dict(data)
+    notes: list[str] = []
+    ver = out.get("schema_version")
+    if isinstance(ver, bool) or not isinstance(ver, int):
+        ver = 0
+    if ver > CONFIG_SCHEMA_VERSION:
+        return out, [f"配置 schema_version={ver} 高于程序支持的 {CONFIG_SCHEMA_VERSION}; "
+                     f"保持原样(不降级), 若出现异常请升级程序"]
+    added = [k for k in EXAMPLE_ORDER if k != "schema_version" and k not in out]
+    for k in added:
+        out[k] = default_for(k)
+    if added:
+        notes.append(f"补齐 {len(added)} 个缺失键: {', '.join(added)}")
+    if ver != CONFIG_SCHEMA_VERSION:
+        out["schema_version"] = CONFIG_SCHEMA_VERSION
+        notes.append(f"schema_version {ver} → {CONFIG_SCHEMA_VERSION}")
+    return out, notes
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 {
+    "schema_version": 1,
     "enable_switch": false,
     "target_tail": "",
     "claim_online": true,

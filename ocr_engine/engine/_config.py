@@ -21,6 +21,8 @@ class _ConfigMixin:
         2026-11-20(1.0 #7): 首次运行且 config.json 不存在时, 自动从
         config.example.json 复制一份, 保证新克隆/发行包开箱有完整默认键;
         示例缺失时保持旧行为(返回空 dict, 由步骤 default/缺键语义兜底)。
+        2026-11-20(1.0 #13): 已有 config.json 先经 config.schema.migrate_config
+        升级(只补缺失键/版本号, 不覆盖用户值、不删未知键), 有变更才写盘。
         """
         cfg = {}
         try:
@@ -30,13 +32,33 @@ class _ConfigMixin:
                 CONFIG_PATH.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
                 print(f"[配置] 首次运行: 已从 {example.name} 生成 {CONFIG_PATH.name}")
             if CONFIG_PATH.exists():
-                with open(CONFIG_PATH, encoding="utf-8") as fp:
-                    data = json.load(fp)
-                    if isinstance(data, dict):
-                        cfg = {k: v for k, v in data.items() if not k.startswith("_")}
+                data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    data = self._migrate_config_file(data)
+                    cfg = {k: v for k, v in data.items() if not k.startswith("_")}
         except Exception as e:
             print(f"[配置加载失败] {e}")
         return cfg
+
+    @staticmethod
+    def _migrate_config_file(data: dict) -> dict:
+        """1.0 #13: 把旧版 config.json 升级到当前 schema; 无变更时不写盘。"""
+        try:
+            # 延迟导入: schema 是共享契约模块(无副作用), 引擎单测/独立 CLI 不依赖 app 层
+            from config.schema import migrate_config
+        except Exception as e:  # noqa: BLE001 —— 迁移失败不阻断加载
+            print(f"[配置迁移] 跳过(无法导入 schema): {e}")
+            return data
+        try:
+            migrated, notes = migrate_config(data)
+        except Exception as e:  # noqa: BLE001
+            print(f"[配置迁移失败] {e}")
+            return data
+        if notes:
+            CONFIG_PATH.write_text(
+                json.dumps(migrated, ensure_ascii=False, indent=4), encoding="utf-8")
+            print(f"[配置] 已升级: {'; '.join(notes)}")
+        return migrated
 
     def _save_config(self) -> None:
         """把 self.config 写回 data/config.json (合并注释字段除外)。"""

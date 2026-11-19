@@ -234,14 +234,22 @@ class _CloseButtonMixin:
         img = img if img is not None else self.screenshot()
         hits = self.find_all_close_buttons(img=img, only_types=only_types)
         if not hits:
-            # 2026-11-19: 「等级提升 / 已全部解锁 + 点击任意处关闭」全屏覆盖层没有右上角✕。
-            # 旧链在 claim/daily 的 ensure_home 里连续空转直至模块软失败; 交给 reward 原语:
-            # 标题优先点击(弹窗内部, 无穿透), 页脚仅兜底。
-            if self.has_reward_popup(img=img):
-                print("[关闭弹窗] 无常规关闭按钮, 检测到「点击任意处关闭」覆盖层 -> 按奖励弹窗关闭")
-                if self.reward_dialog({"wait": 0.0, "tries": 2, "required": False,
-                                       "quiet": True, "name": "全屏覆盖层"}):
-                    return True
+            # 1.0 #11: 没有常规关闭按钮 -> 查阻断层注册表(data/blockers.json): 等级提升 /
+            # 领取成功 / 资源更新 / 通用「提示」。旧版硬编码的 reward 判定已并入注册表,
+            # 新增覆盖层只加数据。_in_blocker_clear 防 clear_blockers→close_dialog 递归;
+            # 显式 only_types 的调用方点名了关闭类型, 不让注册表越权。
+            if only_types is None and not getattr(self, "_in_blocker_clear", False):
+                clear = getattr(self, "clear_blockers", None)
+                if callable(clear):
+                    handled = clear(img=img)
+                    if any(x.get("ok") for x in handled):
+                        return True
+                elif self.has_reward_popup(img=img):
+                    # 兜底: 组合式测试桩/旧实现没有注册表 —— 保持 2026-11-19 的 reward 原语路径
+                    print("[关闭弹窗] 无常规关闭按钮, 检测到「点击任意处关闭」覆盖层 -> 按奖励弹窗关闭")
+                    if self.reward_dialog({"wait": 0.0, "tries": 2, "required": False,
+                                           "quiet": True, "name": "全屏覆盖层"}):
+                        return True
             print("[关闭弹窗(only_types)] 未定位到匹配类型的关闭按钮")
             return False
 

@@ -13,6 +13,8 @@ ADB_PATH = r"D:\Program Files\Netease\MuMu\nx_main\adb.exe"
 FLOW_DIR = Path(__file__).resolve().parent.parent / "flows"
 CLICK_LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "click_log.json"
 CLOSE_BUTTONS_PATH = Path(__file__).resolve().parent.parent / "data" / "close_buttons.json"
+# 1.0 #11: 阻断层/覆盖层注册表(等级提升/领取成功/资源更新/通用提示), 新增弹窗只加数据
+BLOCKERS_PATH = Path(__file__).resolve().parent.parent / "data" / "blockers.json"
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "data" / "config.json"
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "resource" / "template"
 # 公共「进入目标界面」导航注册表(flows/common/entries.json), 供 navigate 步骤按 target 查进入链。

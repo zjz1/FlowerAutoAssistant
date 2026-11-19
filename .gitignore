@@ -38,6 +38,8 @@ data/*
 # 缺了它 close_dialog 退化为空操作, 新克隆会失去全部关面板/脱困能力 → 入仓。
 # 而 click_log.json 是每次点击自动累积的坐标记忆(运行状态) → 出仓。
 !data/close_buttons.json
+# blockers.json = 阻断层/覆盖层注册表(1.0 #11), 引擎运行必需, 新增弹窗只加数据 → 入仓。
+!data/blockers.json
 
 # ---------- 开发区：未并入主项目的开发代码 / 工具 / 脚本 ----------
 dev_tools/

@@ -49,7 +49,8 @@ class _StepHandlersMixin:
                              exact=step.get("exact", False),
                              region_rel=step.get("region_rel"),
                              exclude=step.get("exclude"),
-                             no_fallback=step.get("no_fallback", False))
+                             no_fallback=step.get("no_fallback", False),
+                             verify=step.get("verify", False))
         print(f"{pad}[click_text] {kws} -> {'ok' if ok else 'fail'}")
         if not ok and step.get("abort_on_fail"):
             # 高危步骤(如「切换账号」): 没点到就如实中止本模块, 不让流程带着错前提继续往下跑

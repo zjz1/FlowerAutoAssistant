@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from ._buy import _BuyMixin
 from ._buyseed import _BuySeedMixin
+from ._blockers import _BlockersMixin
 from ._clicklog import _ClickLogMixin
 from ._closebtn import _CloseButtonMixin
 from ._collect import _CollectMixin
@@ -32,6 +33,7 @@ from ._registry import _RegistryMixin
 from ._reward import _RewardMixin
 from ._steps import _StepHandlersMixin
 from ._template import _TemplateMixin
+from ._verify import _VerifyMixin
 
 
 class DeviceLayer(_RegistryMixin, _ConfigMixin, _ClickLogMixin, _DeviceMixin):
@@ -42,13 +44,13 @@ class OcrLayer(_OcrMixin, _CollectMixin):
     """OCR 识别与采集。"""
 
 
-class LocatorLayer(_CloseButtonMixin, _RewardMixin, _FindTextMixin,
+class LocatorLayer(_CloseButtonMixin, _RewardMixin, _BlockersMixin, _FindTextMixin,
                    _JudgeMixin, _TemplateMixin):
-    """定位与判据：文本、场景、数字、模板、关闭/奖励弹窗。"""
+    """定位与判据：文本、场景、数字、模板、关闭/奖励弹窗、阻断层。"""
 
 
-class ActionLayer(_GuardMixin):
-    """点击动作与守卫。"""
+class ActionLayer(_GuardMixin, _VerifyMixin):
+    """点击动作、守卫与点后结果校验。"""
 
 
 class FlowLayer(_FlowExecMixin, _StepHandlersMixin, _BuyMixin, _BuySeedMixin,

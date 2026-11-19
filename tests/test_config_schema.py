@@ -47,7 +47,8 @@ class ConfigSchemaTests(unittest.TestCase):
         self.assertEqual(meta, used)
 
     def test_file_only_keys_not_settable(self):
-        for key in ("baobao_buy_floor", "baobao_buy_max", "guard_reuse", "region_ocr"):
+        for key in ("schema_version", "baobao_buy_floor", "baobao_buy_max",
+                    "guard_reuse", "region_ocr"):
             self.assertIn(key, schema.ALL_KEYS)
             self.assertNotIn(key, schema.SETTABLE_KEYS)
         self.assertIn("finish_action", schema.SETTABLE_KEYS)
@@ -60,6 +61,40 @@ class ConfigSchemaTests(unittest.TestCase):
     def test_flow_keys_are_defined(self):
         unknown = _flow_keys() - set(schema.ALL_KEYS)
         self.assertFalse(unknown, f"flow 使用未定义键: {sorted(unknown)}")
+
+
+class ConfigMigrationTests(unittest.TestCase):
+    """1.0 #13: 旧配置升级只补不改不删，且幂等。"""
+
+    def test_missing_keys_filled_version_bumped(self):
+        old = {"target_tail": "61", "_my_note": "keep me", "unknown_future_key": 7}
+        new, notes = schema.migrate_config(old)
+        self.assertTrue(notes)
+        self.assertEqual(new["schema_version"], schema.CONFIG_SCHEMA_VERSION)
+        self.assertEqual(new["target_tail"], "61")             # 已有值不覆盖
+        self.assertEqual(new["_my_note"], "keep me")           # 注释键保留
+        self.assertEqual(new["unknown_future_key"], 7)         # 未知键保留
+        for key in schema.EXAMPLE_ORDER:                        # 缺失键补齐
+            self.assertIn(key, new)
+        self.assertEqual(schema.validate_config(new), [])
+
+    def test_idempotent(self):
+        cfg = schema.example_config()
+        new, notes = schema.migrate_config(cfg)
+        self.assertEqual(notes, [])
+        self.assertEqual(new, cfg)
+
+    def test_newer_version_not_downgraded(self):
+        old = {"schema_version": schema.CONFIG_SCHEMA_VERSION + 1, "target_tail": "12"}
+        new, notes = schema.migrate_config(old)
+        self.assertTrue(notes)
+        self.assertEqual(new["schema_version"], schema.CONFIG_SCHEMA_VERSION + 1)
+        self.assertNotIn("claim_online", new)   # 不按旧 schema 猜测补键
+
+    def test_validate_config_rejects_wrong_type_but_allows_unknown(self):
+        bad = {"claim_online": "yes", "whatever": 1}
+        self.assertTrue(schema.validate_config(bad))
+        self.assertEqual(schema.validate_config({"claim_online": True, "whatever": 1}), [])
 
 
 if __name__ == "__main__":

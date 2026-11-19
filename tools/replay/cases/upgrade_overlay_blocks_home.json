@@ -1,0 +1,13 @@
+{
+  "name": "upgrade_overlay_blocks_home",
+  "description": "升级覆盖层导致归位失败的那一帧：应识别为 level_up，而不是「家园界面」",
+  "frame": "data/fail_cache/20261119_172330/fail_20261119_175233_002_miss.jpg",
+  "expect": {
+    "blocker": "level_up",
+    "text_any": ["点击任意处关闭"],
+    "text_none": ["快捷操作"],
+    "scene": [
+      { "name": "家园界面", "value": false }
+    ]
+  }
+}

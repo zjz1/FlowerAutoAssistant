@@ -258,6 +258,133 @@ def check_step_types(errors: list[str], verbose: bool) -> None:
         _log("    已知: " + ", ".join(sorted(known)))
 
 
+def check_flow_struct(errors: list[str], verbose: bool) -> None:
+    """2b) flow 结构校验（1.0 #12）：必填字段 / region_rel 形状 / 关键字列表 / 模块引用。
+
+    只做**结构**校验（不改语义、不推断默认值）:
+      - 普通流程: 顶层 name 非空 + steps 非空列表;
+      - 编排流程(daily.json): modules 非空, 每项 id/flow 非空且 flow 文件存在, on_fail ∈ {skip, stop_round};
+      - 注册表(entries/scenes): targets/scenes 非空对象;
+      - 任意节点: region_rel 为 2(中心点)或 4(框) 个 0~1 数字, 4 元须 x1<x2/y1<y2;
+        text/keywords/exclude/kws 为非空字符串或非空字符串列表;
+        then/else/do/nav/steps 为列表; min_score ∈ (0,1]; timeout/interval/delay/seconds >= 0;
+        fallback_rel 为 2 个 0~1 数字。
+    """
+    def is_num(v) -> bool:
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    def check_region(reg, loc: str) -> None:
+        if not isinstance(reg, list) or len(reg) not in (2, 4):
+            errors.append(f"[flow] region_rel 须为 2(中心点)或 4(框) 个数字 @ {loc}")
+            return
+        if not all(is_num(x) and 0.0 <= x <= 1.0 for x in reg):
+            errors.append(f"[flow] region_rel 取值须在 0~1 @ {loc}: {reg}")
+            return
+        if len(reg) == 4 and not (reg[0] < reg[2] and reg[1] < reg[3]):
+            errors.append(f"[flow] region_rel 需 x1<x2 且 y1<y2 @ {loc}: {reg}")
+
+    def check_kws(val, field: str, loc: str) -> None:
+        items = [val] if isinstance(val, str) else val
+        if not isinstance(items, list) or not items:
+            errors.append(f"[flow] {field} 须为非空字符串或非空字符串列表 @ {loc}")
+            return
+        if not all(isinstance(x, str) and x.strip() for x in items):
+            errors.append(f"[flow] {field} 含空/非字符串项 @ {loc}: {items}")
+
+    def walk(node, loc: str):
+        """递归产出 (dict, 位置)。"""
+        if isinstance(node, list):
+            for i, item in enumerate(node):
+                yield from walk(item, f"{loc}[{i}]")
+        elif isinstance(node, dict):
+            yield node, loc
+            for k, v in node.items():
+                if isinstance(v, (list, dict)):
+                    yield from walk(v, f"{loc}.{k}")
+
+    checked = 0
+    for f in sorted(FLOWS_DIR.rglob("*.json")) if FLOWS_DIR.exists() else []:
+        rel = _rel(f)
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue  # 已在 JSON 校验里报过
+        if not isinstance(data, dict):
+            errors.append(f"[flow] 顶层须为 JSON 对象 @ {rel}")
+            continue
+        checked += 1
+
+        # ---- 顶层形态 ----
+        if "modules" in data:
+            mods = data["modules"]
+            if not isinstance(mods, list) or not mods:
+                errors.append(f"[flow] modules 须为非空列表 @ {rel}")
+                mods = []
+            seen_ids: set[str] = set()
+            for i, m in enumerate(mods):
+                loc = f"{rel}.modules[{i}]"
+                if not isinstance(m, dict):
+                    errors.append(f"[flow] 模块项须为对象 @ {loc}")
+                    continue
+                mid, flow = m.get("id"), m.get("flow")
+                if not (isinstance(mid, str) and mid.strip()):
+                    errors.append(f"[flow] 模块缺 id @ {loc}")
+                elif mid in seen_ids:
+                    errors.append(f"[flow] 模块 id 重复 '{mid}' @ {loc}")
+                else:
+                    seen_ids.add(mid)
+                if not (isinstance(flow, str) and flow.strip()):
+                    errors.append(f"[flow] 模块缺 flow @ {loc}")
+                elif not (FLOWS_DIR / flow).is_file():
+                    errors.append(f"[flow] 模块引用的流程不存在 '{flow}' @ {loc}")
+                if "required" in m and not isinstance(m["required"], bool):
+                    errors.append(f"[flow] required 须为 bool @ {loc}")
+                if "on_fail" in m and m["on_fail"] not in ("skip", "stop_round"):
+                    errors.append(f"[flow] on_fail 须为 skip|stop_round @ {loc}: {m['on_fail']!r}")
+        elif "targets" in data:
+            if not isinstance(data["targets"], dict) or not data["targets"]:
+                errors.append(f"[flow] targets 须为非空对象 @ {rel}")
+        elif "scenes" in data:
+            if not isinstance(data["scenes"], dict) or not data["scenes"]:
+                errors.append(f"[flow] scenes 须为非空对象 @ {rel}")
+        else:
+            name = data.get("name")
+            if not (isinstance(name, str) and name.strip()):
+                errors.append(f"[flow] 流程缺 name @ {rel}")
+            steps = data.get("steps")
+            if not isinstance(steps, list) or not steps:
+                errors.append(f"[flow] steps 须为非空列表 @ {rel}")
+
+        # ---- 节点级通用结构 ----
+        for node, loc in walk(data, rel):
+            if "region_rel" in node:
+                check_region(node["region_rel"], loc)
+            for field in ("text", "keywords", "exclude", "kws"):
+                if field in node:
+                    check_kws(node[field], field, loc)
+            for field in ("then", "else", "do", "nav", "steps"):
+                if field in node and not isinstance(node[field], list):
+                    errors.append(f"[flow] {field} 须为列表 @ {loc}")
+            if "min_score" in node:
+                v = node["min_score"]
+                if not (is_num(v) and 0.0 < v <= 1.0):
+                    errors.append(f"[flow] min_score 须在 (0,1] @ {loc}: {v!r}")
+            for field in ("timeout", "interval", "delay", "seconds"):
+                if field in node:
+                    v = node[field]
+                    if not (is_num(v) and v >= 0):
+                        errors.append(f"[flow] {field} 须为非负数字 @ {loc}: {v!r}")
+            if "fallback_rel" in node:
+                v = node["fallback_rel"]
+                if not (isinstance(v, list) and len(v) == 2
+                        and all(is_num(x) and 0.0 <= x <= 1.0 for x in v)):
+                    errors.append(f"[flow] fallback_rel 须为 2 个 0~1 数字 @ {loc}: {v!r}")
+
+    _log(f"  flow 结构: 已校验 {checked} 个 JSON")
+    if verbose:
+        _log("    规则: name/steps 必填; modules 引用存在; region_rel 2|4 元 0~1; text 非空列表")
+
+
 def check_syntax(errors: list[str], verbose: bool) -> None:
     """3) 语法校验（compile 内置，不落 .pyc，不污染工作区）。"""
     files: list[Path] = []
@@ -795,6 +922,7 @@ def main(argv: list[str] | None = None) -> int:
     warns: list[str] = []
     check_json(errors, args.verbose)
     check_step_types(errors, args.verbose)
+    check_flow_struct(errors, args.verbose)
     check_syntax(errors, args.verbose)
     check_collab(errors, args.verbose)
     check_webui_contract(errors, warns, args.verbose, strict=args.strict_webui)

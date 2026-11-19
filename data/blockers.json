@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "description": "阻断层/覆盖层注册表（1.0 #11）。每个条目描述一种会盖住正常 UI、导致点击落空或归位失败的覆盖层：match 命中即视为「当前画面被挡住」，dismiss 给出关闭策略。引擎在 close_dialog 无常规关闭按钮时、ensure_home 每轮开始时查本表；新增弹窗只加数据，不改引擎代码。",
+  "schema": {
+    "match.any": "任一关键字在屏即命中（子串匹配）",
+    "match.exact": "true 时要求块文本与关键字完全相等（防止通用词误命中）",
+    "match.exclude": "块文本含任一排除词时不计命中",
+    "dismiss.strategy": "reward_dialog | click_text | close_dialog",
+    "dismiss.keywords": "reward_dialog 的识别词（缺省用 match.any）",
+    "dismiss.text": "click_text 策略要点的按钮文字列表",
+    "dismiss.only_types": "close_dialog 策略限定的关闭按钮类型"
+  },
+  "blockers": [
+    {
+      "id": "level_up",
+      "name": "等级提升 / 已全部解锁（全屏）",
+      "match": { "any": ["等级提升", "已全部解锁"] },
+      "dismiss": {
+        "strategy": "reward_dialog",
+        "tries": 2,
+        "keywords": ["等级提升", "已全部解锁", "点击任意处关闭"]
+      },
+      "note": "2026-11-19 实机：claim 领时间礼包后弹出「等级提升 / 147→148 / 已全部解锁 / 点击任意处关闭」。标题在弹窗内部，点击不穿透；页脚仅兜底。"
+    },
+    {
+      "id": "reward_common",
+      "name": "领取成功（恭喜获得）",
+      "match": { "any": ["恭喜获得"] },
+      "dismiss": {
+        "strategy": "reward_dialog",
+        "tries": 2,
+        "keywords": ["恭喜获得", "点击任意处关闭"]
+      },
+      "note": "矿洞/浇水/抽奖/购买等通用成功弹窗；点页脚会穿透到底层 UI（曾误开背包），故标题优先。"
+    },
+    {
+      "id": "reward_footer",
+      "name": "无标题奖励覆盖层（仅页脚）",
+      "match": { "any": ["点击任意处关闭"] },
+      "dismiss": {
+        "strategy": "reward_dialog",
+        "tries": 2,
+        "keywords": ["点击任意处关闭"]
+      },
+      "note": "标题被特效遮挡/读到半透明页脚时的兜底；放在 reward_common 之后。"
+    },
+    {
+      "id": "resource_update",
+      "name": "资源更新提示",
+      "match": { "any": ["有需要更新的内容", "开始更新资源", "正在检测资源更新"] },
+      "dismiss": {
+        "strategy": "click_text",
+        "text": ["确定"],
+        "min_score": 0.4,
+        "region_rel": [0.25, 0.45, 0.75, 0.95],
+        "tries": 2
+      },
+      "note": "仅点掉「有需要更新的内容…确定」提示；下载等待仍由 flow_startup 的 wait_update_done 原语负责（600s 上限）。"
+    },
+    {
+      "id": "notice_prompt",
+      "name": "通用「提示」弹窗",
+      "match": { "any": ["提示"], "exact": true, "exclude": ["温馨提示"] },
+      "dismiss": { "strategy": "close_dialog", "only_types": ["anchor_color"] },
+      "note": "注册表 anchor_color 类型：以「提示」标题为锚点，在右侧按钮区按颜色找关闭。exact 防止正文里的「提示」子串误判。"
+    }
+  ]
+}

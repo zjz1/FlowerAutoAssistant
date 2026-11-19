@@ -241,7 +241,16 @@ def _ensure_home_walk(eng: EnginePort):
         # 2026-11-19: 升级/解锁全屏弹窗(等级提升 + 点击任意处关闭)会盖住场景与右上角✕,
         # 旧链在未知场景分支只能放弃归位(2026-11-19 日志 claim/daily 连挂)。先用 reward
         # 原语关闭(标题优先, 点弹窗内部), 再走原场景判定。
-        if callable(getattr(eng, "has_reward_popup", None)) \
+        # 1.0 #11: 改走 data/blockers.json 注册表(一次 OCR 匹配全部覆盖层: 等级提升/领取成功/
+        # 资源更新/提示); 假引擎或无 clear_blockers 的旧实现保留下方硬编码兜底。
+        clear = getattr(eng, "clear_blockers", None)
+        if callable(clear):
+            handled = clear(img=img)
+            if handled:
+                print("  [主界面] 已处理阻断层: " + ", ".join(x["id"] for x in handled))
+                stale = 0
+                continue
+        elif callable(getattr(eng, "has_reward_popup", None)) \
                 and callable(getattr(eng, "reward_dialog", None)) \
                 and eng.has_reward_popup(img=img):
             print("  [主界面] 检测到奖励/升级全屏弹窗 -> 先关闭")

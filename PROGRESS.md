@@ -5153,3 +5153,15 @@ R5 自述与内容一致、**R6 `files/` 整文件**（diff 仅作 evidence）�
 - **归档**：-20261011 → `merged/`；无新增 TODO（C33 验收面即本批保留的新系统，不受影响）。
 - **生效方式**：浏览器 F5 即生效（webui.html no-store 直读）。
 - 本批同提交包含 2026-10-10 治理条目（三层隔离 + `_coagent` 工作空间，见上一节）。
+
+## 2026-11-20 · 1.0 发布准备 Phase 2/3（可分发 + 质量基座）（里程碑 105）
+
+- **Phase 2 可分发**：`tools/faa_webui.spec`（PyInstaller one-folder，含 maa/bin、MaaAgentBinary、RapidOCR 模型、flows/template/blockers）+ `tools/build_release.ps1`（WPF 自包含 exe + backend + 文档 + SHA256 的便携 zip）。WPF 宿主路径解析新增 `FAA_BACKEND_EXE` 与便携包布局 `backend/faa_webui.exe`；实测「解压 zip → 宿主自测」全链 PASS（spawn/probe/shutdown 均通过）。
+- **冻结包编码修复**：管道输出统一 UTF-8（`transport/http/server.py:_force_utf8_pipes`），修复 .NET 壳中文乱码。
+- **CI/Release**：`.github/workflows/ci.yml`（Python 闸门 + WPF 单测）、`release.yml`（workflow_dispatch 干跑 / tag 发 Release）。
+- **#12 flow 结构校验**：`check_project` 新增 name/steps 必填、modules 引用存在、region_rel 2|4 元 0~1、text/exclude/kws 列表、fallback_rel、数值字段校验；当前 11 个 flow JSON 0 违规。
+- **#13 配置版本化**：`schema_version: 1` + `config.schema.migrate_config`（只补缺失键/版本号，不覆盖用户值、保留未知键与注释键；幂等），引擎加载时自动升级并写盘。
+- **#11 阻断层 registry**：新增 `data/blockers.json`（等级提升 / 领取成功 / 无标题奖励 / 资源更新 / 通用提示五类），`_BlockersMixin` 一次 OCR 匹配全表并复用 reward/click_text/close_dialog 关闭；接入 `close_dialog`（无常规关闭按钮时）与 `ensure_home`（每轮开始）。
+- **#10 verify_action**：`_VerifyMixin` 五分类（failed/empty/blocker/changed/no_change），`click_text` 支持步骤级 `"verify": true` 做点后校验（默认关闭，零行为变化）；`no_change` 才否决战果。
+- **#9 离线回放**：`tools/replay.py` + `tools/replay/cases/*.json`，用真机 fail_cache 帧跑真实 OCR，比对文本/定位/阻断层/场景（升级弹窗×2、家园底行、好友花园共 4 case，实跑 4/4 PASS；帧不入库，缺帧默认 SKIP）。
+- **验证**：Python 109/109；`check_project --with-tests` 通过；WPF 70/70；便携包 zip 解压实跑宿主自测 PASS。

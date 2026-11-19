@@ -1,0 +1,15 @@
+{
+  "name": "upgrade_overlay",
+  "description": "等级提升全屏覆盖层：阻断层注册表识别 level_up + 标题定位（点标题不穿透页脚）",
+  "frame": "data/fail_cache/20261119_172330/fail_20261119_175225_001_wait_timeout.jpg",
+  "expect": {
+    "blocker": "level_up",
+    "text_any": ["等级提升", "已全部解锁", "点击任意处关闭"],
+    "locate": [
+      { "keywords": ["等级提升"], "rel": [0.5016, 0.2208], "tol": 0.02 }
+    ],
+    "scene": [
+      { "name": "家园界面", "value": false }
+    ]
+  }
+}

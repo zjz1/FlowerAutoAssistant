@@ -1,0 +1,15 @@
+{
+  "name": "garden_bottom_bar",
+  "description": "家园主界面底行：快捷操作/种植箱/一键种植/离开 全部可读，场景判据命中，且不应误判为阻断层",
+  "frame": "data/fail_cache/20261119_204346/fail_20261119_204732_001_miss.jpg",
+  "expect": {
+    "blocker": null,
+    "text_any": ["快捷操作", "种植箱", "一键种植", "离开"],
+    "locate": [
+      { "keywords": ["一键种植"], "rel": [0.8109, 0.9514], "tol": 0.02 }
+    ],
+    "scene": [
+      { "name": "家园界面", "value": true }
+    ]
+  }
+}

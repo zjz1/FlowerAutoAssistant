@@ -14,8 +14,13 @@ from .._geometry import Point
 
 class _GuardMixin:
     def click_text(self, keywords, img=None, fallback_rel=None, min_score=0.5, exact=False,
-                   region_rel=None, exclude=None, no_fallback=False) -> bool:
+                   region_rel=None, exclude=None, no_fallback=False,
+                   verify: bool = False) -> bool:
         """OCR 定位关键字并点击。命中返回 True。
+
+        1.0 #10: `verify=True`（步骤里写 `"verify": true`）时，点击前抓一帧、点击返回后
+        再抓一帧做 `verify_action` 分类；仅当判定为 `no_change`（点了界面没动）才返回 False，
+        `failed`（截不到图）不否决点击本身。默认关闭 —— 既有流程零行为变化、零额外截图。
         回退链: OCR → 颜色特征(若知识库有 color 配置) → 进程缓存 → 知识库坐标 → 失败
         exact=True 时用精确匹配(要求块文本完全等于关键字)。
         no_fallback=True 时**禁止缓存回退**: OCR/锚点/颜色全部未命中就直接如实返回 False,
@@ -35,6 +40,8 @@ class _GuardMixin:
         超过 BIAS_HARD_PX 则判为误命中并**弃用**(不点击/不写知识库), 交由回退链(均值/缓存)处理。
         """
         kw0 = keywords[0] if isinstance(keywords, list) else keywords
+        # 1.0 #10: 点后校验的"点击前帧"（仅 verify=True 时才多截一帧）
+        before = (img if img is not None else self.screenshot()) if verify else None
         # 全局开关「使用缓存位置」(use_cache_pos) 默认关闭: 关闭后不采信**自动学习到的**历史坐标
         # ——既不做「均值复核」(拿历史均值去 veto 本次 OCR 命中), 也不走缓存回退(不查 mean_rel/last_rel/
         # 知识库 rel)。步骤里显式手写的 fallback_rel 属人工兜底, 不受此开关影响(见 docstring)。
@@ -51,7 +58,7 @@ class _GuardMixin:
             print(f"[OCR命中] {keywords} -> {guard_pt.x},{guard_pt.y}{tag} (复用上一步守卫定位, 免重扫)")
             self.click_abs(guard_pt.x, guard_pt.y)
             self._log_click(kw0, keywords, guard_pt, "ocr", category=self._step_category)
-            return True
+            return self._finish_click(verify, before, keywords, guard_pt)
         pt = self.locate(keywords, img=img, min_score=min_score, exact=exact,
                          region_rel=region_rel, exclude=exclude)
         dropped_by_review = False   # 是否被复核判为误命中而弃用(用于日志如实描述, 不能与"未OCR到"混淆)
@@ -89,7 +96,7 @@ class _GuardMixin:
             print(f"[OCR命中] {keywords} -> {pt.x},{pt.y}{tag}")
             self.click_abs(pt.x, pt.y)
             self._log_click(kw0, keywords, pt, "ocr", category=self._step_category)
-            return True
+            return self._finish_click(verify, before, keywords, pt)
         # 锚点偏移定位 (固定尺寸界面, 如登录界面无文字图形按钮)
         kws = keywords if isinstance(keywords, list) else [keywords]
         for kw in kws:
@@ -101,7 +108,7 @@ class _GuardMixin:
                     print(f"[锚点偏移命中] {kw} -> {pt_a.x},{pt_a.y}")
                     self.click_abs(pt_a.x, pt_a.y)
                     self._log_click(kw, [kw], pt_a, "anchor", category=self._step_category)
-                    return True
+                    return self._finish_click(verify, before, keywords, pt_a)
         # 颜色特征检测 (针对无文字的图形按钮)
         for kw in kws:
             entry = self.click_log.get(kw)
@@ -112,7 +119,7 @@ class _GuardMixin:
                     print(f"[颜色命中] {kw} -> {pt_c.x},{pt_c.y}")
                     self.click_abs(pt_c.x, pt_c.y)
                     self._log_click(kw, [kw], pt_c, "color", category=self._step_category)
-                    return True
+                    return self._finish_click(verify, before, keywords, pt_c)
         if no_fallback:
             # 高危按钮: 本次实时识别(OCR/锚点/颜色)全部未命中时, 连步骤里显式写的回退坐标也不盲点
             # (2026-10-03: 「切换账号」OCR 永远认不到折角图标, 一路回退到历史坐标 (989,283),
@@ -160,10 +167,21 @@ class _GuardMixin:
             pt_fb = Point.from_rel(fallback_rel[0], fallback_rel[1], self.screen_w, self.screen_h)
             self.click_rel(*fallback_rel)
             self._log_click(kw0, keywords, pt_fb, "fallback", category=self._step_category)
-            return True
+            return self._finish_click(verify, before, keywords, pt_fb)
         self._last_locate_source = "none"
         print(f"[未命中] {keywords}")
         return False
+
+    def _finish_click(self, verify: bool, before, keywords, pt) -> bool:
+        """1.0 #10: 可选点后校验。仅 no_change（界面没动）否决战果；failed 不否决。"""
+        if not verify:
+            return True
+        out = self.verify_action(before, wait=0.8)
+        diff = out.get("diff")
+        extra = f" blocker={out.get('blocker')}" if out.get("blocker") else ""
+        print(f"[验证] {keywords} @({pt.x},{pt.y}) -> {out['result']}"
+              f"(diff={'-' if diff is None else round(diff, 4)}){extra}")
+        return out["result"] != "no_change"
 
     # ---- 相邻定位复用 (性能批 zcode-20261007-16 批B) ----
     @staticmethod
