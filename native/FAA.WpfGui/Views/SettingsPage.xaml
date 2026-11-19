@@ -60,6 +60,12 @@
                             <Button Content="重启后端" Style="{StaticResource DarkButton}" MinWidth="110" Margin="8,0,0,0"
                                     Command="{Binding RestartBackendCommand}"
                                     ToolTip="优雅停止本窗口托管的后端并以同端口重启(引擎重载需 10-30s; 仅托管服务可用)"/>
+                            <Button Content="环境检查" Style="{StaticResource DarkButton}" MinWidth="110" Margin="8,0,0,0"
+                                    Command="{Binding CheckEnvCommand}"
+                                    ToolTip="运行后端 --check-env：检查资源/配置/写入权限/ADB/端口/OCR 并给出修复建议(不影响正在运行的服务)"/>
+                            <Button Content="导出诊断包" Style="{StaticResource DarkButton}" MinWidth="110" Margin="8,0,0,0"
+                                    Command="{Binding ExportDiagCommand}"
+                                    ToolTip="导出脱敏诊断包(不含截图)：环境检查 + 配置(脱敏) + 日志尾部 + 流程清单"/>
                             <TextBlock Text="关闭服务需再次确认; 重启后端仅对本窗口托管的服务可用" Style="{StaticResource MutedText}"
                                        Margin="10,0,0,0" VerticalAlignment="Center"/>
                         </StackPanel>

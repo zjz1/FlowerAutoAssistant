@@ -15,6 +15,9 @@
 - 阻断层注册表 `data/blockers.json`（等级提升/领取成功/资源更新/通用提示），接入 `close_dialog` 与 `ensure_home`，新增弹窗只加数据。
 - `verify_action`：点后五分类（failed/empty/blocker/changed/no_change）；`click_text` 步骤可用 `"verify": true` 启用。
 - 离线回放基座 `tools/replay.py` + `tools/replay/cases/*.json`（真机帧不入库，缺帧默认跳过）。
+- 环境自检 `--check-env`（资源/配置/写入/ADB/端口/OCR，逐项 OK/WARN/FAIL + 修复建议），WPF「环境检查」按钮 + 首启失败自动诊断。
+- 脱敏诊断包 `--export-diag`（manifest/env/脱敏配置/日志尾部/流程清单，不含截图），WPF「导出诊断包」按钮。
+- 文档：`docs/SUPPORTED_ENV.md`、`docs/ERRORS.md`、`CONTRIBUTING.md`、README 快速开始/FAQ/故障排查、Issue/PR 模板。
 
 ### Fixed
 

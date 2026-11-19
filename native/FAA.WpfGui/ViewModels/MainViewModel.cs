@@ -268,9 +268,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 if (!start.Success || start.Value is null)
                 {
                     SetBadge("服务启动失败", UiBrushes.Err);
+                    // 1.0 #14: 首启失败时自动跑一次环境检查, 把可操作建议直接附在错误框里
+                    var env = await EnvCheckService.RunAsync();
                     await ShowFatalAndExitAsync(3,
-                        $"无法在端口 {port} 启动 Web 服务:\n{start.Error}\n\n" +
-                        "(可先手动运行 webui.py 查看具体报错)");
+                        $"无法在端口 {port} 启动 Web 服务:\n{start.Error}\n\n环境检查:\n{env}");
                     break;
                 }
                 Session.Proxy = new FaaProxy(Session.Host.BaseUrl!);

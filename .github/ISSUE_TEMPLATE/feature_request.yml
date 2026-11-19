@@ -1,0 +1,39 @@
+name: 功能建议
+description: 提出新功能或改进建议
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        1.0 的功能边界：不做多语言、多平台、资源热更、任务队列/多账号、插件 API、自动更新。
+        提建议前可先看 README「常见问题」与 docs/SUPPORTED_ENV.md。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决的问题
+      description: 描述使用场景与当前的不便，而不是直接给实现方案
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案（可选）
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已考虑的替代方案（可选）
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响范围
+      options:
+        - 识别/定位
+        - 流程/模块
+        - 原生 UI（WPF）
+        - WebUI
+        - 打包/发布
+        - 文档
+        - 其他
+    validations:
+      required: true

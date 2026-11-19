@@ -53,7 +53,19 @@ def main() -> None:
     parser.add_argument("--adb", default=ADB_PATH)
     parser.add_argument("--parent-pid", type=int, default=0,
                         help="父进程 PID：父进程退出时本服务自动停（壳拉起时使用）")
+    # 1.0 Phase 4：环境自检 / 脱敏诊断包（均为一次性命令，不启动服务）
+    parser.add_argument("--check-env", action="store_true", help="检查运行环境后退出")
+    parser.add_argument("--json", action="store_true", help="配合 --check-env: JSON 输出")
+    parser.add_argument("--deep", action="store_true", help="配合 --check-env: 额外加载 OCR 模型")
+    parser.add_argument("--export-diag", metavar="ZIP", help="导出脱敏诊断包后退出")
     args = parser.parse_args()
+
+    if args.check_env:
+        from diagnostics.env_check import main as env_main
+        sys.exit(env_main(json_out=args.json, deep=args.deep))
+    if args.export_diag:
+        from diagnostics.bundle import main as diag_main
+        sys.exit(diag_main(args.export_diag))
 
     # 用命令行优先的 ADB 参数重新初始化单例
     if args.address != ADB_ADDRESS or args.adb != ADB_PATH:

@@ -5165,3 +5165,4 @@ R5 自述与内容一致、**R6 `files/` 整文件**（diff 仅作 evidence）�
 - **#10 verify_action**：`_VerifyMixin` 五分类（failed/empty/blocker/changed/no_change），`click_text` 支持步骤级 `"verify": true` 做点后校验（默认关闭，零行为变化）；`no_change` 才否决战果。
 - **#9 离线回放**：`tools/replay.py` + `tools/replay/cases/*.json`，用真机 fail_cache 帧跑真实 OCR，比对文本/定位/阻断层/场景（升级弹窗×2、家园底行、好友花园共 4 case，实跑 4/4 PASS；帧不入库，缺帧默认 SKIP）。
 - **验证**：Python 109/109；`check_project --with-tests` 通过；WPF 70/70；便携包 zip 解压实跑宿主自测 PASS。
+- **Phase 4 用户支持**：#14 `--check-env`（11 项检查 + WARN/FAIL 建议；WPF 设置页「环境检查」+ 首启启动失败自动附带结果）；#16 `--export-diag` 脱敏诊断包（manifest/env/脱敏配置/日志尾部/流程清单，不含截图；WPF「导出诊断包」）；#15 `docs/SUPPORTED_ENV.md`；#18 `docs/ERRORS.md` + `diagnostics/errors.py`（测试校验码集一致）；#17 README 快速开始/FAQ/故障排查 + `CONTRIBUTING.md` + Issue/PR 模板。测试 118/118。

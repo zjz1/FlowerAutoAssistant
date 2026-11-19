@@ -4,11 +4,18 @@
 
 > ⚠️ **仅供学习与个人使用。** 本项目不包含完整游戏素材、资源包或解包工具；`resource/template/` 仅含少量界面识别模板，版权归游戏权利方（见 [ASSETS.md](ASSETS.md)）。请遵守游戏服务条款及所在地区法律法规，由此产生的账号风险由使用者自行承担。
 
-> 🧪 **试验包（`_lab`，LAB-2）**：本目录是 zcode 重构双包中的 OCR 侧，**未进正式版**。
-> `native/` 已拆分到 `_lab/native_ui/`；`webui_app.py` / `PROGRESS.md` 取当前工作树（含 M113）；
-> 性能灰度默认全关、实机 A/B 未执行；详见同目录 `LAB_NOTES.md`。
->
 > **素材与许可**：代码 MIT；`resource/template/` 下的游戏 UI 截图为识别用途，不属于 MIT，详见 [ASSETS.md](ASSETS.md)；第三方依赖许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+---
+
+## 快速开始（发行版）
+
+1. 下载 `FAA-<版本>-win-x64.zip`，解压到**可写目录**（如 `D:\FAA`，不要放 `Program Files`）。
+2. 启动 MuMu 模拟器 12，确认 ADB 已开启（默认 `127.0.0.1:16384`）。
+3. 双击 `start_faa.bat`（或 `FAA.WpfGui.exe`）→ 服务自动在后台启动 → 在「首页」勾选任务 → 「开始一轮」。
+4. 首次启动若失败，错误框会附带**环境检查**结果；也可随时在「设置 → 环境检查」手动运行。
+
+> 发行包为自包含 WPF（.NET 8），**不需要安装 Python**。支持范围与最低配置见 [docs/SUPPORTED_ENV.md](docs/SUPPORTED_ENV.md)；错误码解释见 [docs/ERRORS.md](docs/ERRORS.md)。
 
 ---
 
@@ -116,6 +123,17 @@ pip install -r requirements-dev.txt
 - Python 3.11+（**务必用项目 `.venv`**；系统 Python 通常无 `numpy`/`maa`）
 - MuMu 模拟器 12（ADB 端口默认 `127.0.0.1:16384`）
 - 画面：横屏（分辨率不固定，相对坐标自动适配任意尺寸）
+
+完整支持矩阵、最低配置与已知限制见 [docs/SUPPORTED_ENV.md](docs/SUPPORTED_ENV.md)。
+
+```bash
+# 环境自检（不启动服务）：资源/配置/写入权限/ADB/端口/OCR 逐项检查 + 修复建议
+python webui.py --check-env
+python webui.py --check-env --json --deep   # JSON 输出 + 额外加载 OCR 模型
+
+# 导出脱敏诊断包（不含截图；用于反馈问题）
+python webui.py --export-diag diag.zip
+```
 
 ---
 
@@ -256,6 +274,43 @@ start_webui_app.bat
 
 - **公共导航**：`navigate` 引用 [`flows/common/entries.json`](flows/common/entries.json) 的 target（已登记 家族活动 / 闪耀变身 / 花灵派对），把"归位→逐层导航→目标命中→脱困重试"收敛到一处，避免各流程重复内嵌进入链。
 - **知识库（可选）**：默认 `log_click_pos=false`，运行时不写 `data/click_log.json`；显式开启后，OCR/颜色命中才会按 `scene` + `category` 分组并累积 `mean_rel` 均值样本。缓存回退不作为命中证据、不落库。
+
+---
+
+## 常见问题（FAQ）
+
+**Q：双击后没有任何反应 / 窗口闪退？**
+A：先运行 `backend\faa_webui.exe --check-env`（源码模式 `python webui.py --check-env`），按 `FAIL` 项建议修复；常见原因是把程序放进了 `Program Files`（`data/` 不可写）或只拷贝了 exe。
+
+**Q：提示「端口 8765 被占用」？**
+A：可能已有一个 FAA 实例在运行（会自动复用）；若占用者是其他程序，请关闭它，或用 `--port 8766` 启动。错误码见 [docs/ERRORS.md](docs/ERRORS.md)。
+
+**Q：连不上模拟器（`127.0.0.1:16384`）？**
+A：确认 MuMu 已启动、ADB 已开启；MuMu 装在非默认路径时用 `--adb "X:\...\adb.exe"` 指定。`ENV-ADB-CONN` 为 WARN 时可以先启动程序、后开模拟器，再点界面「连接」。
+
+**Q：OCR 偶尔识别错 / 点错位置？**
+A：项目有三通道回退（OCR → 锚点偏移 → 颜色/模板 → 坐标缓存）。单次识别失败通常不影响；连续失败会在日志中标注 `[OCR未命中]`，可用 `--ocr-screen` 打印当前全屏文字块排查。
+
+**Q：升级后旧配置会丢吗？**
+A：不会。加载时会自动迁移（补缺失键、升 `schema_version`），**不覆盖已有值、不删除未知键**；配置结构由 `config/schema.py` 单一维护。
+
+**Q：会收集/上传我的数据吗？**
+A：不会。程序只监听 `127.0.0.1`，无外网请求；诊断包需你手动导出，且默认**不含截图**、账号尾号与绝对路径已脱敏。
+
+---
+
+## 故障排查（Troubleshooting）
+
+| 现象 | 先看 | 处理 |
+|---|---|---|
+| 启动失败 | 错误框中的「环境检查」 | 按 `FAIL` 项建议修复；仍失败则导出诊断包反馈 |
+| 服务启动后不可达 | 运行日志 / 设置页徽章 | 点「重启后端」；检查 8765 是否被其他程序占用 |
+| 某个模块失败 | 日志 `[失败]` / `[OCR未命中]` | 确认当前画面是否有未处理弹窗（`data/blockers.json` 可扩充）；重试单模块 |
+| 点击无效果 | 日志 `[验证] ... -> no_change` | 该步骤启用了点后校验；确认按钮是否被遮挡或界面仍在加载 |
+| 归位失败 | 日志 `[主界面] ...` | 常见于全屏弹窗；确认 `data/blockers.json` 有对应覆盖层条目 |
+| 模板通道失效 | `resource/template/` 是否完整 | 从发行包恢复；游戏 UI 改版时以 OCR 通道为准 |
+
+开发/调试命令与离线回放见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 

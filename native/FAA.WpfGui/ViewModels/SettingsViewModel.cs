@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using FAA.WpfGui.Models;
@@ -138,8 +140,74 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
-    // ==================== 卡片二: 识别(契约6 唯一回显来源 /api/daily) ====================
+    // ==================== 环境检查(1.0 #14) ====================
 
+    private bool _envChecking;
+
+    /// <summary>环境检查执行中禁用按钮(防连点); 不依赖服务连接态(它自己起一次性子进程)。</summary>
+    public bool CanCheckEnv => !_envChecking;
+
+    /// <summary>环境检查: 起一次 `--check-env` 子进程并展示结果(不启服务/不占端口)。</summary>
+    [RelayCommand(CanExecute = nameof(CanCheckEnv))]
+    private async Task CheckEnvAsync()
+    {
+        _envChecking = true;
+        CheckEnvCommand.NotifyCanExecuteChanged();
+        try
+        {
+            var text = await EnvCheckService.RunAsync();
+            DialogService.Info(text, "环境检查");
+        }
+        finally
+        {
+            _envChecking = false;
+            CheckEnvCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    // ==================== 诊断包导出(1.0 #16) ====================
+
+    private bool _diagExporting;
+
+    public bool CanExportDiag => !_diagExporting;
+
+    /// <summary>导出脱敏诊断包(1.0 #16): 另存为 zip → 调后端 --export-diag → 完成后定位文件。</summary>
+    [RelayCommand(CanExecute = nameof(CanExportDiag))]
+    private async Task ExportDiagAsync()
+    {
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "导出脱敏诊断包",
+            FileName = $"FAA-diag-{DateTime.Now:yyyyMMdd-HHmmss}.zip",
+            Filter = "Zip (*.zip)|*.zip",
+            DefaultExt = ".zip",
+            AddExtension = true,
+        };
+        if (dlg.ShowDialog() != true)
+        {
+            return;
+        }
+        _diagExporting = true;
+        ExportDiagCommand.NotifyCanExecuteChanged();
+        try
+        {
+            var text = await EnvCheckService.ExportDiagAsync(dlg.FileName);
+            DebugTrace.Log($"settings.export-diag: {text}");
+            DialogService.Info(text + "\n\n包内不含截图；账号尾号/绝对路径/ADB 路径已脱敏。",
+                "导出诊断包");
+            if (File.Exists(dlg.FileName))
+            {
+                try { Process.Start("explorer.exe", $"/select,\"{dlg.FileName}\""); } catch { /* 定位失败不影响导出 */ }
+            }
+        }
+        finally
+        {
+            _diagExporting = false;
+            ExportDiagCommand.NotifyCanExecuteChanged();
+        }
+    }
+
+    // ==================== 卡片二: 识别(契约6 唯一回显来源 /api/daily) ====================
     [ObservableProperty]
     private bool _logClickPos;
 
