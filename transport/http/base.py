@@ -63,7 +63,30 @@ class HandlerBase(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _origin_allowed(self) -> bool:
+        """1.0 #19: POST 的 Origin 白名单（防其他网站借浏览器打本机服务）。
+
+        允许:
+          - **无 Origin**：WPF 的 FaaProxy / curl / 脚本等原生客户端不发送 Origin；
+          - `http://127.0.0.1[:port]`、`http://localhost[:port]`、`http://[::1][:port]`
+            （端口不限：服务可用 --port 换端口）。
+        拒绝: 其他站点（含 https、局域网 IP、域名）与 `Origin: null`（file:// 页面）。
+        GET 均为只读接口，只受浏览器同源策略约束，不再单独限制。
+        """
+        origin = self.headers.get("Origin")
+        if origin is None or origin == "":
+            return True
+        try:
+            from urllib.parse import urlsplit
+            u = urlsplit(origin)
+        except Exception:
+            return False
+        return u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost", "::1")
+
     def do_POST(self):
+        if not self._origin_allowed():
+            self._send_json({"error": "origin not allowed"}, 403)
+            return
         if self.path.split("?", 1)[0] not in _POST_ROUTES:
             self._send_json({"error": "method not allowed"}, 405)
             return

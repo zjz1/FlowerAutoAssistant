@@ -91,3 +91,11 @@ git log --all -S'C:\Users' --oneline
 git log --all -S'api_key' --oneline
 git log --all -S'password' --oneline
 ```
+
+## 7. Phase 5 复扫（2026-11-20）
+
+- 当前树：`tools/clean_click_log.py` 的 3 条历史工作区绝对路径已改为 `<工作区根>` 占位符；`flow_startup.json` / `docs/FLOWS.md` / `_flowexec.py` 中的真实账号掩码（`186****61` / `195****89`）统一改为 `abc****de`；测试数据改为明显虚构的 `123****45`。
+- 复扫结果：当前树 **0 命中**（个人绝对路径 / 真实账号掩码 / 密钥赋值）。
+- 历史提交 `1a54b55` 仍含个人路径；**未重写**，等待 G7 批准（见 §5）。
+- 新增 `.github/dependabot.yml`（pip / nuget / actions 每周更新）与 `SECURITY.md`（私密漏洞报告入口）。
+

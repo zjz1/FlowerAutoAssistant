@@ -5166,3 +5166,4 @@ R5 自述与内容一致、**R6 `files/` 整文件**（diff 仅作 evidence）�
 - **#9 离线回放**：`tools/replay.py` + `tools/replay/cases/*.json`，用真机 fail_cache 帧跑真实 OCR，比对文本/定位/阻断层/场景（升级弹窗×2、家园底行、好友花园共 4 case，实跑 4/4 PASS；帧不入库，缺帧默认 SKIP）。
 - **验证**：Python 109/109；`check_project --with-tests` 通过；WPF 70/70；便携包 zip 解压实跑宿主自测 PASS。
 - **Phase 4 用户支持**：#14 `--check-env`（11 项检查 + WARN/FAIL 建议；WPF 设置页「环境检查」+ 首启启动失败自动附带结果）；#16 `--export-diag` 脱敏诊断包（manifest/env/脱敏配置/日志尾部/流程清单，不含截图；WPF「导出诊断包」）；#15 `docs/SUPPORTED_ENV.md`；#18 `docs/ERRORS.md` + `diagnostics/errors.py`（测试校验码集一致）；#17 README 快速开始/FAQ/故障排查 + `CONTRIBUTING.md` + Issue/PR 模板。测试 118/118。
+- **Phase 5 安全与维护**：#19 本地 HTTP POST 增加 Origin 白名单（无 Origin / http://127.0.0.1|localhost|[::1] 放行，其余 403；含 9 项 HTTP 测试）；#20 日志与诊断统一脱敏（`diagnostics/redact.py` 接入 `log_service` 与诊断包，账号/用户路径/ADB 路径/密钥）；#23 `SECURITY.md` + `.github/dependabot.yml`（pip/nuget/actions）；#6 复扫：当前树 0 命中（真实账号掩码统一 `abc****de`、`clean_click_log.py` 死路径改占位符）。验证：Python 122/122、WPF 70/70、闸门通过。

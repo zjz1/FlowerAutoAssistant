@@ -6,6 +6,7 @@ import json
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -97,6 +98,53 @@ class HttpHealthContractTests(unittest.TestCase):
         finally:
             failcache_service.FAIL_CACHE_DIR = old_dir
             failcache_service.invalidate_stat()
+
+
+class HttpOriginWhitelistTests(unittest.TestCase):
+    """1.0 #19: POST 的 Origin 白名单（本机 UI 正常，外部来源 403）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.port = cls.srv.server_address[1]
+        cls.base = f"http://127.0.0.1:{cls.port}"
+        cls.thread = threading.Thread(target=cls.srv.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+        cls.thread.join(timeout=3)
+
+    def _post(self, path: str, payload: dict, origin: str | None = None):
+        headers = {"Content-Type": "application/json"}
+        if origin is not None:
+            headers["Origin"] = origin
+        req = urllib.request.Request(self.base + path, data=json.dumps(payload).encode("utf-8"),
+                                     method="POST", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode("utf-8"))
+
+    def test_no_origin_allowed(self):
+        code, _ = self._post("/api/set_config", {})
+        self.assertEqual(code, 200)
+
+    def test_local_origins_allowed(self):
+        for origin in (f"http://127.0.0.1:{self.port}", f"http://localhost:{self.port}",
+                       f"http://[::1]:{self.port}"):
+            code, _ = self._post("/api/set_config", {}, origin)
+            self.assertEqual(code, 200, origin)
+
+    def test_external_origins_rejected(self):
+        for origin in ("http://evil.example", "https://127.0.0.1:8765",
+                       "http://192.168.1.10:8765", "null"):
+            code, body = self._post("/api/shutdown", {}, origin)
+            self.assertEqual(code, 403, origin)
+            self.assertEqual(body.get("error"), "origin not allowed")
 
 
 if __name__ == "__main__":

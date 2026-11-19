@@ -36,9 +36,10 @@ DELETE_GROUPS = ["测试场景"]
 DELETE_ENTRIES = {
     "未分类": [
         # 死路径: workbench 旧目录的模板名当按钮名记进来了(2026-09-19), 路径已不存在, 永远无法复用
-        ("E:\\my_project\\trae project\\FAA_2026-9-18\\FlowerAutoAssistant\\workbench\\template\\friend_pollin.png", "死路径模板名"),
-        ("E:\\my_project\\trae project\\FAA_2026-9-18\\FlowerAutoAssistant\\workbench\\template\\friend_enter_pollin.png", "死路径模板名"),
-        ("E:\\my_project\\trae project\\FAA_2026-9-18\\FlowerAutoAssistant\\workbench\\template\\friend_page_jump.png", "死路径模板名"),
+        # （公开仓库用占位符；如在本机重跑需替换为实际工作区路径）
+        ("<工作区根>\\workbench\\template\\friend_pollin.png", "死路径模板名"),
+        ("<工作区根>\\workbench\\template\\friend_enter_pollin.png", "死路径模板名"),
+        ("<工作区根>\\workbench\\template\\friend_page_jump.png", "死路径模板名"),
         # 错位: rel(0.052,0.038) 在左上角「菜单」附近, 而「种草社区」真位置在 rel(0.961,0.457)(2026-10-03 实测), n=2 属早期误录
         ("种草社区", "错位条目(真位置 0.961,0.457)"),
         # 以下与正常分组同名且 rel 距离<=0.01(完全重复), 信息在正常分组保留:

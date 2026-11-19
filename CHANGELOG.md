@@ -19,6 +19,12 @@
 - 脱敏诊断包 `--export-diag`（manifest/env/脱敏配置/日志尾部/流程清单，不含截图），WPF「导出诊断包」按钮。
 - 文档：`docs/SUPPORTED_ENV.md`、`docs/ERRORS.md`、`CONTRIBUTING.md`、README 快速开始/FAQ/故障排查、Issue/PR 模板。
 
+### Security
+
+- 本地 HTTP 服务 POST 增加 Origin 白名单：仅允许无 Origin（原生客户端）或 `http://127.0.0.1/localhost/[::1]`，其他来源 403。
+- 日志与诊断统一脱敏：账号尾号、`C:\Users\<name>`、ADB/模拟器安装路径、密钥键值在写入日志前与导出诊断包时替换。
+- 新增 `SECURITY.md` 与 `.github/dependabot.yml`（pip / nuget / actions 每周依赖更新）。
+
 ### Fixed
 
 - 修复「等级提升 / 点击任意处关闭」全屏弹窗导致 claim/daily 卡死：标题优先关闭，`close_dialog` / `ensure_home` 增加覆盖层兜底。

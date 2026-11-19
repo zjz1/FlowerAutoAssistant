@@ -1,0 +1,37 @@
+version: 2
+updates:
+  # Python 运行时/测试依赖（requirements*.txt）
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      python-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    labels: ["dependencies", "python"]
+
+  # WPF 壳（CommunityToolkit.Mvvm / H.NotifyIcon.Wpf）
+  - package-ecosystem: "nuget"
+    directory: "/native/FAA.WpfGui"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "wpf"]
+
+  # WPF 测试工程（xunit 等）
+  - package-ecosystem: "nuget"
+    directory: "/native/FAA.WpfGui.Tests"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "wpf"]
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "ci"]

@@ -8,6 +8,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from diagnostics.redact import redact_text
+
 BASE = Path(__file__).resolve().parents[1]
 
 LOG_LOCK = threading.Lock()
@@ -42,6 +44,8 @@ def _append(text: str) -> None:
 
 
 def append(text: str) -> None:
+    """写入一条日志。1.0 #20: 入内存/落盘前统一脱敏（账号尾号/本机路径/ADB 路径/密钥）。"""
+    text = redact_text(text)
     _append(text)
     _persist(text)
 
@@ -108,8 +112,9 @@ class TeeOut:
 
     def write(self, s: str) -> int:
         if s:
-            _append(s)
-            _persist(s)
+            clean = redact_text(s)
+            _append(clean)
+            _persist(clean)
         try:
             return self._real.write(s)
         except Exception:

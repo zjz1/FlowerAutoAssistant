@@ -58,11 +58,11 @@ class RedactTests(unittest.TestCase):
     def test_user_path_account_secret_adb(self):
         adb = r"D:\Program Files\Netease\MuMu\nx_main\adb.exe"
         raw = (r"路径 C:\Users\alice\FAA\data 与 D:/Users/bob/x.adb; "
-               r"账号 195****89; api_key=abc123; " + adb)
+               r"账号 123****45; api_key=abc123; " + adb)
         out = redact.redact_text(raw, adb_path=adb)
         self.assertNotIn("alice", out)
         self.assertNotIn("bob", out)
-        self.assertNotIn("195****89", out)
+        self.assertNotIn("123****45", out)
         self.assertNotIn("abc123", out)
         self.assertNotIn("Program Files", out)
         self.assertIn("%USERPROFILE%", out)
@@ -80,6 +80,27 @@ class RedactTests(unittest.TestCase):
         self.assertEqual(redact.redact_text(""), "")
         self.assertEqual(redact.redact_text(None), "")
         self.assertEqual(redact.redact_config({"ocr_threads": 2})["ocr_threads"], 2)
+
+
+class LogRedactionTests(unittest.TestCase):
+    """1.0 #20: 日志写入前统一脱敏（内存缓冲 + 落盘同一份）。"""
+
+    def test_append_and_tee_are_redacted(self):
+        from app import log_service
+        log_service.append(r"路径 C:\Users\alice\FAA 账号 123****45 adb "
+                           r"D:\Program Files\Netease\MuMu\nx_main\adb.exe" + "\n")
+        text = "".join(log_service.snapshot())
+        self.assertNotIn("alice", text)
+        self.assertNotIn("123****45", text)
+        self.assertNotIn("Netease", text)
+
+        import io
+        buf = io.StringIO()
+        tee = log_service.TeeOut(io.StringIO(), buf)
+        tee.write(r"E:\Users\bob\app 账号 123****45" + "\n")
+        text2 = "".join(log_service.snapshot())
+        self.assertNotIn("bob", text2)
+        self.assertNotIn("123****45", text2)
 
 
 class DiagBundleTests(unittest.TestCase):

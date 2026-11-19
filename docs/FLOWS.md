@@ -50,7 +50,7 @@
    实测：下载期文案为「开始更新资源..(N/57)」+ 一位小数百分比 +「KB/S (MB/总MB)」；下载完成后自动进登录页，
    **无完成弹窗、无重启**。⚠ 进度带不能取 `0.78~0.93`（108px@720p，RapidOCR 检不出），必须用 `0.70~0.98`（202px）。
 1. `if_config(enable_switch=true)` 可选切号 —— **全链 fail-safe（里程碑 69 起，里程碑 74 实机重修）**：
-   - **同号跳过**（里程碑 74，`if_account_tail`）：登录页中央恒显示**当前选中账号**掩码（实测 `186****61`@rel(0.508,0.395)），
+   - **同号跳过**（里程碑 74，`if_account_tail`）：登录页中央恒显示**当前选中账号**掩码（实测 `abc****de`@rel(0.508,0.395)），
      尾部 == `target_tail`（config.target_tail）时 `then` 为空 —— 什么都不做、直接落到「登录」，**不开切号 UI**。
      尾部解析与 `click_account_tail` 同一套（尾部数字 + `****` 校验，不误认普通数字块）；未命中走 `else` 进切号链。
    - 不同号 → `click_template('b1_switch_down.png', threshold=0.8, region_rel=[0.68,0.30,0.88,0.50], abort_on_fail=true)`（里程碑 76 删 `fallback_rel`，模板未命中即如实中止）：
