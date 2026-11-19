@@ -30,7 +30,23 @@ def _bind(port: int) -> ThreadingHTTPServer:
         sys.exit(EXIT_PORT_IN_USE)
 
 
+def _force_utf8_pipes(streams=None) -> None:
+    """把被管道接管的 stdout/stderr 统一为 UTF-8（Phase 2 冻结包修复）。
+
+    冻结包( PyInstaller )里 PYTHONIOENCODING 不生效时, 管道输出按 locale(cp936) 编码,
+    .NET 壳按 UTF-8 解码 → 中文日志变替换符。这里只改**非 tty**流(管道/重定向),
+    控制台直跑(tty)保持系统编码不变。reconfigure 不存在/已关闭时静默跳过。
+    """
+    for stream in (sys.stdout, sys.stderr) if streams is None else streams:
+        try:
+            if stream is not None and not stream.isatty():
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main() -> None:
+    _force_utf8_pipes()
     parser = argparse.ArgumentParser(description="FAA Web UI")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--address", default=ADB_ADDRESS)

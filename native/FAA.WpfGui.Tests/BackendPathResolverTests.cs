@@ -24,9 +24,9 @@ public sealed class BackendPathResolverTests
     }
 
     private static BackendResolution Resolve(
-        string? backendDir = null, string? venvPy = null,
+        string? backendDir = null, string? venvPy = null, string? backendExe = null,
         Func<string, bool>? fileExists = null, Func<string, bool>? directoryExists = null)
-        => BackendPathResolver.Resolve(backendDir, venvPy, BaseDir,
+        => BackendPathResolver.Resolve(backendDir, venvPy, backendExe, BaseDir,
             fileExists ?? Fs(), directoryExists ?? (_ => false));
 
     [Fact]
@@ -111,7 +111,7 @@ public sealed class BackendPathResolverTests
     {
         var r = Resolve(fileExists: _ => false);
         Assert.NotNull(r.Error);
-        Assert.Contains("未找到 FAA 后端脚本 webui.py", r.Error);
+        Assert.Contains("未找到 FAA 后端", r.Error);
         Assert.Contains("向上最多 8 级", r.Error);
         Assert.Contains("FAA_BACKEND_DIR", r.Error);  // 指引设置 env
         // 假 exe 目录链 0-4 级共 5 个候选全部入已尝试清单
@@ -141,5 +141,65 @@ public sealed class BackendPathResolverTests
         Assert.Null(r.Error);
         Assert.Equal(@"C:\backend\webui.py", r.WebUiScript);
         Assert.Contains(@"C:\backend  ", r.Diagnostics);   // 诊断记 env 原文
+    }
+
+    // ==================== Phase 2: 打包后端(faa_webui.exe) ====================
+
+    private const string PackagedExe = @"C:\fake\bin\Release\net8.0-windows\backend\faa_webui.exe";
+
+    [Fact]
+    public void PackagedLayout_Discovered_WhenNoSourceEnv()
+    {
+        // 便携包: <exe 目录>/backend/faa_webui.exe 命中 → 无需 venv/webui.py
+        var r = Resolve(fileExists: p => p == PackagedExe);
+        Assert.Null(r.Error);
+        Assert.Equal(PackagedExe, r.BackendExe);
+        Assert.Null(r.VenvPython);
+        Assert.Null(r.WebUiScript);
+        Assert.Contains("便携包布局", r.Diagnostics);
+    }
+
+    [Fact]
+    public void EnvBackendExe_Valid_TakesPrecedence_AndSkipsVenv()
+    {
+        var r = Resolve(backendExe: @"C:\pkg\faa_webui.exe",
+            fileExists: p => p == @"C:\pkg\faa_webui.exe" || p == PackagedExe);
+        Assert.Null(r.Error);
+        Assert.Equal(@"C:\pkg\faa_webui.exe", r.BackendExe);
+        Assert.Contains("FAA_BACKEND_EXE", r.Diagnostics);
+    }
+
+    [Fact]
+    public void EnvBackendExe_Invalid_HardError_NoSilentFallback()
+    {
+        // env 已设置但无效 → 直接报错, 即使便携包布局能命中也绝不回退(A2 红线)
+        var r = Resolve(backendExe: @"C:\missing\faa_webui.exe",
+            fileExists: p => p == PackagedExe || p == WebUiAtFakeRoot || p == AdjacentVenv);
+        Assert.NotNull(r.Error);
+        Assert.Contains("FAA_BACKEND_EXE 已设置但无效", r.Error);
+        Assert.Null(r.BackendExe);
+    }
+
+    [Fact]
+    public void SourceEnv_Valid_BeatsPackagedLayout()
+    {
+        // 源码 env 显式提供时, 便携包布局不介入(env 优先)
+        var r = Resolve(backendDir: @"C:\backend\",
+            fileExists: p => p == @"C:\backend\webui.py" || p == @"C:\backend\.venv\Scripts\python.exe"
+                || p == PackagedExe);
+        Assert.Null(r.Error);
+        Assert.Null(r.BackendExe);
+        Assert.Equal(@"C:\backend\webui.py", r.WebUiScript);
+    }
+
+    [Fact]
+    public void PackagedLayout_Missing_AndNoSource_FallsThroughToError()
+    {
+        // 便携包缺 backend/faa_webui.exe, 且向上发现全部落空 → 报错含两类指引
+        var r = Resolve(fileExists: _ => false);
+        Assert.NotNull(r.Error);
+        Assert.Contains("FAA_BACKEND_EXE", r.Error);
+        Assert.Contains("FAA_BACKEND_DIR", r.Error);
+        Assert.Contains("backend", r.Error);
     }
 }

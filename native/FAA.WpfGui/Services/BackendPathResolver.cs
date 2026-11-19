@@ -2,27 +2,48 @@ using System.IO;
 
 namespace FAA.WpfGui.Services;
 
-/// <summary>解析结果: 成功 = 两路径 + 来源诊断; 失败 = 中文报错(含已尝试路径清单)。
-/// (原 FaaProcessHost 私有 record 随 N02 提纯升 internal; 字段语义零变化)</summary>
+/// <summary>解析结果: 成功 = 后端可执行文件(打包) 或 venv python + webui.py(源码) + 来源诊断;
+/// 失败 = 中文报错(含已尝试路径清单)。
+/// (原 FaaProcessHost 私有 record 随 N02 提纯升 internal; Phase 2 增加 BackendExe 字段)</summary>
 internal sealed record BackendResolution(
-    string? VenvPython, string? WebUiScript, string? Error, string Diagnostics);
+    string? VenvPython, string? WebUiScript, string? Error, string Diagnostics,
+    string? BackendExe = null);
 
 /// <summary>
 /// 后端路径解析纯函数(N02 提纯自 FaaProcessHost.ResolveBackendPaths :48-144, batch-06 逐行等价迁移):
-///   ①env 优先(已设置但无效即报错, 不静默回退发现链) ②exe 目录向上 ≤8 级发现 webui.py + 相邻 .venv
-///   (venv 也可由 FAA_VENV_PY 提供) ③全部失败报中文错(含已尝试路径清单)。
+///   ⓪env FAA_BACKEND_EXE(打包后端 faa_webui.exe 全路径, 发行版用) —— 已设置但无效即报错
+///   ①env FAA_BACKEND_DIR/FAA_VENV_PY 优先(已设置但无效即报错, 不静默回退发现链)
+///   ②便携包布局: exe 同级 backend/faa_webui.exe(且未设置上述源码 env)
+///   ③exe 目录向上 ≤8 级发现 webui.py + 相邻 .venv(venv 也可由 FAA_VENV_PY 提供)
+///   ④全部失败报中文错(含已尝试路径清单)。
 /// 三个非纯依赖以参数注入(「env 以参数注入」口径, N02 方案表 #6): 进程级 env(FAA_BACKEND_DIR/
-/// FAA_VENV_PY)、exe 所在目录(AppContext.BaseDirectory)、文件系统探针(File.Exists/Directory.Exists)。
+/// FAA_VENV_PY/FAA_BACKEND_EXE)、exe 所在目录(AppContext.BaseDirectory)、文件系统探针。
 /// FaaProcessHost 传真值(进程级 env/Lazy 缓存语义不变), 测试传桩 —— A2 探测三态语义可确定性单测。
 /// </summary>
 internal static class BackendPathResolver
 {
     public static BackendResolution Resolve(
-        string? envBackendDir, string? envVenvPy, string baseDirectory,
+        string? envBackendDir, string? envVenvPy, string? envBackendExe, string baseDirectory,
         Func<string, bool> fileExists, Func<string, bool> directoryExists)
     {
         var tried = new List<string>();   // 已尝试路径(报错清单)
         var notes = new List<string>();   // 各路径来源(成功诊断)
+
+        // ⓪ env FAA_BACKEND_EXE = 打包后端 exe(发行版便携包). 已设置但无效 → 直接报错, 绝不静默回退。
+        if (!string.IsNullOrWhiteSpace(envBackendExe))
+        {
+            var exe = Path.GetFullPath(envBackendExe.Trim());
+            tried.Add(exe);
+            if (fileExists(exe))
+            {
+                return new BackendResolution(null, null, null,
+                    $"后端可执行文件 ← FAA_BACKEND_EXE={envBackendExe}", exe);
+            }
+            return new BackendResolution(null, null,
+                $"环境变量 FAA_BACKEND_EXE 已设置但无效: 文件不存在 {exe}"
+                + "\n按约定不回退自动发现链: 请修正 FAA_BACKEND_EXE, 或取消该环境变量后由程序自动查找。",
+                RenderTried(tried));
+        }
 
         // ① env FAA_BACKEND_DIR = 后端目录(含 webui.py)。已设置但无效 → 直接报错, 绝不静默回退发现链。
         string? webUiScript = null;
@@ -68,7 +89,19 @@ internal static class BackendPathResolver
             }
         }
 
-        // ② env 未提供后端脚本 → 从 exe 所在目录向上最多 8 级查找 FlowerAutoAssistant/webui.py
+        // ② 便携包布局: <exe 目录>/backend/faa_webui.exe(发行版); 源码 env 已提供路径时不介入。
+        if (webUiScript is null && venvPython is null)
+        {
+            var packaged = Path.Combine(Path.GetFullPath(baseDirectory), "backend", "faa_webui.exe");
+            tried.Add(packaged);
+            if (fileExists(packaged))
+            {
+                return new BackendResolution(null, null, null,
+                    $"后端可执行文件 ← 便携包布局(backend/faa_webui.exe): {packaged}", packaged);
+            }
+        }
+
+        // ③ env 未提供后端脚本 → 从 exe 所在目录向上最多 8 级查找 FlowerAutoAssistant/webui.py
         if (webUiScript is null)
         {
             var exeDir = baseDirectory;
@@ -87,9 +120,10 @@ internal static class BackendPathResolver
             if (webUiScript is null)
             {
                 return new BackendResolution(null, null,
-                    "未找到 FAA 后端脚本 webui.py: 已从 exe 所在目录向上最多 8 级查找 FlowerAutoAssistant/webui.py, 全部落空。\n"
+                    "未找到 FAA 后端: 便携包布局缺 backend/faa_webui.exe, 且从 exe 所在目录向上最多 8 级"
+                    + "查找 FlowerAutoAssistant/webui.py 全部落空。\n"
                     + "已尝试路径:\n" + RenderTried(tried)
-                    + "\n可设置环境变量 FAA_BACKEND_DIR 指向后端目录(含 webui.py)后重试。",
+                    + "\n可设置环境变量 FAA_BACKEND_EXE(打包后端 exe)或 FAA_BACKEND_DIR(含 webui.py 的目录)后重试。",
                     RenderTried(tried));
             }
         }

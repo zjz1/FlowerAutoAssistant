@@ -32,12 +32,14 @@ public static class HostSelfTest
         host.OutputReceived += s => { lock (outputTail) { outputTail.Add($"[out] {s}"); } };
         host.ErrorReceived += s => { lock (outputTail) { outputTail.Add($"[err] {s}"); } };
 
-        // 步骤 0: 后端路径解析检查(A2, 原 venv-check): 输出解析结果(两路径+来源诊断)而非裸 File.Exists ——
-        // env 指向错路径等解析失败时, detail 直接给出 PathError 的中文报错(含已尝试路径清单)
+        // 步骤 0: 后端路径解析检查(A2, 原 venv-check): 输出解析结果(路径+来源诊断)而非裸 File.Exists ——
+        // env 指向错路径等解析失败时, detail 直接给出 PathError 的中文报错(含已尝试路径清单)。
+        // Phase 2: 打包模式只需 BackendExe; 源码模式需 VenvPython + WebUiScript。
         var venvOk = FaaProcessHost.PathError is null
-            && FaaProcessHost.VenvPython is not null && FaaProcessHost.WebUiScript is not null;
+            && (FaaProcessHost.BackendExe is not null
+                || (FaaProcessHost.VenvPython is not null && FaaProcessHost.WebUiScript is not null));
         Add("venv-check", venvOk, venvOk
-            ? $"解析成功: VenvPython={FaaProcessHost.VenvPython}; WebUiScript={FaaProcessHost.WebUiScript}; 诊断: {FaaProcessHost.PathDiagnostics}"
+            ? $"解析成功: BackendExe={FaaProcessHost.BackendExe ?? "(源码模式)"}; VenvPython={FaaProcessHost.VenvPython}; WebUiScript={FaaProcessHost.WebUiScript}; 诊断: {FaaProcessHost.PathDiagnostics}"
             : $"解析失败: {FaaProcessHost.PathError ?? "(PathError 为空但路径仍为 null, 异常状态)"}");
 
         // 步骤 1: 首探测应 free

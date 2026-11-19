@@ -1,0 +1,4 @@
+# 仅构建期依赖（不进运行时 requirements.txt）
+# 用法: .venv\Scripts\python.exe -m pip install -r requirements-build.txt
+-r requirements.txt
+pyinstaller>=6.10,<7

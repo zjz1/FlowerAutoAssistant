@@ -57,6 +57,10 @@ legacy/
 *.tmp
 *.crdownload
 
+# ---------- 发布构建产物（PyInstaller / 便携包；见 tools/faa_webui.spec） ----------
+/build/
+/dist/
+
 # ---------- OS ----------
 Thumbs.db
 .DS_Store

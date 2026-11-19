@@ -7,14 +7,16 @@ namespace FAA.WpfGui.Services;
 /// <summary>
 /// FAA WebUI 服务进程托管:
 ///   路径解析(A2, 见 ResolveBackendPaths) → 探测(复用 ProbeService 三态语义) →
-///   free 时 spawn venv python webui.py --port → stdout/stderr 管道回调 →
+///   free 时 spawn(打包 faa_webui.exe, 或源码 venv python webui.py) → stdout/stderr 管道回调 →
 ///   优雅停(POST /api/shutdown → 等退出 → 超时杀进程树) → 可重启。
 /// 后端路径解析链(A2 去硬编码; 命中的主项目路径只读引用, 运行属程序自身行为):
-///   ① env FAA_BACKEND_DIR(后端目录, 含 webui.py)/FAA_VENV_PY(python.exe 全路径)优先 ——
-///      env 已设置但无效时**直接报错, 绝不静默回退发现链**(防止配错却悄悄换后端);
-///   ② env 未提供时从 exe 所在目录向上最多 8 级查找 FlowerAutoAssistant/webui.py,
-///      找到后校验相邻 .venv/Scripts/python.exe(venv 也可由 FAA_VENV_PY 提供);
-///   ③ 全部失败给出明确中文报错(含已尝试路径清单, 见 PathError)。
+///   ⓪ env FAA_BACKEND_EXE(打包后端 exe)优先; ① env FAA_BACKEND_DIR(后端目录, 含 webui.py)/
+///      FAA_VENV_PY(python.exe 全路径) —— env 已设置但无效时**直接报错, 绝不静默回退发现链**
+///      (防止配错却悄悄换后端);
+///   ② 便携包布局 &lt;exe 目录&gt;/backend/faa_webui.exe(发行版);
+///   ③ exe 目录向上最多 8 级查找 FlowerAutoAssistant/webui.py, 找到后校验相邻
+///      .venv/Scripts/python.exe(venv 也可由 FAA_VENV_PY 提供);
+///   ④ 全部失败给出明确中文报错(含已尝试路径清单, 见 PathError)。
 /// ⚠ webui.py 每次启动按自身设计清空 data/webui_runtime_log.txt(_log_reset_history,
 ///   webui.py:99-113) —— 属程序正常启动行为。
 /// </summary>
@@ -27,7 +29,10 @@ public sealed class FaaProcessHost : IDisposable
     /// <summary>解析一次性缓存(进程内首访问解析一次; env 属进程级配置, 无需重复解析)。</summary>
     private static readonly Lazy<BackendResolution> _backend = new(ResolveBackendPaths);
 
-    /// <summary>venv python 全路径(引擎依赖 torch/onnx 等只在 venv 里); 解析失败为 null(原因见 PathError)。</summary>
+    /// <summary>打包后端 exe(faa_webui.exe)全路径; 源码模式为 null(此时用 VenvPython + WebUiScript)。</summary>
+    public static string? BackendExe => _backend.Value.BackendExe;
+
+    /// <summary>venv python 全路径(引擎依赖 torch/onnx 等只在 venv 里); 解析失败或打包模式为 null(原因见 PathError)。</summary>
     public static string? VenvPython => _backend.Value.VenvPython;
 
     /// <summary>服务脚本全路径(webui.py 自身用 BASE=脚本目录 定位资源); 解析失败为 null(原因见 PathError)。</summary>
@@ -41,13 +46,14 @@ public sealed class FaaProcessHost : IDisposable
 
     /// <summary>
     /// 后端路径解析(A2)适配器(N02, batch-06): 纯函数逐行等价迁至 BackendPathResolver.Resolve,
-    /// 此处只注入进程级真值 —— env(FAA_BACKEND_DIR/FAA_VENV_PY)、exe 目录(AppContext.BaseDirectory)、
-    /// 真文件系统探针。Lazy 单次缓存语义与调用方(StartAsync/HostSelfTest)零变化。
+    /// 此处只注入进程级真值 —— env(FAA_BACKEND_EXE/FAA_BACKEND_DIR/FAA_VENV_PY)、
+    /// exe 目录(AppContext.BaseDirectory)、真文件系统探针。Lazy 单次缓存语义与调用方零变化。
     /// </summary>
     private static BackendResolution ResolveBackendPaths()
         => BackendPathResolver.Resolve(
             Environment.GetEnvironmentVariable("FAA_BACKEND_DIR"),
             Environment.GetEnvironmentVariable("FAA_VENV_PY"),
+            Environment.GetEnvironmentVariable("FAA_BACKEND_EXE"),
             AppContext.BaseDirectory,
             static p => File.Exists(p),
             static p => Directory.Exists(p));
@@ -90,12 +96,14 @@ public sealed class FaaProcessHost : IDisposable
             return new ProxyResult<string>(false, 0, null, $"已有托管进程在运行(port={Port}), 先 Stop 再 Start", "");
         }
 
-        // 第 1 步: 解析后端路径(A2): env 优先/向上发现, 全失败给中文报错(含已尝试路径) —— 解析失败绝不 spawn
+        // 第 1 步: 解析后端路径(A2): env 优先/便携包/向上发现, 全失败给中文报错(含已尝试路径) —— 解析失败绝不 spawn
         // (先落局部变量再判空: 属性访问不被可空流分析跟踪, 局部变量守卫后即知非空, 免掉 FileName 处的可空警告)
         var pathError = PathError;
+        var backendExe = BackendExe;
         var venvPython = VenvPython;
         var webUiScript = WebUiScript;
-        if (pathError is not null || venvPython is null || webUiScript is null)
+        var packaged = backendExe is not null;
+        if (pathError is not null || (!packaged && (venvPython is null || webUiScript is null)))
         {
             return new ProxyResult<string>(false, 0, null,
                 $"后端路径解析失败, 无法启动服务:\n{pathError ?? "(未知原因)"}", "");
@@ -109,30 +117,44 @@ public sealed class FaaProcessHost : IDisposable
         }
 
         // 解析时已校验存在, 这里兜底(解析与 spawn 之间文件被删等极端情况)
-        if (!File.Exists(venvPython))
+        if (packaged)
         {
-            return new ProxyResult<string>(false, 0, null, $"venv python 不存在: {venvPython}", "");
+            if (!File.Exists(backendExe!))
+            {
+                return new ProxyResult<string>(false, 0, null, $"后端可执行文件不存在: {backendExe}", "");
+            }
         }
-        if (!File.Exists(webUiScript))
+        else
         {
-            return new ProxyResult<string>(false, 0, null, $"服务脚本不存在: {webUiScript}", "");
+            if (!File.Exists(venvPython!))
+            {
+                return new ProxyResult<string>(false, 0, null, $"venv python 不存在: {venvPython}", "");
+            }
+            if (!File.Exists(webUiScript!))
+            {
+                return new ProxyResult<string>(false, 0, null, $"服务脚本不存在: {webUiScript}", "");
+            }
         }
 
-        // 第 3 步: spawn(工作目录=脚本目录; 输出管道回调)
+        // 第 3 步: spawn(打包后端直接执行 faa_webui.exe; 源码模式跑 venv python webui.py)
         // 编码契约: python 管道输出编码随宿主环境漂移(实测: PYTHONUTF8=1 时 utf-8, 否则 gbk),
         // 这里显式钉死 PYTHONIOENCODING=utf-8 + .NET 按 UTF-8 解码 —— 两种宿主环境下中文都不乱码。
+        // Stage 4: --parent-pid 让服务在壳被强杀时随父进程退出(不留孤儿监听端口)
         var psi = new ProcessStartInfo
         {
-            FileName = venvPython,
-            // Stage 4: --parent-pid 让服务在壳被强杀时随父进程退出(不留孤儿监听端口)
-            Arguments = $"\"{webUiScript}\" --port {port} --parent-pid {Environment.ProcessId}",
+            FileName = packaged ? backendExe! : venvPython!,
+            Arguments = packaged
+                ? $"--port {port} --parent-pid {Environment.ProcessId}"
+                : $"\"{webUiScript}\" --port {port} --parent-pid {Environment.ProcessId}",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
             CreateNoWindow = true,
-            WorkingDirectory = Path.GetDirectoryName(webUiScript) ?? ".",
+            WorkingDirectory = packaged
+                ? Path.GetDirectoryName(backendExe) ?? "."
+                : Path.GetDirectoryName(webUiScript) ?? ".",
         };
         psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
         var p = new Process { StartInfo = psi };

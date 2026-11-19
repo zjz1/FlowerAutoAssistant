@@ -34,5 +34,36 @@ class WebUiContractTests(unittest.TestCase):
         self.assertGreater(webui._LOG_MAX_LINES, 0)
 
 
+class PipeEncodingTests(unittest.TestCase):
+    """Phase 2: 冻结包管道输出编码(非 tty 才改 UTF-8, tty 保持系统编码)。"""
+
+    class _FakeStream:
+        def __init__(self, tty):
+            self._tty = tty
+            self.calls = []
+
+        def isatty(self):
+            return self._tty
+
+        def reconfigure(self, **kw):
+            self.calls.append(kw)
+
+    def test_non_tty_reconfigured_tty_untouched(self):
+        from transport.http.server import _force_utf8_pipes
+        pipe, console = self._FakeStream(False), self._FakeStream(True)
+        _force_utf8_pipes([pipe, console])
+        self.assertEqual(pipe.calls, [{"encoding": "utf-8", "errors": "replace"}])
+        self.assertEqual(console.calls, [])
+
+    def test_stream_without_reconfigure_is_skipped(self):
+        from transport.http.server import _force_utf8_pipes
+
+        class _Closed:
+            def isatty(self):
+                raise ValueError("closed")
+
+        _force_utf8_pipes([_Closed(), None])  # 不抛异常即通过
+
+
 if __name__ == "__main__":
     unittest.main()
