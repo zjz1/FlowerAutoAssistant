@@ -48,22 +48,38 @@ public partial class MainWindow : Window
     /// <summary>托盘「退出」入口: 与点 X 同一条契约2 路径 —— 先把窗口带回来再 Close()。</summary>
     public void RequestExit()
     {
-        if (!IsVisible)
-        {
-            Show();
-            WindowState = WindowState.Normal;
-        }
-        Activate();
+        RestoreFromTray();
         Close();
     }
 
-    /// <summary>最小化 → 隐藏到托盘(MAA 式; 隐藏不是关闭, 不触发契约2 确认)。</summary>
+    /// <summary>从托盘/单实例激活恢复主窗: 显示 + 正常态 + 前台。</summary>
+    public void RestoreFromTray()
+    {
+        Services.DebugTrace.Log("tray: restore requested");
+        if (!IsVisible)
+        {
+            Show();
+        }
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+
+    /// <summary>最小化 → 隐藏到托盘(MAA 式; 隐藏不是关闭, 不触发契约2 确认)。
+    /// 2026-11-19: 仅当托盘图标确认创建(IsAvailable)才隐藏; 否则保持最小化在任务栏,
+    /// 避免图标未注册时窗口彻底失踪、无任何入口。</summary>
     private void OnStateChanged(object? sender, EventArgs e)
     {
         if (WindowState == WindowState.Minimized)
         {
-            Hide();
-            Services.DebugTrace.Log("tray: minimized -> hidden to tray");
+            if (_tray?.IsAvailable == true)
+            {
+                Hide();
+                Services.DebugTrace.Log("tray: minimized -> hidden to tray");
+            }
+            else
+            {
+                Services.DebugTrace.Log("tray: minimized but icon unavailable -> keep in taskbar");
+            }
         }
     }
 

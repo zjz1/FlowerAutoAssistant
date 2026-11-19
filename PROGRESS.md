@@ -2978,6 +2978,42 @@ OCR 0 命中 → 10 页采粉放弃，用户定性彩底压置信度并给滤色
   精确选白 → 1/59 → 详情核对 → `可种 59→58、肥力 352→350、已选 0` → 面板关闭；
   拆分后的阶段函数与 `PlantTarget` 全链正常。
 
+## 2026-11-19 · 里程碑 133：修复原生窗口最小化后失踪/无法恢复
+
+**现象**：`start_faa_native.bat` 启动 WPF 原生窗口后点击「最小化」，窗口消失，
+任务栏与托盘均无图标，进程仍在运行；再次启动 bat 也无法把窗口找回。
+
+### 133.1 根因（两层）
+
+1. `TrayIconService` 用代码创建 `TaskbarIcon`（不在可视树），只设
+   `Visibility=Visible`，没有 `ForceCreate()` —— `Loaded` 不触发，图标可能从未
+   真正注册。`MainWindow.OnStateChanged` 无条件 `Hide()`，于是任务栏按钮消失且
+   托盘无图标。
+2. 单实例激活只靠 Win32 `ShowWindow(SW_RESTORE)`；WPF `Hide()` 后 `Visibility`
+   仍为 `Hidden`，`ShowWindow` 不会恢复 WPF 窗口；`Process.MainWindowHandle`
+   对隐藏窗口为 0，兜底也失效。
+
+### 133.2 修复
+
+- `TrayIconService`：构造后调用 `ForceCreate(true)`，`IsAvailable = IsCreated`；落 trace。
+- `MainWindow`：仅当 `IsAvailable=true` 才 `Hide()`，否则保持最小化在任务栏
+  （可恢复兜底）；新增 `RestoreFromTray()`（Show + Normal + Activate + trace）。
+- `App`：命名事件 `Local\FAA.WpfGui.Activate` —— 首实例后台监听并
+  `RestoreFromTray`，第二实例优先 `Set` 事件（失败再回退 Win32）；
+  退出时唤醒/释放监听。
+
+### 133.3 验证
+
+- 构建：**0 警告 0 错误**；单元测试 **65/65**；`native/dist` 重新发布成功。
+- UI 自动化（dist 实机）：
+  - trace `tray: ForceCreate -> IsCreated=True`（托盘图标已注册）；
+  - 最小化后 `IsWindowVisible=false` + `tray: minimized -> hidden to tray`；
+  - 二次启动：`single-instance: signaled activate event` →
+    `tray: restore requested`，`IsWindowVisible=true`（窗口成功找回）。
+  - 结束后进程退出，8765 服务由父进程看护停止（port free）。
+- 说明：Windows 11 可能把新托盘图标放进「^ 隐藏图标」溢出区；即使找不到图标，
+  再次运行 `start_faa_native.bat` 也会恢复窗口（已验证）。
+
 ## 2026-11-18 · 里程碑 132：采粉 5s 超时假 fail 修复
 
 **背景**：2026-11-18 实机日志（`stage5_social_regression`）第 1 页槽位 4：

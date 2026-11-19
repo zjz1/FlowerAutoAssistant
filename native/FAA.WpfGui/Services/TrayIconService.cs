@@ -23,6 +23,9 @@ public sealed class TrayIconService : IDisposable
     private readonly MenuItem _stopItem;
     private readonly MenuItem _shutdownItem;
 
+    /// <summary>托盘图标是否已真正注册(ForceCreate 结果)。false 时主窗最小化不应 Hide。</summary>
+    public bool IsAvailable { get; private set; }
+
     public TrayIconService(MainViewModel main, Action requestExit)
     {
         _main = main;
@@ -70,6 +73,22 @@ public sealed class TrayIconService : IDisposable
         // 左键恢复主窗(单击; MAA 同款)
         _icon.TrayLeftMouseUp += (_, _) => ShowMainWindow();
         _icon.TrayLeftMouseDown += (_, _) => ShowMainWindow();
+
+        // 2026-11-19 修复: TaskbarIcon 是代码创建、且不在可视树中, Loaded 不会触发;
+        // 仅设 Visibility=Visible 时图标可能从未真正注册 —— 最小化 Hide() 后既无任务栏
+        // 按钮也无托盘图标, 窗口无法找回。ForceCreate() 显式注册; IsCreated 作为可观测
+        // 结果, 失败时主窗保持最小化在任务栏(不 Hide), 保证始终可恢复。
+        try
+        {
+            _icon.ForceCreate(true);
+            IsAvailable = _icon.IsCreated;
+            DebugTrace.Log($"tray: ForceCreate -> IsCreated={IsAvailable}");
+        }
+        catch (Exception ex)
+        {
+            IsAvailable = false;
+            DebugTrace.Log($"tray: ForceCreate failed {ex.GetType().Name}: {ex.Message}");
+        }
 
         UpdateQuickState(canStart: false, isRunning: false);
     }

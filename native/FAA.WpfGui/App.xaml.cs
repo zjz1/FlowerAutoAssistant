@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading;
 using System.Windows;
 using FAA.WpfGui.Services;
 
@@ -78,6 +79,7 @@ public partial class App : Application
                 var win = new MainWindow(page, port, apiBase);
                 MainWindow = win;
                 win.Show();
+                StartActivateListener();   // 2026-11-19: 托盘隐藏后二次启动可恢复
                 return;
         }
     }
@@ -86,6 +88,12 @@ public partial class App : Application
 
     private Mutex? _singleInstanceMutex;
     private const string MutexName = "Local\\FAA.WpfGui.SingleInstance";
+
+    // 2026-11-19: 托盘隐藏(Hide)后, 二次启动不能只靠 Win32 ShowWindow 恢复 ——
+    // WPF 的 Visibility 仍是 Hidden。用命名事件让既有实例自己 RestoreFromTray()。
+    private const string ActivateEventName = "Local\\FAA.WpfGui.Activate";
+    private EventWaitHandle? _activateEvent;
+    private volatile bool _exiting;
 
     /// <summary>尝试持有单实例互斥; false=已有实例在跑(本进程不应再开窗)。仅 GUI 模式调用(自测模式不参与互斥)。</summary>
     private bool AcquireSingleInstanceMutex()
@@ -100,9 +108,60 @@ public partial class App : Application
         return false;
     }
 
+    /// <summary>首个实例监听「激活」命名事件; 第二个实例 Set 后由本线程恢复主窗。</summary>
+    private void StartActivateListener()
+    {
+        try
+        {
+            _activateEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ActivateEventName);
+        }
+        catch (Exception ex)
+        {
+            Services.DebugTrace.Log($"single-instance: create activate event failed {ex.GetType().Name}: {ex.Message}");
+            return;
+        }
+
+        Task.Run(() =>
+        {
+            try
+            {
+                while (!_exiting && _activateEvent.WaitOne())
+                {
+                    Dispatcher.Invoke(() => (MainWindow as MainWindow)?.RestoreFromTray());
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                // 退出时事件已释放
+            }
+            catch (Exception ex)
+            {
+                Services.DebugTrace.Log($"single-instance: activate listener failed {ex.GetType().Name}: {ex.Message}");
+            }
+        });
+    }
+
     /// <summary>激活既有实例的主窗(标题精确匹配「FAA 原生窗口」): 还原 + 前台; 找不到窗口时兜底枚举进程。</summary>
     private static void ActivateExistingInstance()
     {
+        // 2026-11-19: 优先命名事件 —— 既有实例自己 Show/Normal/Activate;
+        // WPF Hide() 的窗口仅靠 Win32 ShowWindow 不会恢复(Visibility 仍 Hidden)。
+        try
+        {
+            using var ev = EventWaitHandle.OpenExisting(ActivateEventName);
+            ev.Set();
+            Services.DebugTrace.Log("single-instance: signaled activate event");
+            return;
+        }
+        catch (WaitHandleCannotBeOpenedException)
+        {
+            // 旧版本实例/事件尚未创建 -> 回退 Win32
+        }
+        catch (Exception ex)
+        {
+            Services.DebugTrace.Log($"single-instance: signal activate event failed {ex.GetType().Name}: {ex.Message}");
+        }
+
         try
         {
             var hwnd = NativeMethods.FindWindowW(null, "FAA 原生窗口");
@@ -138,6 +197,26 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        // 2026-11-19: 先停激活监听线程(Set 唤醒 -> _exiting 让循环退出), 再释放事件
+        _exiting = true;
+        try
+        {
+            _activateEvent?.Set();
+        }
+        catch
+        {
+            // 事件可能已释放
+        }
+        try
+        {
+            _activateEvent?.Dispose();
+        }
+        catch
+        {
+            // 释放失败不影响进程退出
+        }
+        _activateEvent = null;
+
         // 兜底: 停轮询 + 杀掉可能残留的托管服务进程树(优雅停在 MainWindow.OnClosed 已做过)
         (MainWindow?.DataContext as ViewModels.MainViewModel)?.Dispose();
         try
