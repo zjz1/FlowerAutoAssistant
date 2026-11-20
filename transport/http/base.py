@@ -140,8 +140,6 @@ class HandlerBase(BaseHTTPRequestHandler):
         try:
             line = "%s - - [%s] %s\n" % (
                 self.address_string(), self.log_date_time_string(), fmt % args)
-            with _HTTP_LOG_LOCK:
-                with open(_HTTP_LOG_FILE, "a", encoding="utf-8") as f:
-                    f.write(line)
+            log_service.persist_http(line)
         except Exception:
             pass

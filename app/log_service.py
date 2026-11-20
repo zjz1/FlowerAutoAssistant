@@ -8,28 +8,92 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from core.limits import SESSION_BUFFER_MAX
 from diagnostics.redact import redact_text
 
 BASE = Path(__file__).resolve().parents[1]
 
 LOG_LOCK = threading.Lock()
 LOGS: list[str] = []
-LOG_MAX_LINES = 20000          # 最多保留的写入分片数(print 正文与换行各算一片); 超出从头部丢弃
+LOG_MAX_LINES = SESSION_BUFFER_MAX   # 最多保留的写入分片数(print 正文与换行各算一片); 超出从头部丢弃
 LOG_BASE = 0                   # 被丢弃的头部片数, /api/log 的游标 = 全局序号
 LOG_FILE = BASE / "data" / "webui_runtime_log.txt"
 # HTTP 访问日志分流：避免 GET /api/* 噪声进入运行日志
 HTTP_LOG_FILE = BASE / "data" / "webui_http_log.txt"
 HTTP_LOG_LOCK = threading.Lock()
 
+# 2026-11-21 审阅 W5-004: 单会话日志文件 100MB 保护。到达上限后停止写盘(不删已有内容),
+# 内存日志/SSE/下载继续可用; 启动或「清空日志」时重置计数并恢复写入。
+LOG_FILE_MAX_BYTES = 100 * 1024 * 1024
+HTTP_LOG_MAX_BYTES = 100 * 1024 * 1024
+_PERSIST_LOCK = threading.Lock()
+_persist_bytes: int | None = None
+_persist_capped = False
+_http_log_bytes: int | None = None
+_http_log_capped = False
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _size_label(n: int) -> str:
+    return f"{n // (1024 * 1024)}MB" if n >= 1024 * 1024 else f"{n}B"
+
 
 def _persist(text: str) -> None:
-    """把日志分片追加到磁盘备份(仅追加; 失败静默, 不阻塞主流程)。"""
-    try:
-        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(text)
-    except Exception:
-        pass
+    """把日志分片追加到磁盘备份; 单会话超过 100MB 后停止写盘并提示一次。"""
+    global _persist_bytes, _persist_capped
+    data = text.encode("utf-8")
+    warning = None
+    with _PERSIST_LOCK:
+        if _persist_capped:
+            return
+        if _persist_bytes is None:
+            _persist_bytes = _file_size(LOG_FILE)
+        if _persist_bytes + len(data) > LOG_FILE_MAX_BYTES:
+            _persist_capped = True
+            warning = (f"[日志] 运行日志已达 {_size_label(LOG_FILE_MAX_BYTES)} 上限, "
+                       f"停止写入磁盘; 内存日志与下载功能仍可用")
+        else:
+            try:
+                LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with open(LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(text)
+                _persist_bytes += len(data)
+            except Exception:
+                pass
+    if warning:
+        print(warning)
+
+
+def persist_http(text: str) -> None:
+    """HTTP 访问日志落盘(独立 100MB 上限; 超限停止写盘并提示一次)。"""
+    global _http_log_bytes, _http_log_capped
+    data = text.encode("utf-8")
+    warning = None
+    with HTTP_LOG_LOCK:
+        if _http_log_capped:
+            return
+        if _http_log_bytes is None:
+            _http_log_bytes = _file_size(HTTP_LOG_FILE)
+        if _http_log_bytes + len(data) > HTTP_LOG_MAX_BYTES:
+            _http_log_capped = True
+            warning = (f"[日志] HTTP 访问日志已达 {_size_label(HTTP_LOG_MAX_BYTES)} 上限, "
+                       f"停止写入磁盘")
+        else:
+            try:
+                HTTP_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with open(HTTP_LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(text)
+                _http_log_bytes += len(data)
+            except Exception:
+                pass
+    if warning:
+        print(warning)
 
 
 def _append(text: str) -> None:
@@ -51,8 +115,8 @@ def append(text: str) -> None:
 
 
 def reset_history() -> None:
-    """启动时清空上一次会话的日志缓存(内存缓冲 + 磁盘备份一并重置)。"""
-    global LOG_BASE
+    """启动/清空时重置日志缓存与磁盘备份，同时解除 100MB 写盘保护。"""
+    global LOG_BASE, _persist_bytes, _persist_capped, _http_log_bytes, _http_log_capped
     with LOG_LOCK:
         LOGS.clear()
         LOG_BASE = 0
@@ -68,6 +132,12 @@ def reset_history() -> None:
             pass
     except Exception:
         pass
+    with _PERSIST_LOCK:
+        _persist_bytes = None      # 下次写入时按实际文件大小惰性初始化
+        _persist_capped = False
+    with HTTP_LOG_LOCK:
+        _http_log_bytes = None
+        _http_log_capped = False
 
 
 def get_since(after: int) -> tuple[int, list[str]]:

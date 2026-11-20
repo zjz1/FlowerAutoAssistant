@@ -5197,3 +5197,10 @@ R5 自述与内容一致、**R6 `files/` 整文件**（diff 仅作 evidence）�
 - **WPF**：全选/清空/反选 CanExecute 修正为空闲可用；切换花名后首色立即保存，界面与实际预设一致。
 - **工具/发布/测试**：发行包补 `licenses/`；日志与 HTTP 测试改用临时目录（不碰真实 config/日志）；`diagnostics/` 纳入语法闸、`app/` 纳入 T2 分级；`api_contract_selftest` 更新为 28 端点并覆盖 preflight/plant_presets/种植面板。
 - **验证**：Python 单测 154 项全绿、`api_contract_selftest` 129/129、`check_project --with-tests` 通过、WPF 单测 70/70、Release 编译 0 警告 0 错误。**需实机复核**：`HARVEST_PENDING_REGION`、花仙乐园失败样本、周五/周一守望兔子、翻页模态残留。
+
+## 2026-11-21 · W3-003 / W5-004 收尾（里程碑 109）
+
+- **W3-003 阶段0 门控**：`if_config` 扩展 `keys` 列表 + `any`/`all` 组合（旧 `key` 写法不变）；`flow_plant.json` 阶段0 外包 `if_config`，门控键 `plant_flower` / `plant_harvest` / `plant_pollinate`，任一开启才归位，全关则整段跳过。`plant_buy_seed` 是独立手动流程，不参与门控。`check_project` 的 flow 配置键扫描同步支持 `keys`。
+- **W5-004 失败清单与日志**：失败清单上限与日志缓冲共用 `core/limits.py: SESSION_BUFFER_MAX=20000`；`/api/log_clear` 同时清空失败清单（失败 id 保持单调，前端游标不漏报）。
+- **日志大文件保护**：运行日志与 HTTP 访问日志各加 100MB 单会话写盘上限；到上限后停止追加并提示一次，**不删除已有内容**；启动/清空日志时重置计数并恢复写入。下载仍走内存快照，不受磁盘上限影响，暂不做分卷。
+- **验证**：Python 单测 163 项全绿、`api_contract_selftest` 129/129、`check_project --with-tests` 通过（步骤 387 处 / 语法 114/114）、WPF 单测 70/70。本轮仅后端/流程变更，未改原生 UI，`native/dist` 无需重发。**实机验证待用户指令**。

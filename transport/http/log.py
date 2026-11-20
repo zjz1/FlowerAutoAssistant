@@ -142,6 +142,8 @@ class LogRoutes:
         index.jsonl 元数据墓碑**保留**(记录不死), 被清图标注 evicted。清理行由 _fail_cache_clean 落到日志。
         """
         _log_reset_history()
+        # 2026-11-21: 失败清单属于日志/可观测性的一部分，清日志时一并清空(序号保持单调)。
+        clear_failures()
         log_append(f"[webui] 运行日志已被手动清除 {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         _fail_cache_clean("all")   # 同时清缓存像素(本次会话目录同样清理 —— 用户明确要求"没有日志就不需要截图")
         return self._send_json({"ok": True, "next": 0})

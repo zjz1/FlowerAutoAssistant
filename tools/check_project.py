@@ -14,7 +14,7 @@
                       + 步骤类型软提示 + 打印"待合并清单"（其他 agent 的成果，见 _collab/README.md）
   6. webui 契约一致性(Q03): ⚙面板键 ⊆ set_config 白名单（里程碑 82/87「勾选被静默丢弃」
                       防线，先 WARN 一轮）+ POST 分派 ↔ _POST_ROUTES 白名单（漏同步=405，硬判）
-  7. config 键一致性: flow 的 if_config.key ↔ config.example.json（硬判缺键）
+  7. config 键一致性: flow 的 if_config.key/keys ↔ config.example.json（硬判缺键）
                       ↔ WebUI ⚙ 面板 / WPF SetConfigKeys（缺控件 WARN）
   8. 原生 UI 预检(N01): native/FAA.WpfGui csproj/sln 存在性 + dotnet build 退出码硬判；
                       dotnet 不在 PATH 或 native/ 未落位时降级 WARN（无 SDK 环境不假红）
@@ -768,6 +768,12 @@ def check_flow_config_keys(errors: list[str], warns: list[str], verbose: bool) -
             continue
         for step, loc in walk_step_dicts(data, _rel(f)):
             if step.get("type") != "if_config":
+                continue
+            keys = step.get("keys")
+            if isinstance(keys, (list, tuple)):
+                for k in keys:
+                    if isinstance(k, str) and k:
+                        flow_keys.setdefault(k, []).append(loc)
                 continue
             key = step.get("key")
             if isinstance(key, str) and key:

@@ -63,6 +63,35 @@ class LogServiceTests(unittest.TestCase):
         finally:
             log_service.LOG_MAX_LINES = old_max
 
+    def test_runtime_log_stops_at_size_cap(self):
+        """W5-004: 单会话日志到 100MB 上限后停止写盘, 不删除已有内容。"""
+        old_cap = log_service.LOG_FILE_MAX_BYTES
+        log_service.LOG_FILE_MAX_BYTES = 10
+        try:
+            log_service.append("12345678")
+            log_service.append("abcdef")   # 8+6 > 10, 应停止
+            self.assertEqual(log_service.LOG_FILE.read_text(encoding="utf-8"), "12345678")
+            self.assertTrue(log_service._persist_capped)
+        finally:
+            log_service.LOG_FILE_MAX_BYTES = old_cap
+
+    def test_http_log_stops_at_size_cap(self):
+        old_cap = log_service.HTTP_LOG_MAX_BYTES
+        log_service.HTTP_LOG_MAX_BYTES = 5
+        try:
+            log_service.persist_http("1234")
+            log_service.persist_http("5678")
+            self.assertEqual(log_service.HTTP_LOG_FILE.read_text(encoding="utf-8"), "1234")
+            self.assertTrue(log_service._http_log_capped)
+        finally:
+            log_service.HTTP_LOG_MAX_BYTES = old_cap
+
+    def test_failure_buffer_syncs_with_log_buffer(self):
+        from core.limits import SESSION_BUFFER_MAX
+        from ocr_engine import _failures
+        self.assertEqual(log_service.LOG_MAX_LINES, SESSION_BUFFER_MAX)
+        self.assertEqual(_failures._FAILURES.maxlen, SESSION_BUFFER_MAX)
+
 
 if __name__ == "__main__":
     unittest.main()

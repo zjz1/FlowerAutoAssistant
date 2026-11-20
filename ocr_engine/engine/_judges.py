@@ -370,7 +370,63 @@ class _JudgeMixin:
         """判断 config 中键值是否满足条件, 用于流程内做配置开关。返回 True/False。
         step: {key, value, op} op ∈ {==,!=,>=,<=,>,<}, 默认 ==。
         value 支持 ${key} 占位符解析与 bool/int/str 自动转换。
+
+        2026-11-21: 新增 `keys` 列表 + `any` 组合语义（旧 `key` 写法完全不变）：
+          {"keys": ["a","b"], "any": true, "value": true}
+        any=true（缺省）= 任一键满足；any=false = 全部满足。用于「任一子功能开启才做前置」。
         """
+        keys = step.get("keys")
+        if keys is not None:
+            if (not isinstance(keys, (list, tuple)) or not keys
+                    or any(not isinstance(k, str) or not k for k in keys)):
+                print("[if_config] keys 须为非空字符串数组")
+                return False
+            if step.get("key"):
+                print("[if_config] key 与 keys 不能同时提供")
+                return False
+            if "value" not in step:
+                print("[if_config] keys 模式须显式提供 value")
+                return False
+            any_mode = step.get("any", True)
+            if not isinstance(any_mode, bool):
+                print("[if_config] any 须为布尔值")
+                return False
+            want_raw = self.resolve(str(step.get("value")))
+            if want_raw in ("True", "true"):
+                want = True
+            elif want_raw in ("False", "false"):
+                want = False
+            else:
+                try:
+                    want = int(want_raw)
+                except (TypeError, ValueError):
+                    want = want_raw
+            op = step.get("op", "==")
+            cmps = {
+                "==": lambda a, b: a == b,
+                "!=": lambda a, b: a != b,
+                ">=": lambda a, b: a >= b,
+                "<=": lambda a, b: a <= b,
+                ">": lambda a, b: a > b,
+                "<": lambda a, b: a < b,
+            }
+            if op not in cmps:
+                print(f"[if_config] 非法条件运算符 '{op}'")
+                return False
+            results = {}
+            for k in keys:
+                raw = self.config.get(k, step.get("default"))
+                try:
+                    results[k] = cmps[op](raw, want)
+                except Exception as e:
+                    print(f"[if_config] 比较失败 {k}={raw} {op} {want}: {e}")
+                    results[k] = False
+            ok = any(results.values()) if any_mode else all(results.values())
+            detail = ", ".join(f"{k}={results[k]}" for k in keys)
+            print(f"[if_config] keys={list(keys)} {op} {want} "
+                  f"{'ANY' if any_mode else 'ALL'} -> {'TRUE' if ok else 'FALSE'} ({detail})")
+            return ok
+
         key = step.get("key")
         if not key:
             print("[if_config] 缺少 key")

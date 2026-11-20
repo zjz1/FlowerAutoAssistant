@@ -139,5 +139,45 @@ class StepParamPassingTests(unittest.TestCase):
         self.assertEqual(h._scene, "初始")
 
 
+class _ConfigHarness:
+    def __init__(self, cfg):
+        self.config = cfg
+
+    def resolve(self, val):
+        return val
+
+
+class IfConfigGroupTests(unittest.TestCase):
+    """2026-11-21: if_config 支持 keys + any/all（W3-003 阶段0 门控的基础）。"""
+
+    def _eval(self, cfg, step):
+        from ocr_engine.engine._judges import _JudgeMixin
+        return _JudgeMixin.eval_config(_ConfigHarness(cfg), step)
+
+    def test_any_mode(self):
+        step = {"keys": ["a", "b", "c"], "any": True, "value": True}
+        self.assertTrue(self._eval({"a": False, "b": True, "c": False}, step))
+        self.assertFalse(self._eval({"a": False, "b": False, "c": False}, step))
+
+    def test_all_mode(self):
+        step = {"keys": ["a", "b"], "any": False, "value": True}
+        self.assertTrue(self._eval({"a": True, "b": True}, step))
+        self.assertFalse(self._eval({"a": True, "b": False}, step))
+
+    def test_default_applies_when_key_missing(self):
+        step = {"keys": ["a", "b"], "any": True, "value": True, "default": False}
+        self.assertFalse(self._eval({}, step))
+
+    def test_old_single_key_still_works(self):
+        self.assertTrue(self._eval({"enable_x": True},
+                                   {"key": "enable_x", "value": True}))
+        self.assertFalse(self._eval({"enable_x": False},
+                                    {"key": "enable_x", "value": True}))
+
+    def test_key_and_keys_are_mutually_exclusive(self):
+        self.assertFalse(self._eval({"a": True},
+                                    {"key": "a", "keys": ["a"], "value": True}))
+
+
 if __name__ == "__main__":
     unittest.main()

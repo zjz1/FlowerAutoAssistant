@@ -169,6 +169,32 @@ class HttpHealthContractTests(unittest.TestCase):
             status = e.code
         self.assertEqual(status, 403)
 
+    def test_log_clear_also_clears_failures(self):
+        """W5-004: 失败清单属于日志/可观测性的一部分，清日志时一并清空。"""
+        from app import log_service
+        from ocr_engine._failures import get_failures, report_failure
+        old_log = log_service.LOG_FILE
+        old_http = log_service.HTTP_LOG_FILE
+        old_cache = failcache_service.FAIL_CACHE_DIR
+        old_arch = failcache_service.FAIL_ARCHIVE_DIR
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log_service.LOG_FILE = root / "runtime.txt"
+            log_service.HTTP_LOG_FILE = root / "http.txt"
+            failcache_service.FAIL_CACHE_DIR = root / "fail_cache"
+            failcache_service.FAIL_ARCHIVE_DIR = root / "fail_archives"
+            try:
+                report_failure("review_test", "x")
+                self._post("/api/log_clear", {})
+                items, _ = get_failures(0)
+                self.assertEqual(items, [])
+            finally:
+                log_service.LOG_FILE = old_log
+                log_service.HTTP_LOG_FILE = old_http
+                failcache_service.FAIL_CACHE_DIR = old_cache
+                failcache_service.FAIL_ARCHIVE_DIR = old_arch
+                failcache_service.invalidate_stat()
+
     def test_health_contract_without_creating_engine(self):
         before = engine_service.peek_engine()
         data = self._get("/api/health")
