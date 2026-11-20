@@ -86,6 +86,14 @@
                     { "_note": "合规改造(2026-10-04 zcode-20261004-3): 删直坐标兜底 click_rel(0.0531,0.425) —— OCR 未命中就靠 navigate 下一轮重试, 不再盲点" }
                 ] },
               { "type": "sleep", "seconds": 1.0 },
+              { "type": "if_text",
+                "text": ["参与派对时长：0", "参与派对时长:0"],
+                "min_score": 0.4,
+                "need_refine": false,
+                "log_miss": false,
+                "_note": "2026-11-20 Phase 6 实机: 今日参与派对时长=0 时礼包不可领, 旧链仍逐次点「领取」→ 无奖励弹窗, 每次登记软失败。显式读到 0 时跳过领取循环(面板随后照常关闭); 读不到仍按原链尝试, 不改变可领日的判定口径。",
+                "then": [],
+                "else": [
               { "type": "loop_text",
                 "text": ["领取"],
                 "min_score": 0.4,
@@ -101,6 +109,7 @@
                     { "type": "sleep", "seconds": 1.2 },
                     { "type": "reward_dialog", "wait": 2.0, "tries": 2, "required": true, "name": "花灵派对礼包",
                       "_note": "D13(2026-10-20 方案A): 原为 if_text + 点页脚文字(弹窗消失时会点击穿透)。现统一原语: 标题优先关闭; required=true —— 点击前 OCR 已确认「领取」钮存在, 未见成功界面登记软失败" }
+                ] }
                 ] },
               { "type": "close_dialog", "anchor": "提示", "only_types": ["corner_pink_small", "corner"], "delay": 1.0,
                 "_note": "阶段一: 关掉「时长礼包」子面板" },

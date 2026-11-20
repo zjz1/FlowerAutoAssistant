@@ -520,7 +520,7 @@
    - 覆盖：全局编排(daily)、开始启动/登录+可选切号、签到、种植/花田、社交(家族浇水+闪耀委托挑战+好友采粉完整闭环)、体力、每日任务、领取奖励(在线礼包+花灵派对)、挂机、公共导航系统(navigate+entries.json)、识别与关闭按钮兜底机制；并含引擎步骤类型全集。
    - **重要约定（写入文档开头）**：今后项目**新增任何功能，必须在本文档对应模块下追加一条文字版流程**，与代码、PROGRESS.md、JSON 任务链同步更新。`FLOWS.md` 记各功能文字版流程，`PROGRESS.md` 记进度/决策/踩坑，双文档同步维护。
 
-39. **✅ 并入接管版（FAA_2026-9-18）开发内容：好友采粉功能 + 全套代码改动（AS OF 2026-09-21，合并前备份于 `_backup_premerge_20260921.zip`）**：
+39. **✅ 并入接管版（<旧工作区>）开发内容：好友采粉功能 + 全套代码改动（AS OF 2026-09-21，合并前备份于 `_backup_premerge_20260921.zip`）**：
    - **新增**：`pollin.py`（好友采粉闭环）、`resource/template/friend_pollin.png`、`resource/template/friend_page_jump.png`、`data/config.example.json`、`dev_tools/review/weekly_review.ps1`、客户端 `data/annot_shots/`（ann_1_44994/15768）及各 `workbench/` 采粉调试脚本。
    - **修改**：`flows/flow_social.json`（新增 `enable_pollin` 采粉段 + 浇水改 OCR 点「摇钱树/浇水」）、`flows/common/entries.json`（家族导航 exact/region 优化）、`ocr_engine.py`（新增 `friend_pollin` 步骤 + OCR 合并块纠偏 `_narrow_merged` + 采粉误命中硬阈值 `BIAS_HARD_PX` + 账号条目标记脱敏）、`webui.py`（`enable_pollin` 配置 + POST 白名单 `_POST_ROUTES` 安全修复）、`webui.html`（社交子面板「好友采粉」开关 `mp-social-pollin`）、`ocr_ui.py`/`tpltool.html`/`README.md`/`.gitignore`/`HANDOFF.md` 及 `dev_tools/`、`workbench/` 若干脚本。
    - **验证**：两版 `data/config.json` 运行态按用户确认保留——`enable_pollin=true`、`enable_shine=true`、`enable_switch=true`、`target_tail="61"`；`ocr_engine.py`/`pollin.py`/`webui.py`/`ocr_ui.py` 编译通过；新增模板落位于 `resource/template/`；flow_social 引用 `friend_pollin`、ocr_engine 引用 `run_friend_pollin`、webui 含 `enable_pollin`+`_POST_ROUTES` 均一致；WebUI「好友采粉」开关已挂接。
@@ -936,7 +936,7 @@
 11. **编排层吞掉失败**（L953）：`ok=5 skip=0 fail=0`，但实际 social（含采粉）与 claim_hb 均彻底失败。模块返回值不参与成败判定 → **失败被记成成功**，属最需修的结构问题（否则无人察觉已坏）。
 12. **日志被访问日志淹没**：954 行中约 **700 行**是前端 `GET /api/screen` 轮询行（Handler 仍 `super().log_message()`）。建议顺手抑制访问日志。
 
-**正常（对照）**：7.1 在线礼包全程正常（抽奖 N=3→2→1 递减、50 分钟领取成功、关闭用模板 score=1.000 一次命中）；体力任务 5 轮速通全正常；登录+切号成功（`186****61` 匹配尾号 61）。
+**正常（对照）**：7.1 在线礼包全程正常（抽奖 N=3→2→1 递减、50 分钟领取成功、关闭用模板 score=1.000 一次命中）；体力任务 5 轮速通全正常；登录+切号成功（`abc****de` 匹配尾号 61）。
 
 - **状态**：以上 B 节问题**均未修改**，等用户指令。
 
@@ -971,7 +971,7 @@
 - **死文件清理（移入 `_dev/_stale/` 留档，未删除）**：`resource/tasks/`（全项目零引用，实际用的是 `flows/daily.json`）、`resource/template/` 3 个 GBK 乱码名 PNG（实为「种植/快捷操作/地图」，与 `plant_btn.png`/`quick_ops.png`/`map.png` 重复且零引用）、`config/maa_option.json`。
 - **不可搬迁项（实测约束）**：`FlowerAutoAssistant/debug/` 虽属测试区但**不能动** —— `webui.py` 的 `/api/tplt_load` 以 `BASE/"debug"` 为唯一允许载图目录（L319），`pollin.py`(L446) 向该目录写 `_enter_garden_fail.png`。
 - **文档**：`docs/DEV_PROMPT.md` 新增「项目分区与同步契约（6 区）」章节，并修正开发区路径（`workbench/` → `_dev/workbench/`，`dev_tools/` → `_dev/dev_tools/`）。
-- **影响面评估**：主代码**零改动** —— `ocr_engine.py` 的 7 个路径常量全为 `Path(__file__).parent / …` 相对形式，代码区+资源区同级关系未变，搬迁不影响运行。开发区脚本内的相对路径（`BASE/debug`、`resource/template`）在搬到 `_dev/` 后不再自洽，属预期副作用（需用时按现路径手工传参）。`data/click_log.json` 内本就存有**早已失效的旧机器绝对路径**（`…\FAA_2026-9-18\…\workbench\template\*.png`），出仓同时消除了这类污染。
+- **影响面评估**：主代码**零改动** —— `ocr_engine.py` 的 7 个路径常量全为 `Path(__file__).parent / …` 相对形式，代码区+资源区同级关系未变，搬迁不影响运行。开发区脚本内的相对路径（`BASE/debug`、`resource/template`）在搬到 `_dev/` 后不再自洽，属预期副作用（需用时按现路径手工传参）。`data/click_log.json` 内本就存有**早已失效的旧机器绝对路径**（`…\<旧工作区>\…\workbench\template\*.png`），出仓同时消除了这类污染。
 - **待办**：git **尚未 commit**（HEAD 仍 `0e61c34`）；开发区脚本路径未修（不急用）；P0-1 / P0-2 / P1-3~6 / P2-7~8 / P3-9~12 仍未修。
 
 ## 2026-09-27 · 修 P0-1 + P0-2（里程碑 52）
@@ -2138,7 +2138,7 @@
 ### 待实机回归（合并后）
 
 1. `--flow 开始启动`（`enable_switch=true`, `target_tail=61`）当前账号即 61 → 应见 `[if_account_tail] … -> HIT` 并**直接登录**；
-   改 `target_tail=89` 再跑 → 模板命中展开**中央**列表并点中 `195****89`；
+   改 `target_tail=89` 再跑 → 模板命中展开**中央**列表并点中 `abc****de`；
 2. 浇水：日志应见「命中块文字'浇水'」且 `water_count=1/3`；
 3. BUG-10：WebUI 日志轮询在 `after` 被置负/异常时不再错行。
 
@@ -4212,7 +4212,7 @@ social `5CF867C0…`，逐一 md5 核对一致，恢复后闸门全绿），再�
   「正在检测资源更新.. 0%」。
 - 下载期：底部「**开始更新资源..(N/57)**」+ 一位小数百分比（20.7%/89.6%）+「736KB/S (22.3MB/109.4MB)」。
   20.7%→90.9% 约 33s，109.4MB 全程约 1 分钟量级。
-- 完成态：**自动进入登录页**（登录 / 登录其他账号 / `186****61`），**无完成弹窗、无重启**；中间只经过
+- 完成态：**自动进入登录页**（登录 / 登录其他账号 / `abc****de`），**无完成弹窗、无重启**；中间只经过
   Taomee 启动页（健康游戏忠告 / CADPA / Ver:1.0.2）。
 - ⚠ OCR 区域：底部进度带取 `0.78~0.93`（108px@720p）时 RapidOCR **完全检不出**；取 `0.70~0.98`（202px）
   可稳定读出（含百分比与速度）。
@@ -5167,3 +5167,5 @@ R5 自述与内容一致、**R6 `files/` 整文件**（diff 仅作 evidence）�
 - **验证**：Python 109/109；`check_project --with-tests` 通过；WPF 70/70；便携包 zip 解压实跑宿主自测 PASS。
 - **Phase 4 用户支持**：#14 `--check-env`（11 项检查 + WARN/FAIL 建议；WPF 设置页「环境检查」+ 首启启动失败自动附带结果）；#16 `--export-diag` 脱敏诊断包（manifest/env/脱敏配置/日志尾部/流程清单，不含截图；WPF「导出诊断包」）；#15 `docs/SUPPORTED_ENV.md`；#18 `docs/ERRORS.md` + `diagnostics/errors.py`（测试校验码集一致）；#17 README 快速开始/FAQ/故障排查 + `CONTRIBUTING.md` + Issue/PR 模板。测试 118/118。
 - **Phase 5 安全与维护**：#19 本地 HTTP POST 增加 Origin 白名单（无 Origin / http://127.0.0.1|localhost|[::1] 放行，其余 403；含 9 项 HTTP 测试）；#20 日志与诊断统一脱敏（`diagnostics/redact.py` 接入 `log_service` 与诊断包，账号/用户路径/ADB 路径/密钥）；#23 `SECURITY.md` + `.github/dependabot.yml`（pip/nuget/actions）；#6 复扫：当前树 0 命中（真实账号掩码统一 `abc****de`、`clean_click_log.py` 死路径改占位符）。验证：Python 122/122、WPF 70/70、闸门通过。
+- **Phase 6 实机验证（2026-11-20，MuMu 已启动）**：发行包后端连接成功（实机 1920×1080 / 引擎 1280×720）；「开始启动」模块 130s 全通过（资源更新守卫 58 个 131.7MB → 登录 → 签到，ok=1 fail=0）；「领取奖励」模块首次 310s 出现 1 项软失败（花灵派对今日时长=0 仍点领取），补 `if_text` 0 时长闸门后源码模式复跑 331s **ok=1 fail=0**。干净目录解压 zip → 后端 health=faa、页面 200；离线回放 4/4 PASS；真实个人标识扫描 0 命中（PROGRESS 中历史账号掩码/旧工作区名一并清理）。
+- **Phase 6 未完成门槛**：CI 工作流尚未在 GitHub 运行（分支 `release/prep` 未推送）；无干净 Windows VM（仅干净目录）；因此**未打 v1.0.0 tag**。
