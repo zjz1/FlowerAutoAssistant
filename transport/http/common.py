@@ -47,6 +47,7 @@ _POST_ROUTES = {
     "/api/tplt_load", "/api/tplt_submit", "/api/tplt_contour",
     "/api/failures_clear", "/api/log_clear",
     "/api/fail_cache_clean", "/api/fail_cache_open",
+    "/api/preflight",
 }
 POST_ROUTES = _POST_ROUTES
 

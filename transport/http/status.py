@@ -97,6 +97,94 @@ class StatusRoutes:
             "use_angle_cls": bool(eng.config.get("use_angle_cls", True)),
             # 2026-11-20 种植增强：设置页「稀有种子确认」开关 + 当前种子稀有状态
             "plant_rare_confirm": bool(eng.config.get("plant_rare_confirm", True)),
+            "plant_harvest_allowed": list(eng.config.get("plant_harvest_allowed")
+                                          or ["白色桃花", "粉色桃花"]),
             "plant_seed_name": seed_name,
             "plant_seed_rare": seed_rare,
         })
+
+    def _preflight(self):
+        """POST /api/preflight：运行前开/关功能与风险汇总（WPF 统一确认框数据源）。"""
+        eng = get_engine()
+        body = self._read_json()
+        ids = body.get("modules") if isinstance(body, dict) else None
+        if not isinstance(ids, list) or any(not isinstance(x, str) for x in ids):
+            return self._send_json({"error": "modules 须为字符串数组"}, 400)
+        selected = set(ids)
+        import json as _json
+        plan = None
+        p = BASE / "flows" / "daily.json"
+        if p.exists():
+            try:
+                plan = _json.loads(p.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                plan = None
+        names = {
+            "startup": "开始启动", "signin": "签到", "plant": "种植任务",
+            "social": "社交任务", "energy": "体力任务", "daily": "每日任务",
+            "idle": "挂机", "claim": "领取奖励",
+        }
+        known = [m.get("id") for m in (plan or {}).get("modules", []) if m.get("id")]
+        unknown = sorted(selected - set(known)) if known else []
+        if unknown:
+            return self._send_json({"error": f"未知模块: {', '.join(unknown)}"}, 400)
+
+        enabled: list[str] = []
+        disabled: list[str] = []
+        risks: list[str] = []
+        for mid in known:
+            label = names.get(mid, mid)
+            if mid not in selected:
+                disabled.append(label)
+                continue
+            line = label
+            if mid == "plant":
+                mode = str(eng.config.get("plant_seed_mode", "manual"))
+                seed = str(eng.config.get("plant_seed_preset", "白色桃花")
+                           if mode == "preset" else eng.config.get("plant_flower_type", "桃花"))
+                cmode = str(eng.config.get("plant_count_mode", "fixed"))
+                parts = [f"种子：{seed}",
+                         f"数量：{'auto' if cmode == 'auto' else eng.config.get('plant_count', 1)}"]
+                if cmode == "fixed" and eng.config.get("plant_buy_missing"):
+                    parts.append("缺种购买：开")
+                if cmode == "auto" and eng.config.get("plant_auto_buy"):
+                    parts.append("auto自动购买：开")
+                if eng.config.get("plant_harvest"):
+                    allowed = eng.config.get("plant_harvest_allowed") or []
+                    parts.append("允许不授粉收获：" + ("/".join(allowed) if allowed else "无"))
+                line = f"{label}（" + "；".join(parts) + "）"
+            enabled.append(line)
+
+        # 风险项（购买/切换账号始终提示；稀有条目受 plant_rare_confirm 控制）
+        if "plant" in selected:
+            try:
+                from plant import load_presets, resolve_seed_name
+                mode = str(eng.config.get("plant_seed_mode", "manual"))
+                raw = (eng.config.get("plant_seed_preset", "白色桃花")
+                       if mode == "preset" else eng.config.get("plant_flower_type", "桃花"))
+                ok, _msg, seed = resolve_seed_name(raw)
+                if ok and seed and load_presets()["seeds"][seed]["rare"]:
+                    if bool(eng.config.get("plant_rare_confirm", True)):
+                        risks.append(f"目标为稀有种子「{seed}」：不可购买，已强制关闭自动购买")
+            except Exception:  # noqa: BLE001
+                pass
+            cmode = str(eng.config.get("plant_count_mode", "fixed"))
+            if cmode == "fixed" and eng.config.get("plant_buy_missing"):
+                risks.append("已开启缺种购买：将按差额消耗仙豆购买种子")
+            if cmode == "auto" and eng.config.get("plant_auto_buy"):
+                risks.append("已开启 auto 自动购买：将按肥力/槽位上限消耗仙豆")
+        if "startup" in selected and eng.config.get("enable_switch"):
+            risks.append(f"已开启切换账号：将切换到目标账号（尾号 {eng.config.get('target_tail', '')}）")
+
+        lines = ["提示"]
+        if enabled:
+            lines.append("本次运行时开启了以下功能：")
+            lines += [f"- {x}" for x in enabled]
+        if disabled:
+            lines.append("本次运行时关闭了以下功能：")
+            lines += [f"- {x}" for x in disabled]
+        if risks:
+            lines.append("风险提示：")
+            lines += [f"- {x}" for x in risks]
+        return self._send_json({"enabled": enabled, "disabled": disabled,
+                                "risks": risks, "text": "\n".join(lines)})

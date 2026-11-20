@@ -5177,3 +5177,12 @@ R5 自述与内容一致、**R6 `files/` 整文件**（diff 仅作 evidence）�
 - **界面**：WebUI 种植 ⚙ 面板支持 enum/int、花名→颜色下拉、稀有保存确认；设置页新增「稀有种子二次确认」；「开始一轮」前再确认（仅勾选种植且目标稀有）。WPF 设置页新增「种植」卡片（同套控件）、界面卡新增稀有确认开关、首页开始前确认；WPF 模块 ⚙ 隐藏已迁移的种植键。
 - **流程**：`flow_plant.json` 顺序改为 授粉（占位）→ 收获 → 种植 → 购买（占位）。
 - **验证**：API 实测（非法种子/数量 400；preset 绿色 → `plant_seed_rare=true`；配置已恢复）；WebUI 内联脚本 `node --check` 通过；Python 全量测试 + 闸门通过；WPF 编译 0 警告、单测 70/70。**真机验收待用户指令**。
+
+## 2026-11-20 · 收获保护 / 运行前统一确认 / 原生种植设置面板（里程碑 107）
+
+- **收获规则**：`植物可授粉(y)>0` 时读取右侧待授粉列表（`HARVEST_PENDING_REGION`），按「待授粉集合 ⊆ 允许不授粉收获集合」判定 —— 全部允许才一键收花；任一不允许或列表不可读 → 保守跳过。稀有种子（绿色桃花 `rare=true`）强制保护、界面不可勾选、服务端保存时剔除。
+- **配置**：新增 `plant_harvest_allowed`（list，默认 `["白色桃花","粉色桃花"]`）；`schema_version` 升至 3，旧配置自动补键。该键无 `meta`、不进 `_MODULE_SETTINGS`，冻结 WebUI 不渲染，仅 WPF 种植面板编辑。
+- **接口**：新增 `POST /api/preflight`（请求 `{"modules":[ids]}`，返回 enabled/disabled/risks/text）；`/api/daily` 顶层回显 `plant_harvest_allowed`；`_POST_ROUTES` 同步至 16。
+- **WPF**：种植设置从设置页移回种植模块 ⚙，分组为 选种 / 数量与购买 / 收获保护（花名一级、颜色二级，稀有置灰）；设置页仅保留「稀有种子二次确认」；「开始一轮」统一调用 preflight 并在单弹窗展示，取不到时降级确认；`FaaProxy.SetConfigKeys` 补 `plant_harvest_allowed`（否则保存被静默过滤）。
+- **测试**：新增收获判定（全允许/混入保护/稀有/空集合/名称匹配）、preflight 契约与未知模块 400、允许列表校验用例；Python 全量闸门通过（`plant_harvest_allowed` 无 meta 已在契约测试登记豁免）；WPF 单测 70/70，Release 发布 0 警告 0 错误。
+- **产物**：`native/dist/FAA.WpfGui.exe` 已重新发布（自包含单文件，约 147 MB）。**真机验收待用户指令**。

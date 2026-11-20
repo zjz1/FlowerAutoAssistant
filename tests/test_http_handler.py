@@ -33,7 +33,7 @@ class HttpHandlerTests(unittest.TestCase):
 
     def test_compat_entry_exports(self):
         self.assertIs(webui.Handler, Handler)
-        self.assertEqual(len(webui._POST_ROUTES), 15)
+        self.assertEqual(len(webui._POST_ROUTES), 16)
         self.assertTrue(callable(webui.set_server))
         self.assertTrue(callable(webui.main))
 
@@ -63,6 +63,22 @@ class HttpHealthContractTests(unittest.TestCase):
         with urllib.request.urlopen(self.base + path, timeout=3) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
+    def _post_status(self, path: str, obj: dict):
+        data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(self.base + path, data=data,
+                                     headers={"Content-Type": "application/json"},
+                                     method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode("utf-8"))
+
+    def _post(self, path: str, obj: dict) -> dict:
+        status, body = self._post_status(path, obj)
+        self.assertEqual(status, 200, body)
+        return body
+
     def test_plant_presets_endpoint(self):
         data = self._get("/api/plant_presets")
         flowers = data.get("flowers")
@@ -83,6 +99,37 @@ class HttpHealthContractTests(unittest.TestCase):
         self.assertEqual(by_key["plant_count"]["max"], 360)
         self.assertIn("plant_rare_confirm", data)
         self.assertIn("plant_seed_rare", data)
+
+    def test_preflight_contract(self):
+        data = self._post("/api/preflight", {"modules": ["startup", "plant"]})
+        self.assertTrue(data["enabled"])
+        self.assertTrue(data["disabled"])
+        text = data["text"]
+        self.assertIn("本次运行时开启了以下功能：", text)
+        self.assertIn("本次运行时关闭了以下功能：", text)
+        self.assertIn("种植任务", text)
+        self.assertNotIn("--", text)
+
+    def test_preflight_rejects_unknown_module(self):
+        status, body = self._post_status("/api/preflight", {"modules": ["nope"]})
+        self.assertEqual(status, 400)
+        self.assertIn("未知模块", body.get("error", ""))
+
+    def test_harvest_allowed_config_validation(self):
+        status, body = self._post_status("/api/set_config",
+                                         {"plant_harvest_allowed": ["绿色桃花"]})
+        self.assertEqual(status, 400)
+        self.assertIn("稀有种子", body.get("error", ""))
+        status, body = self._post_status("/api/set_config",
+                                         {"plant_harvest_allowed": ["蓝色桃花"]})
+        self.assertEqual(status, 400)
+        status, body = self._post_status("/api/set_config",
+                                         {"plant_harvest_allowed": ["白色桃花"]})
+        self.assertEqual(status, 200)
+        self.assertTrue(body.get("ok"))
+        # 恢复默认，避免影响同进程其它用例
+        self._post("/api/set_config",
+                   {"plant_harvest_allowed": ["白色桃花", "粉色桃花"]})
 
     def test_health_contract_without_creating_engine(self):
         before = engine_service.peek_engine()

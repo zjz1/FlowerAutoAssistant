@@ -23,7 +23,8 @@ public sealed record DailyPlan(
     [property: JsonPropertyName("ocr_threads")] int OcrThreads,
     [property: JsonPropertyName("plant_rare_confirm")] bool PlantRareConfirm = true,
     [property: JsonPropertyName("plant_seed_name")] string? PlantSeedName = null,
-    [property: JsonPropertyName("plant_seed_rare")] bool PlantSeedRare = false);
+    [property: JsonPropertyName("plant_seed_rare")] bool PlantSeedRare = false,
+    [property: JsonPropertyName("plant_harvest_allowed")] string[]? PlantHarvestAllowed = null);
 
 /// <summary>daily.modules 元素: id/flow/name/required + settings 面板。</summary>
 public sealed record DailyModule(
@@ -59,3 +60,10 @@ public sealed record PlantColor(
     [property: JsonPropertyName("rare")] bool Rare = false,
     [property: JsonPropertyName("cost")] int Cost = 2,
     [property: JsonPropertyName("cost_source")] string? CostSource = null);
+
+/// <summary>POST /api/preflight —— 运行前开/关功能与风险汇总（2026-11-20）。</summary>
+public sealed record PreflightResult(
+    [property: JsonPropertyName("enabled")] string[] Enabled,
+    [property: JsonPropertyName("disabled")] string[] Disabled,
+    [property: JsonPropertyName("risks")] string[] Risks,
+    [property: JsonPropertyName("text")] string Text);

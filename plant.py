@@ -203,6 +203,7 @@ DETAIL_CLOSE_DY_REL = -0.128
 HARVEST_LEFT_NAV_REGION = [0.02, 0.15, 0.16, 0.80]   # 左侧 种植/照料/授粉...
 HARVEST_TAB_REGION = [0.25, 0.10, 0.95, 0.18]        # 可收获(x)/可授粉(x) 标签带
 HARVEST_POLLEN_REGION = [0.13, 0.15, 0.35, 0.55]     # 授粉页左侧花粉列表
+HARVEST_PENDING_REGION = [0.35, 0.15, 0.98, 0.90]    # 授粉页右侧待授粉列表(2026-11-20; 实机校准)
 HARVEST_BTN_REGION = [0.92, 0.35, 1.0, 0.48]         # 右侧「一键收花」
 REWARD_REGION = [0.25, 0.25, 0.80, 0.78]             # 奖励弹窗
 
@@ -1109,6 +1110,53 @@ def _read_pollinate_page(eng: EnginePort):
     return blocks
 
 
+def _match_seed_names(texts) -> set[str] | None:
+    """从待授粉列表文本匹配数据库种子；无任何匹配返回 None（保守）。
+
+    先按完整「颜色+花名」匹配；再按颜色/花名分块组合（页面可能分行显示）。
+    """
+    try:
+        lib = load_presets()["seeds"]
+    except ValueError as e:  # noqa: BLE001
+        print(f"    [收获] 种子库不可用: {e}")
+        return None
+    joined = " ".join(str(t).replace(" ", "") for t in texts)
+    found = {seed for seed in lib if seed in joined}
+    if found:
+        return found
+    flowers = {info["flower"] for info in lib.values()}
+    colors = {info["color"] for info in lib.values()}
+    for flower in flowers:
+        if flower not in joined:
+            continue
+        for color in colors:
+            seed = f"{color}{flower}"
+            if color in joined and seed in lib:
+                found.add(seed)
+    return found or None
+
+
+def _read_pending_pollinations(eng: EnginePort) -> set[str] | None:
+    """读取授粉页右侧待授粉花朵集合；读不到/无法识别返回 None。"""
+    blocks = _fine_blocks(eng, HARVEST_PENDING_REGION, 2)
+    texts = _texts(blocks)
+    print(f"    [收获] 待授粉列表实读: {texts[:20]}")
+    return _match_seed_names(texts)
+
+
+def decide_harvest(pending, allowed, rare=None) -> tuple[bool, list[str]]:
+    """收获判定（纯函数）：待授粉集合 P ⊆ 允许集合 A 才允许收获。
+
+    稀有种子强制受保护（即使误加入 A）。返回 (ok, 受保护花朵列表)。
+    调用方负责 pending=None（读取失败）时保守跳过。
+    """
+    allowed_set = set(allowed or ())
+    rare_set = set(rare or ())
+    protected = sorted({str(s) for s in (pending or ())
+                        if str(s) in rare_set or str(s) not in allowed_set})
+    return (not protected), protected
+
+
 def _close_plant_panel(eng: EnginePort) -> bool:
     """关闭种植面板（走 close_dialog 通用出口, 点后复核面板特征是否消失）。
 
@@ -1236,15 +1284,31 @@ def _run_plant_harvest(eng: EnginePort, state) -> bool:
     _read_pollinate_page(eng)
     _save_shot(eng, "harvest_pollinate")
 
-    # 4-5. 有待授粉 -> 不收花（用户规则：无待授粉才收花）
+    # 4-5. 有待授粉 -> 仅当待授粉全部属于「允许不授粉收获」才收花
     if y is None:
         print("    [收获] 可授粉计数未读到 -> 保守判定有待授粉, 跳过收花")
         _close_plant_panel(eng)
         return True
     if y > 0:
-        print(f"    [收获] 可授粉={y} > 0, 跳过收花")
-        _close_plant_panel(eng)
-        return True
+        pending = _read_pending_pollinations(eng)
+        if pending is None:
+            print("    [收获] 可授粉>0 但待授粉花朵无法识别 -> 保守跳过收花")
+            _close_plant_panel(eng)
+            return True
+        try:
+            rare = {s for s, info in load_presets()["seeds"].items() if info["rare"]}
+        except ValueError as e:  # noqa: BLE001
+            print(f"    [收获] 种子库不可用({e}) -> 保守跳过收花")
+            _close_plant_panel(eng)
+            return True
+        allowed = eng.config.get("plant_harvest_allowed") or []
+        ok, protected = decide_harvest(pending, allowed, rare)
+        print(f"    [收获] 待授粉={sorted(pending)} 允许不授粉收获={allowed} "
+              f"受保护={protected or '无'}")
+        if not ok:
+            print("    [收获] 待授粉含受保护花朵 -> 跳过收花")
+            _close_plant_panel(eng)
+            return True
 
     # 收花
     if not eng.click_text(["一键收花", "收花"], region_rel=HARVEST_BTN_REGION,

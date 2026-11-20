@@ -1,5 +1,5 @@
 {
-    "schema_version": 2,
+    "schema_version": 3,
     "enable_switch": false,
     "target_tail": "",
     "claim_online": true,
@@ -22,6 +22,7 @@
     "plant_buy_missing": false,
     "plant_auto_buy": false,
     "plant_rare_confirm": true,
+    "plant_harvest_allowed": ["白色桃花", "粉色桃花"],
     "plant_pollinate": false,
     "plant_harvest": false,
     "plant_buy_seed": false,

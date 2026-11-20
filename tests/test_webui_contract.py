@@ -15,13 +15,20 @@ class WebUiContractTests(unittest.TestCase):
             "/api/tplt_load", "/api/tplt_submit", "/api/tplt_contour",
             "/api/failures_clear", "/api/log_clear",
             "/api/fail_cache_clean", "/api/fail_cache_open",
+            "/api/preflight",
         }
         self.assertEqual(set(webui._POST_ROUTES), expected)
+
+    # 2026-11-20: 无 meta 的键 = 仅 WPF 原生面板编辑(WebUI 已冻结, 不进 _MODULE_SETTINGS,
+    # 通用 ⚙ 面板不渲染)。新增此类键时在此登记, 其余键仍强制 meta。
+    _NO_META_KEYS = {"plant_harvest_allowed"}
 
     def test_config_specs_have_type(self):
         self.assertTrue(webui._CONFIG_KEYS)
         for key, spec in webui._CONFIG_KEYS.items():
             self.assertIn("type", spec, f"{key} 缺 type")
+            if key in self._NO_META_KEYS:
+                continue
             self.assertIn("meta", spec, f"{key} 缺 meta")
 
     def test_module_settings_subset_of_config_keys(self):

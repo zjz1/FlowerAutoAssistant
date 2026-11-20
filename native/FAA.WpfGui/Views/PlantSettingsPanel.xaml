@@ -1,0 +1,146 @@
+<UserControl x:Class="FAA.WpfGui.Views.PlantSettingsPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- 种植模块设置（2026-11-20）：选种 / 数量与购买 / 收获保护 三组。
+         DataContext = PlantSettingsViewModel；回显/保存走 /api/daily + set_config。 -->
+    <StackPanel Margin="0,10,0,0">
+        <Separator Margin="0,0,0,8"/>
+
+        <!-- ===== 选种 ===== -->
+        <TextBlock Text="选种" Foreground="{StaticResource TextBrush}" FontWeight="Bold" Margin="0,0,0,4"/>
+        <Grid Margin="0,3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="选种模式" Style="{StaticResource RowLabel}"/>
+            <ComboBox Grid.Column="1" Width="150" HorizontalAlignment="Left"
+                      SelectedIndex="{Binding PlantSeedModeIndex, Mode=TwoWay}">
+                <ComboBoxItem Content="手动输入全称"/>
+                <ComboBoxItem Content="预设选择"/>
+            </ComboBox>
+        </Grid>
+        <Grid Margin="0,3" Visibility="{Binding IsPlantManual, Converter={StaticResource BoolToVisibility}}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="种子全称" Style="{StaticResource RowLabel}"
+                       ToolTip="如 桃花 / 白色桃花 / 白色桃花种子；必须在 data/plant_presets.json 中"/>
+            <TextBox x:Name="PlantFlowerBox" Grid.Column="1" Width="160" HorizontalAlignment="Left"
+                     Style="{StaticResource DarkTextBox}"
+                     Text="{Binding PlantFlowerTypeText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+        </Grid>
+        <Grid Margin="0,3" Visibility="{Binding IsPlantPreset, Converter={StaticResource BoolToVisibility}}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="预设种子" Style="{StaticResource RowLabel}"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <ComboBox Width="105" ItemsSource="{Binding PlantFlowers}"
+                          SelectedItem="{Binding PlantFlower, Mode=TwoWay}"/>
+                <ComboBox Width="120" Margin="8,0,0,0" ItemsSource="{Binding PlantColors}"
+                          DisplayMemberPath="Display"
+                          SelectedItem="{Binding PlantColor, Mode=TwoWay}"/>
+            </StackPanel>
+        </Grid>
+        <TextBlock Text="{Binding PlantSeedLabel}" Style="{StaticResource MutedText}" Margin="150,2,0,0"/>
+
+        <!-- ===== 数量与购买 ===== -->
+        <TextBlock Text="数量与购买" Foreground="{StaticResource TextBrush}" FontWeight="Bold"
+                   Margin="0,10,0,4"/>
+        <Grid Margin="0,3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="数量模式" Style="{StaticResource RowLabel}"/>
+            <ComboBox Grid.Column="1" Width="160" HorizontalAlignment="Left"
+                      SelectedIndex="{Binding PlantCountModeIndex, Mode=TwoWay}">
+                <ComboBoxItem Content="固定数量"/>
+                <ComboBoxItem Content="自动上限 (auto)"/>
+            </ComboBox>
+        </Grid>
+        <Grid Margin="0,3" Visibility="{Binding IsPlantCountFixed, Converter={StaticResource BoolToVisibility}}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="种植数量" Style="{StaticResource RowLabel}"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <TextBox x:Name="PlantCountBox" Width="70" Style="{StaticResource DarkTextBox}"
+                         Text="{Binding PlantCountText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Text="(1~360)" Style="{StaticResource MutedText}" Margin="8,0,0,0"
+                           VerticalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+        <Grid Margin="0,3" Visibility="{Binding IsPlantCountFixed, Converter={StaticResource BoolToVisibility}}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="缺种购买" Style="{StaticResource RowLabel}"
+                       ToolTip="固定模式下种子不足时去园艺店按差额购买（单批≤99，超出分批）"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <CheckBox IsChecked="{Binding PlantBuyMissing, Mode=TwoWay}" VerticalAlignment="Center"/>
+                <TextBlock Text="启用" Style="{StaticResource MutedText}" Margin="6,0,0,0"
+                           VerticalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+        <Grid Margin="0,3" Visibility="{Binding IsPlantCountAuto, Converter={StaticResource BoolToVisibility}}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="auto 也自动购买" Style="{StaticResource RowLabel}"
+                       ToolTip="auto 不受现有种子数限制；按肥力/槽位/360 上限计算并补齐缺少量"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <CheckBox IsChecked="{Binding PlantAutoBuy, Mode=TwoWay}" VerticalAlignment="Center"/>
+                <TextBlock Text="启用" Style="{StaticResource MutedText}" Margin="6,0,0,0"
+                           VerticalAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- ===== 收获保护 ===== -->
+        <TextBlock Text="收获保护" Foreground="{StaticResource TextBrush}" FontWeight="Bold"
+                   Margin="0,10,0,2"/>
+        <TextBlock Text="允许不授粉直接收获；未勾选的花色默认受保护。"
+                   Style="{StaticResource MutedText}" Margin="0,0,0,2"/>
+        <ItemsControl ItemsSource="{Binding HarvestFlowers}">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <StackPanel Margin="0,3,0,0">
+                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextBrush}"
+                                   FontWeight="SemiBold"/>
+                        <ItemsControl ItemsSource="{Binding Colors}" Margin="14,1,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <CheckBox Content="{Binding Display}"
+                                              IsChecked="{Binding IsAllowed, Mode=TwoWay}"
+                                              IsEnabled="{Binding IsEnabled}" Margin="0,1"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <!-- ===== 状态 ===== -->
+        <TextBlock Text="改动下次「开始一轮」生效；稀有种子不可购买，购买开关会被强制关闭。"
+                   Style="{StaticResource MutedText}" Margin="0,8,0,0" TextWrapping="Wrap"/>
+        <TextBlock Text="{Binding SaveStatusText}" Margin="0,4,0,0">
+            <TextBlock.Style>
+                <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                    <Setter Property="Foreground" Value="{StaticResource OkBrush}"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding SaveStatusIsError}" Value="True">
+                            <Setter Property="Foreground" Value="{StaticResource ErrBrush}"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </TextBlock.Style>
+        </TextBlock>
+    </StackPanel>
+</UserControl>

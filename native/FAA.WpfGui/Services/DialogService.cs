@@ -41,6 +41,60 @@ public static class DialogService
     public static void Info(string message, string title = DefaultTitle, Window? owner = null)
         => Show(owner, message, title, MessageBoxButton.OK, MessageBoxImage.Information, MessageBoxResult.OK);
 
+    /// <summary>
+    /// 运行前统一确认框（2026-11-20）：一个窗口展示 开启/关闭/风险 三段文本，确认=true。
+    /// 文本由 POST /api/preflight 生成，本方法只负责展示与确认。
+    /// </summary>
+    public static bool ConfirmPreflight(string text, string title = "提示", Window? owner = null)
+    {
+        var body = new TextBlock
+        {
+            Text = text,
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = 21,
+            Foreground = AppBrush("TextBrush") ?? new SolidColorBrush(Color.FromRgb(0xE8, 0xEA, 0xED)),
+        };
+        var scroll = new ScrollViewer
+        {
+            Content = body,
+            MaxHeight = 460,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        };
+        var ok = new Button { Content = "确认", Width = 88, IsDefault = true, Margin = new Thickness(0, 0, 8, 0) };
+        var cancel = new Button { Content = "取消", Width = 88, IsCancel = true };
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 14, 0, 0),
+        };
+        buttons.Children.Add(ok);
+        buttons.Children.Add(cancel);
+        var panel = new StackPanel();
+        panel.Children.Add(scroll);
+        panel.Children.Add(buttons);
+        var win = new Window
+        {
+            Title = title,
+            Content = panel,
+            Width = 620,
+            MaxHeight = 620,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false,
+            Background = AppBrush("PanelBrush") ?? new SolidColorBrush(Color.FromRgb(0x26, 0x28, 0x2D)),
+        };
+        var own = owner ?? Application.Current?.MainWindow;
+        if (own is { IsVisible: true })
+        {
+            win.Owner = own;
+            win.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        }
+        ok.Click += (_, _) => win.DialogResult = true;
+        return win.ShowDialog() == true;
+    }
+
     /// <summary>错误提示框(单按钮, ✖ 图标): 写盘失败等明确出错; 致命错误(端口冲突/服务自起失败)也走这里。</summary>
     public static void Error(string message, string title = DefaultTitle, Window? owner = null)
         => Show(owner, message, title, MessageBoxButton.OK, MessageBoxImage.Error, MessageBoxResult.OK);

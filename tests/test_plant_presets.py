@@ -126,5 +126,40 @@ class TargetCountTests(unittest.TestCase):
             auto_buy=True, rare=True), 4)
 
 
+class HarvestDecisionTests(unittest.TestCase):
+    """收获判定：P ⊆ A 才收花；稀有强制受保护；读取失败由调用方保守跳过。"""
+
+    def test_all_pending_allowed(self):
+        ok, protected = plant.decide_harvest(
+            {"白色桃花", "粉色桃花"}, ["白色桃花", "粉色桃花"])
+        self.assertTrue(ok)
+        self.assertEqual(protected, [])
+
+    def test_any_protected_skips(self):
+        ok, protected = plant.decide_harvest(
+            {"白色桃花", "绿色桃花"}, ["白色桃花", "粉色桃花"],
+            rare={"绿色桃花"})
+        self.assertFalse(ok)
+        self.assertEqual(protected, ["绿色桃花"])
+
+    def test_rare_forced_protected_even_if_listed(self):
+        ok, protected = plant.decide_harvest(
+            {"绿色桃花"}, ["白色桃花", "粉色桃花", "绿色桃花"],
+            rare={"绿色桃花"})
+        self.assertFalse(ok)
+        self.assertEqual(protected, ["绿色桃花"])
+
+    def test_empty_pending_allows_harvest(self):
+        ok, protected = plant.decide_harvest(set(), ["白色桃花"])
+        self.assertTrue(ok)
+        self.assertEqual(protected, [])
+
+    def test_match_full_and_split_names(self):
+        self.assertEqual(plant._match_seed_names(["白色桃花"]), {"白色桃花"})
+        self.assertEqual(plant._match_seed_names(["粉色", "桃花"]), {"粉色桃花"})
+        self.assertEqual(plant._match_seed_names(["待授粉", "绿色桃花"]), {"绿色桃花"})
+        self.assertIsNone(plant._match_seed_names(["待授粉", "未知花朵"]))
+
+
 if __name__ == "__main__":
     unittest.main()

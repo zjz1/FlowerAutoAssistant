@@ -21,9 +21,6 @@ public partial class SettingsPage : UserControl
         ThreadsBox.LostFocus += (_, _) => (DataContext as SettingsViewModel)?.OnThreadsEditingChanged(false);
         ThresholdBox.GotFocus += (_, _) => (DataContext as SettingsViewModel)?.OnThresholdEditingChanged(true);
         ThresholdBox.LostFocus += (_, _) => (DataContext as SettingsViewModel)?.OnThresholdEditingChanged(false);
-        // 种植卡片(2026-11-20): 失焦提交(数量/种子名), 校验与回退在 VM
-        PlantFlowerBox.LostFocus += (_, _) => (DataContext as SettingsViewModel)?.CommitPlantFlowerType();
-        PlantCountBox.LostFocus += (_, _) => (DataContext as SettingsViewModel)?.CommitPlantCount();
         Unloaded += OnUnloaded;
     }
 

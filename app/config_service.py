@@ -46,6 +46,25 @@ def _apply_config_key(eng: OCREngine, key: str, spec: dict, value) -> str | None
             return "种植数量须在 1~360 之间"
         eng.update_config(plant_count=n)
         return None
+    if key == "plant_harvest_allowed":
+        from plant import load_presets, resolve_seed_name
+        if not isinstance(value, list):
+            return "允许收获列表须为字符串数组"
+        allowed: list[str] = []
+        try:
+            rare = {s for s, info in load_presets()["seeds"].items() if info["rare"]}
+        except ValueError as e:  # noqa: BLE001
+            return str(e)
+        for raw in value:
+            ok, msg, seed = resolve_seed_name(str(raw))
+            if not ok or not seed:
+                return msg or f"未知种子: {raw}"
+            if seed in rare:
+                return f"稀有种子不可加入允许不授粉收获列表: {seed}"
+            if seed not in allowed:
+                allowed.append(seed)
+        eng.update_config(plant_harvest_allowed=allowed)
+        return None
     if key in ("plant_seed_preset", "plant_flower_type"):
         from plant import resolve_seed_name
         ok, msg, seed = resolve_seed_name(str(value))

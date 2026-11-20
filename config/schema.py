@@ -112,6 +112,10 @@ _CONFIG_KEYS: dict[str, dict] = {
         type="bool",
         meta=("稀有种子确认", "保存设置与开始一轮时对稀有种子二次确认"),
         meta_default=True),
+    # 2026-11-20 收获规则: 允许不授粉直接收获的种子(稀有强制剔除; 仅 WPF 种植模块面板编辑)
+    "plant_harvest_allowed": dict(
+        type="list",
+        default=["白色桃花", "粉色桃花"]),
     "plant_pollinate": dict(
         type="bool",
         meta=("花朵授粉", "占位待开发, 开启暂无实际动作"),
@@ -215,7 +219,7 @@ NO_DEFAULT = _NO_DEFAULT
 
 # ---- 文件级键：存在 config.json / config.example，但不进 set_config 白名单 ----
 FILE_ONLY_KEYS: dict[str, dict] = {
-    "schema_version": dict(type="int", default=2, settable=False),
+    "schema_version": dict(type="int", default=3, settable=False),
     "baobao_buy_floor": dict(type="int", default=10000, settable=False),
     "baobao_buy_max": dict(type="int", default=1, settable=False),
     "guard_reuse": dict(type="bool", default=True, settable=False),
@@ -224,7 +228,7 @@ FILE_ONLY_KEYS: dict[str, dict] = {
 
 # 1.0 #13: 配置版本号。语义 = 程序向 config.json 写入新键/改默认值时 +1, 并在
 # `_MIGRATIONS` 中登记"从上一版升级做了什么"(当前仅补键, 无需逐键迁移函数)。
-CONFIG_SCHEMA_VERSION = 2
+CONFIG_SCHEMA_VERSION = 3
 
 ALL_KEYS: dict[str, dict] = {**CONFIG_KEYS, **FILE_ONLY_KEYS}
 SETTABLE_KEYS: tuple[str, ...] = tuple(CONFIG_KEYS)
@@ -233,7 +237,7 @@ SETTINGS_PAGE_KEYS: tuple[str, ...] = ("plant_rare_confirm",)
 
 # ---- 默认值：config.example.json 的权威值 ----
 DEFAULTS: dict[str, object] = {
-    "schema_version": 2,
+    "schema_version": 3,
     "enable_switch": False,
     "target_tail": "",
     "claim_online": True,
@@ -255,6 +259,7 @@ DEFAULTS: dict[str, object] = {
     "plant_buy_missing": False,
     "plant_auto_buy": False,
     "plant_rare_confirm": True,
+    "plant_harvest_allowed": ["白色桃花", "粉色桃花"],
     "plant_pollinate": False,
     "plant_harvest": False,
     "plant_buy_seed": False,
@@ -283,6 +288,7 @@ EXAMPLE_ORDER: tuple[str, ...] = (
     "enable_hot_sale", "enable_baobao", "enable_baobao_buy", "plant_flower",
     "plant_flower_type", "plant_seed_mode", "plant_seed_preset", "plant_count_mode",
     "plant_count", "plant_buy_missing", "plant_auto_buy", "plant_rare_confirm",
+    "plant_harvest_allowed",
     "plant_pollinate", "plant_harvest", "plant_buy_seed",
     "baobao_buy_floor", "baobao_buy_max", "claim_hb", "claim_fairyland",
     "log_click_pos", "use_cache_pos", "region_ocr", "confirm_page_close",
@@ -319,6 +325,9 @@ def _type_error(key: str, spec: dict, val) -> str | None:
         return f"{key} 应为 float, 实为 {type(val).__name__}"
     if t == "enum" and val not in spec.get("enum_values", ()):
         return f"{key} 不在合法值 {spec.get('enum_values')}: {val!r}"
+    if t == "list" and (not isinstance(val, list)
+                        or any(not isinstance(x, str) for x in val)):
+        return f"{key} 应为字符串数组, 实为 {type(val).__name__}"
     return None
 
 

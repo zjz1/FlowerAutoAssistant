@@ -156,8 +156,12 @@ public partial class HomeViewModel : ObservableObject
     public HomeViewModel(MainViewModel main)
     {
         _main = main;
+        PlantSettings = new PlantSettingsViewModel(main);
         Modules.CollectionChanged += OnModulesChanged;
     }
+
+    /// <summary>种植模块聚合设置（2026-11-20：分组面板，仅 plant 模块显示）。</summary>
+    public PlantSettingsViewModel PlantSettings { get; }
 
     public ObservableCollection<HomeModuleVm> Modules { get; } = new();
 
@@ -191,9 +195,13 @@ public partial class HomeViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(LockBannerText));
         OnPropertyChanged(nameof(HasSelectedModule));
+        OnPropertyChanged(nameof(IsPlantModule));
     }
 
     public bool HasSelectedModule => SelectedModule is not null;
+
+    /// <summary>当前选中模块是否为种植（控制分组设置面板可见性）。</summary>
+    public bool IsPlantModule => SelectedModule?.Id == "plant";
 
     // ---- 连接设置组(静态展示值与 webui.html:218-224 一致; 状态值来自 /api/status 轮询) ----
 
@@ -242,6 +250,7 @@ public partial class HomeViewModel : ObservableObject
             }
             Loaded = true;
             StatusText = $"已载入编排「{r.Value.Name}」: {Modules.Count} 个任务";
+            await PlantSettings.LoadAsync(proxy, r.Value);
             RefreshRunningLock();
             StartCommand.NotifyCanExecuteChanged();
         }
@@ -424,20 +433,22 @@ public partial class HomeViewModel : ObservableObject
             StatusText = "请至少勾选一个任务";
             return;
         }
-        // 2026-11-20: 稀有种子二次确认（开始一轮再确认一次；开关在设置页）
-        if (sel.Contains("plant"))
+        // 2026-11-20: 运行前统一确认（一个窗口汇总 开启/关闭/风险；替代原稀有单独确认）
+        var pf = await proxy.GetPreflightAsync(sel);
+        if (pf.Success && pf.Value is not null)
         {
-            var d = await proxy.GetDailyAsync();
-            if (d.Success && d.Value is { PlantRareConfirm: true, PlantSeedRare: true })
+            if (!DialogService.ConfirmPreflight(pf.Value.Text))
             {
-                var label = string.IsNullOrWhiteSpace(d.Value.PlantSeedName)
-                    ? "稀有" : d.Value.PlantSeedName;
-                if (!DialogService.Confirm($"选中的 {label} 种子为稀有种子，请确认", "种植确认"))
-                {
-                    StatusText = "已取消: 稀有种子未确认";
-                    return;
-                }
+                StatusText = "已取消运行";
+                return;
             }
+        }
+        else if (!DialogService.Confirm(
+                     $"无法获取运行前确认信息（{Trunc(pf.Error)}），是否继续？",
+                     "提示", warning: true))
+        {
+            StatusText = "已取消运行";
+            return;
         }
         _starting = true;                    // 提交瞬间即禁用按钮(webui.html:825 同语义)
         StartCommand.NotifyCanExecuteChanged();

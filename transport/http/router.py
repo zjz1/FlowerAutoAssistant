@@ -25,6 +25,8 @@ class RouterMixin:
             return self._ready()
         if api == "plant_presets" and self.command == "GET":
             return self._plant_presets()
+        if api == "preflight" and self.command == "POST":
+            return self._preflight()
         if api == "flows" and self.command == "GET":
             flows = []
             for f in load_flows():

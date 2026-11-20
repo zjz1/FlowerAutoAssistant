@@ -14,6 +14,12 @@
   - 稀有种子不可购买：强制关闭购买开关并在运行日志头部标注。
   - 种植流程顺序调整为 授粉（占位）→ 收获 → 种植，避免花园满时可收获花朵挡住种植。
   - 配置 `schema_version` 升至 2，旧配置自动补键迁移。
+- 收获保护（2026-11-20）：
+  - `plant_harvest_allowed` 允许不授粉直接收获的白名单（默认白色桃花/粉色桃花，WPF 种植 ⚙「收获保护」勾选）。
+  - 收获判定改为：`可授粉(y)>0` 时读取待授粉列表，仅当全部属于允许集合才收花；任一种不允许（或列表不可读）即跳过；稀有种子强制保护、不可勾选。
+  - 配置 `schema_version` 升至 3，旧配置自动补键迁移。
+- 运行前统一确认（2026-11-20）：新增 `POST /api/preflight`，后端汇总本次开启/关闭的功能与风险项，WPF「开始一轮」在单个弹窗展示；取不到时降级为普通继续确认。
+- WPF 种植设置面板（2026-11-20）：设置从「设置页」移回种植模块 ⚙，分组为 选种 / 数量与购买 / 收获保护；设置页仅保留「稀有种子二次确认」开关。WebUI 已冻结，后续仅更新原生 UI。
 - 便携发行包：PyInstaller one-folder 后端（`tools/faa_webui.spec`）+ WPF 自包含外壳，`tools/build_release.ps1` 产出 `FAA-<版本>-win-x64.zip` 与 SHA256。
 - WPF 宿主支持打包后端：路径解析新增 `FAA_BACKEND_EXE` 与便携包布局 `backend/faa_webui.exe`（源码模式不变）。
 - CI/Release 工作流：`.github/workflows/ci.yml`（Python 闸门 + WPF 单测）、`release.yml`（便携包构建，tag 时发 Release）。
