@@ -31,25 +31,45 @@ class StatusRoutes:
             # F06+W03(batch-04): ⚙ 面板 meta 由 _MODULE_SETTINGS(归属与顺序) × _CONFIG_KEYS
             # (文案/缺省/type) 表生成, 与 set_config 白名单同源 —— 新增面板键不再可能被白名单
             # 静默丢弃(里程碑 82/87「勾选被静默丢弃」事故类的结构性消除)。
-            # 历史注释随迁: 2026-10-07 ⚙ 只有 startup/claim 可点 → 补齐 social 真实 if_config
-            # 开关(与 flow_social.json §4.1.1~4.1.4/4.2/4.3 一一对应, 默认值与
-            # data/config.example.json 一致); plant/energy/daily/idle 无 if_config 返回 [] →
-            # ⚙ 面板显示「暂无独立子功能」。2026-10-11 新增 enable_water(4.1.1, 默认 true)。
-            # 2026-10-12 社区点赞自社交模块迁入每日任务(daily 按手账「献上点赞」行进度 a<b
-            # 门控执行, 已完成/行缺失跳过)。
+            # 2026-11-20: 支持 enum/int 控件(选种模式/数量模式/数量)。
             out = []
             for key in _MODULE_SETTINGS.get(mid, ()):
                 spec = _CONFIG_KEYS[key]
                 label, desc = spec["meta"]
-                if spec["type"] == "text":
-                    val = eng.config.get(key, spec.get("meta_default", ""))
+                t = spec["type"]
+                if t == "text":
                     mtype = "text"
+                    val = str(eng.config.get(key, spec.get("meta_default", "")))
+                elif t == "int":
+                    mtype = "int"
+                    val = int(eng.config.get(key, spec.get("meta_default", 1)))
+                elif t == "enum":
+                    mtype = "enum"
+                    val = str(eng.config.get(key, spec.get("meta_default", "")))
                 else:
-                    val = bool(eng.config.get(key, spec.get("meta_default", False)))
                     mtype = "switch"
-                out.append({"key": key, "type": mtype, "label": label, "desc": desc,
-                            "value": val})
+                    val = bool(eng.config.get(key, spec.get("meta_default", False)))
+                item = {"key": key, "type": mtype, "label": label, "desc": desc, "value": val}
+                if mtype == "enum":
+                    item["options"] = list(spec.get("enum_values", ()))
+                elif mtype == "int":
+                    lo, hi = spec.get("clamp", (1, 360))
+                    item["min"], item["max"] = lo, hi
+                out.append(item)
             return out
+        def _plant_seed_state():
+            """当前生效种子与稀有标记（开始一轮前的二次确认用）。"""
+            try:
+                from plant import load_presets, resolve_seed_name
+                mode = str(eng.config.get("plant_seed_mode", "manual"))
+                raw = (eng.config.get("plant_seed_preset", "白色桃花") if mode == "preset"
+                       else eng.config.get("plant_flower_type", "桃花"))
+                ok, _msg, seed = resolve_seed_name(raw)
+                if not ok or not seed:
+                    return "", False
+                return seed, bool(load_presets()["seeds"][seed]["rare"])
+            except Exception:  # noqa: BLE001
+                return "", False
         if plan and plan.get("modules"):
             for m in plan["modules"]:
                 mid = m.get("id")
@@ -60,6 +80,7 @@ class StatusRoutes:
                     "required": bool(m.get("required", False)),
                     "settings": _module_settings(mid),
                 })
+        seed_name, seed_rare = _plant_seed_state()
         return self._send_json({
             "name": plan.get("name") if plan else "每日挂机编排",
             "modules": modules,
@@ -74,4 +95,8 @@ class StatusRoutes:
             "ocr_threads": int(eng.config.get("ocr_threads", 2)),
             "ocr_execution_provider": str(eng.config.get("ocr_execution_provider", "cpu")),
             "use_angle_cls": bool(eng.config.get("use_angle_cls", True)),
+            # 2026-11-20 种植增强：设置页「稀有种子确认」开关 + 当前种子稀有状态
+            "plant_rare_confirm": bool(eng.config.get("plant_rare_confirm", True)),
+            "plant_seed_name": seed_name,
+            "plant_seed_rare": seed_rare,
         })

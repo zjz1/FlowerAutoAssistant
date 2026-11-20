@@ -63,6 +63,27 @@ class HttpHealthContractTests(unittest.TestCase):
         with urllib.request.urlopen(self.base + path, timeout=3) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
+    def test_plant_presets_endpoint(self):
+        data = self._get("/api/plant_presets")
+        flowers = data.get("flowers")
+        self.assertTrue(flowers)
+        seeds = {c["seed"] for f in flowers for c in f["colors"]}
+        self.assertEqual(seeds, {"白色桃花", "粉色桃花", "绿色桃花"})
+        rare = {c["seed"] for f in flowers for c in f["colors"] if c.get("rare")}
+        self.assertEqual(rare, {"绿色桃花"})
+
+    def test_daily_exposes_plant_control_types(self):
+        data = self._get("/api/daily")
+        plant = next(m for m in data["modules"] if m["id"] == "plant")
+        by_key = {s["key"]: s for s in plant["settings"]}
+        self.assertEqual(by_key["plant_seed_mode"]["type"], "enum")
+        self.assertEqual(by_key["plant_count_mode"]["type"], "enum")
+        self.assertEqual(by_key["plant_count"]["type"], "int")
+        self.assertEqual(by_key["plant_count"]["min"], 1)
+        self.assertEqual(by_key["plant_count"]["max"], 360)
+        self.assertIn("plant_rare_confirm", data)
+        self.assertIn("plant_seed_rare", data)
+
     def test_health_contract_without_creating_engine(self):
         before = engine_service.peek_engine()
         data = self._get("/api/health")

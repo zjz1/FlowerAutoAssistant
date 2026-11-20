@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "description": "种植种子本地数据库：花名 → 颜色 → 种子。引擎与 WebUI/WPF 共用。seed=种植网格/详情使用的种子名；detail 缺省=seed+花种；buy_name 缺省=seed+种子（园艺店搜索名）；cost=单颗肥力消耗(0~2)；rare=true 表示稀有种子（不可购买，选中需二次确认）。",
+  "_comment": "新增花/颜色只加数据，不改代码。cost_source: confirmed=实机/用户确认, default=暂用保守值。",
+  "flowers": [
+    {
+      "name": "桃花",
+      "colors": [
+        { "name": "白色", "seed": "白色桃花", "rare": false, "cost": 2, "cost_source": "confirmed" },
+        { "name": "粉色", "seed": "粉色桃花", "rare": false, "cost": 2, "cost_source": "confirmed" },
+        { "name": "绿色", "seed": "绿色桃花", "rare": true, "cost": 2, "cost_source": "confirmed" }
+      ]
+    }
+  ]
+}

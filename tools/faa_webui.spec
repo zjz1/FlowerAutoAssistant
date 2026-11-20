@@ -34,6 +34,7 @@ datas = [
     (str(ROOT / "data" / "config.example.json"), "data"),
     (str(ROOT / "data" / "close_buttons.json"), "data"),
     (str(ROOT / "data" / "blockers.json"), "data"),
+    (str(ROOT / "data" / "plant_presets.json"), "data"),
     (str(ROOT / "webui.html"), "."),
     (str(ROOT / "tpltool.html"), "."),
 ]

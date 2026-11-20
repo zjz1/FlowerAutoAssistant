@@ -26,8 +26,15 @@ class PlantResolveTests(unittest.TestCase):
         self.assertIsNone(plant._resolve_seed("白色铃兰"))
 
     def test_calibrated_cost(self):
+        # 2026-11-20: 桃花三色肥力消耗均确认为 2（数据库 cost_source=confirmed）
         self.assertEqual(plant._resolve_seed("白色桃花").cost, 2)
-        self.assertIsNone(plant._resolve_seed("粉色桃花").cost)
+        self.assertEqual(plant._resolve_seed("粉色桃花").cost, 2)
+        self.assertEqual(plant._resolve_seed("绿色桃花").cost, 2)
+
+    def test_rare_flag(self):
+        self.assertFalse(plant._resolve_seed("白色桃花").rare)
+        self.assertFalse(plant._resolve_seed("粉色桃花").rare)
+        self.assertTrue(plant._resolve_seed("绿色桃花").rare)
 
 
 class BuySeedHelperTests(unittest.TestCase):

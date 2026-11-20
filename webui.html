@@ -278,6 +278,11 @@
         </div>
         <p class="maa-note">开启后, 关闭本页标签会弹浏览器确认, 防误触关闭; 关掉后不再提醒。<b>流程运行中即使设了不再提醒仍会确认</b>(防误关丢失实时监控)。改动即时保存。弹窗文案由浏览器固定, 无法自定义。「关闭服务」成功后本页已失效, 关闭标签页不再重复确认; 服务端页面更新后, 旧页面会自动在顶部横幅提示刷新。</p>
         <div class="cfg-row">
+          <span class="lbl">稀有种子二次确认</span>
+          <label class="cfg-hint"><input type="checkbox" id="ui-rare-confirm-chk"> 启用</label>
+        </div>
+        <p class="maa-note">种植选中/输入稀有种子（如绿色桃花）时, <b>保存设置</b>与<b>点击「开始一轮」</b>各确认一次。稀有种子不可购买；关闭本开关后不再提醒。改动即时保存。</p>
+        <div class="cfg-row">
           <span class="lbl">截图缓存提醒阈值 (MB)</span>
           <input type="number" id="fc-prompt-mb" min="1" step="10" style="width:90px">
         </div>
@@ -698,10 +703,18 @@ function attrEsc(s){ return esc(s).replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 let maaTasks = [];  // [{id,name,flow,settings,checked}]
 let currentRunningModule = null;   // 引擎 run_daily 维护, /api/status 暴露: 运行中模块设置锁定用(2026-10-11)
 let confirmPageClose = true;       // 关闭页面确认(配置键 confirm_page_close, 默认开; 流程运行中始终确认)
+let maaDaily = null;               // 最近一次 /api/daily（含 plant_rare_confirm / plant_seed_rare）
+let plantRareConfirm = true;
+let plantPresets = null;           // /api/plant_presets 缓存
+const ENUM_LABELS = {manual:"手动输入", preset:"预设选择", fixed:"固定数量", auto:"自动上限"};
 let _prevRunMod = null, _prevConfirm = null;
 async function refreshMaa(){
   try{
     const d = await api("/api/daily");
+    maaDaily = d;
+    plantRareConfirm = (d.plant_rare_confirm !== false);
+    const rc = $("ui-rare-confirm-chk");
+    if(rc) rc.checked = plantRareConfirm;
     maaTasks = (d.modules||[]).map(m=>({id:m.id, name:m.name, flow:m.flow, settings:m.settings||[], checked:true}));
     $("maa-logpos-chk").checked = !!d.log_click_pos;
     $("maa-cachepos-chk").checked = !!d.use_cache_pos;
@@ -738,7 +751,81 @@ function renderMaaTasks(){
 }
 // ---- 使用界面: 模块设置面板 (⚙) ----
 let maaActiveMod = null;
-function showModuleSettings(mid){
+
+// 种植数据库/稀有辅助（2026-11-20）
+async function ensurePlantPresets(){
+  if(plantPresets) return plantPresets;
+  try{ plantPresets = await api("/api/plant_presets"); }
+  catch(e){ plantPresets = {flowers:[]}; }
+  return plantPresets;
+}
+function plantSeedInfo(seed){
+  const p = plantPresets || {flowers:[]};
+  for(const f of (p.flowers||[])){
+    for(const c of (f.colors||[])){
+      if(c.seed === seed) return {flower:f.name, color:c.name, seed:c.seed, rare:!!c.rare, cost:c.cost};
+    }
+  }
+  return null;
+}
+function plantNormalize(raw){
+  let s = String(raw||"").trim();
+  for(const suf of ["种子","花种"]){
+    if(s.endsWith(suf) && s.length > suf.length) s = s.slice(0, -suf.length);
+  }
+  return s || "桃花";
+}
+function plantSeedFromManual(raw){
+  const s = plantNormalize(raw);
+  return s === "桃花" ? "白色桃花" : s;
+}
+function plantIsRare(seed){ const i = plantSeedInfo(seed); return !!(i && i.rare); }
+function plantRareLabel(seed){
+  const i = plantSeedInfo(seed);
+  return i ? `${i.color} ${i.flower}` : seed;
+}
+function plantConfirmRare(seed){
+  if(!plantRareConfirm || !plantIsRare(seed)) return true;
+  return confirm(`选中的 ${plantRareLabel(seed)} 种子为稀有种子，请确认`);
+}
+function plantPresetRow(t){
+  const p = plantPresets || {flowers:[]};
+  const cur = (t.settings.find(x=>x.key==="plant_seed_preset")||{}).value || "白色桃花";
+  const info = plantSeedInfo(cur);
+  const flowers = p.flowers || [];
+  const curFlower = info ? info.flower : (flowers[0] ? flowers[0].name : "");
+  const fl = flowers.find(f=>f.name===curFlower) || flowers[0] || {colors:[]};
+  const fopts = flowers.map(f=>`<option value="${attrEsc(f.name)}" ${f.name===curFlower?"selected":""}>${esc(f.name)}</option>`).join("");
+  const copts = (fl.colors||[]).map(c=>`<option value="${attrEsc(c.seed)}" ${c.seed===cur?"selected":""}>${esc(c.name)}${c.rare?" (稀有)":""}</option>`).join("");
+  return `<div class="cfg-row" data-row-key="plant_seed_preset">
+    <span class="lbl"><span style="display:block;font-weight:600;color:var(--fg)">预设种子</span><span class="muted" style="font-size:11px">花名 + 颜色（数据来自 data/plant_presets.json）</span></span>
+    <span class="cfg-hint"><select id="plant-flower-sel">${fopts}</select> <select id="plant-color-sel">${copts}</select>
+      <span class="muted" id="plant-seed-label">${esc(cur)}</span></span></div>`;
+}
+function applyPlantVisibility(body){
+  const q = (k)=>body.querySelector(`[data-key="${k}"]`);
+  const row = (k)=>body.querySelector(`[data-row-key="${k}"]`);
+  const mode = (q("plant_seed_mode")||{}).value || "manual";
+  const cmode = (q("plant_count_mode")||{}).value || "fixed";
+  if(row("plant_flower_type")) row("plant_flower_type").style.display = mode==="manual" ? "" : "none";
+  if(row("plant_seed_preset")) row("plant_seed_preset").style.display = mode==="preset" ? "" : "none";
+  if(row("plant_count")) row("plant_count").style.display = cmode==="fixed" ? "" : "none";
+  if(row("plant_buy_missing")) row("plant_buy_missing").style.display = cmode==="fixed" ? "" : "none";
+  if(row("plant_auto_buy")) row("plant_auto_buy").style.display = cmode==="auto" ? "" : "none";
+  const seed = mode==="preset"
+    ? ((body.querySelector("#plant-color-sel")||{}).value || "")
+    : plantSeedFromManual((q("plant_flower_type")||{}).value || "");
+  const rare = plantIsRare(seed);
+  for(const k of ["plant_buy_missing","plant_auto_buy"]){
+    const cb = q(k); if(!cb) continue;
+    cb.disabled = rare;
+    if(rare) cb.checked = false;
+  }
+  const lab = body.querySelector("#plant-seed-label");
+  if(lab) lab.textContent = seed + (rare ? "（稀有，不可购买）" : "");
+}
+
+async function showModuleSettings(mid){
   const t = maaTasks.find(x=>x.id===mid);
   maaActiveMod = mid;
   const panel = $("mod-settings");
@@ -748,16 +835,26 @@ function showModuleSettings(mid){
     body.innerHTML = `<div class="maa-note">模块「${esc(t?t.name:mid)}」暂无独立子功能。</div>`;
     return;
   }
-  let html = `<div style="margin-bottom:6px;color:var(--muted);font-size:12px">${esc(t.name)} · ${esc(t.flow||"")}</div>`;
+  if(mid === "plant") await ensurePlantPresets();
+  const rows = [`<div style="margin-bottom:6px;color:var(--muted);font-size:12px">${esc(t.name)} · ${esc(t.flow||"")}</div>`];
   for(const s of t.settings){
+    if(mid === "plant" && s.key === "plant_seed_preset") continue;   // 用自定义花名/颜色选择器
+    const head = `<span class="lbl"><span style="display:block;font-weight:600;color:var(--fg)">${esc(s.label)}</span><span class="muted" style="font-size:11px">${esc(s.desc)}</span></span>`;
+    const rk = `data-row-key="${attrEsc(s.key)}"`;
     if(s.type === "switch"){
-      html += `<div class="cfg-row"><span class="lbl"><span style="display:block;font-weight:600;color:var(--fg)">${esc(s.label)}</span><span class="muted" style="font-size:11px">${esc(s.desc)}</span></span>
-        <label class="cfg-hint"><input type="checkbox" data-key="${attrEsc(s.key)}" ${s.value?"checked":""}> <span class="cfg-sw-txt">${s.value?"开":"关"}</span></label></div>`;
+      rows.push(`<div class="cfg-row" ${rk}>${head}<label class="cfg-hint"><input type="checkbox" data-key="${attrEsc(s.key)}" ${s.value?"checked":""}> <span class="cfg-sw-txt">${s.value?"开":"关"}</span></label></div>`);
     } else if(s.type === "text"){
-      html += `<div class="cfg-row"><span class="lbl"><span style="display:block;font-weight:600;color:var(--fg)">${esc(s.label)}</span><span class="muted" style="font-size:11px">${esc(s.desc)}</span></span>
-        <span class="cfg-hint"><input type="text" data-key="${attrEsc(s.key)}" value="${attrEsc(s.value)}" style="width:80px"></span></div>`;
+      rows.push(`<div class="cfg-row" ${rk}>${head}<span class="cfg-hint"><input type="text" data-key="${attrEsc(s.key)}" value="${attrEsc(s.value)}" style="width:120px"></span></div>`);
+    } else if(s.type === "enum"){
+      const opts = (s.options||[]).map(o=>`<option value="${attrEsc(o)}" ${o===s.value?"selected":""}>${esc(ENUM_LABELS[o]||o)}</option>`).join("");
+      rows.push(`<div class="cfg-row" ${rk}>${head}<span class="cfg-hint"><select data-key="${attrEsc(s.key)}">${opts}</select></span></div>`);
+    } else if(s.type === "int"){
+      const min = (s.min !== undefined ? s.min : 1), max = (s.max !== undefined ? s.max : 360);
+      rows.push(`<div class="cfg-row" ${rk}>${head}<span class="cfg-hint"><input type="number" data-key="${attrEsc(s.key)}" value="${attrEsc(String(s.value))}" min="${min}" max="${max}" style="width:90px"></span></div>`);
     }
+    if(mid === "plant" && s.key === "plant_seed_mode") rows.push(plantPresetRow(t));
   }
+  let html = rows.join("");
   // 运行中锁定(2026-10-11 用户需求): 当前模块正在运行时, 设置面板整体只读 + 顶部提示
   const locked = (maaActiveMod === currentRunningModule);
   if(locked){
@@ -767,29 +864,100 @@ function showModuleSettings(mid){
     <span class="muted" id="mod-settings-status"></span><span class="muted" style="font-size:11px">改动即时保存, 无需手动确认</span></div>`;
   body.innerHTML = html;
   panel.classList.remove("hidden");
-  if(locked) body.querySelectorAll("input[data-key]").forEach(el=>{ el.disabled = true; });
+  if(locked) body.querySelectorAll("input[data-key],select[data-key],#plant-flower-sel,#plant-color-sel").forEach(el=>{ el.disabled = true; });
   // 开关即时刷新文案(cfg-sw-txt span)
   body.querySelectorAll("input[type=checkbox][data-key]").forEach(cb=>{
     cb.onchange = ()=>{ const txt = cb.parentElement.querySelector(".cfg-sw-txt"); if(txt) txt.textContent = cb.checked ? "开" : "关"; };
   });
+
+  // 种植：预设选择器（花名 → 颜色）与稀有确认
+  const fsel = body.querySelector("#plant-flower-sel");
+  const csel = body.querySelector("#plant-color-sel");
+  function fillColors(preserve){
+    if(!fsel || !csel) return;
+    const f = (plantPresets.flowers||[]).find(x=>x.name===fsel.value) || {colors:[]};
+    csel.innerHTML = (f.colors||[]).map(c=>`<option value="${attrEsc(c.seed)}" ${c.seed===preserve?"selected":""}>${esc(c.name)}${c.rare?" (稀有)":""}</option>`).join("");
+  }
+  function restorePreset(){
+    const saved = (t.settings.find(x=>x.key==="plant_seed_preset")||{}).value || "白色桃花";
+    const info = plantSeedInfo(saved);
+    if(info && fsel){ fsel.value = info.flower; fillColors(saved); }
+    applyPlantVisibility(body);
+  }
+  async function onPresetChange(){
+    if(!csel || !csel.value) return;
+    const seed = csel.value;
+    const saved = (t.settings.find(x=>x.key==="plant_seed_preset")||{}).value || "白色桃花";
+    if(seed === saved){ applyPlantVisibility(body); return; }
+    if(!plantConfirmRare(seed)){ restorePreset(); return; }
+    try{
+      await api("/api/set_config", {method:"POST", body:JSON.stringify({plant_seed_preset: seed})});
+      const s = t.settings.find(x=>x.key==="plant_seed_preset"); if(s) s.value = seed;
+      const lab = body.querySelector("#plant-seed-label"); if(lab) lab.textContent = seed;
+      applyPlantVisibility(body);
+      $("mod-settings-status").textContent = "已保存 ✓";
+    }catch(e){
+      alert("保存失败: " + (e.message||e));
+      restorePreset();
+    }
+    setTimeout(()=>{ const st=$("mod-settings-status"); if(st) st.textContent=""; }, 2000);
+  }
+  if(fsel && csel){
+    fsel.onchange = ()=>{ fillColors(""); onPresetChange(); };
+    csel.onchange = onPresetChange;
+    applyPlantVisibility(body);
+  }
+
   // 改动即时保存(2026-10-11 用户需求): 每个控件 change 即 POST 该键;
   // 服务端 update_config 为内存+落盘双写 → 排队未跑的模块本次运行当场生效。
-  body.querySelectorAll("input[data-key]").forEach(el=>{
+  body.querySelectorAll("input[data-key],select[data-key]").forEach(el=>{
     el.addEventListener("change", async ()=>{
       if(el.disabled) return;
-      const cfg = {}; cfg[el.dataset.key] = el.type === "checkbox" ? el.checked : el.value;
+      const key = el.dataset.key;
+      let val = el.type === "checkbox" ? el.checked : el.value;
+      if(key === "plant_count"){
+        const n = parseInt(val, 10);
+        if(!n || n < 1 || n > 360){
+          alert("种植数量须在 1~360 之间");
+          el.value = el.dataset.prev || "1";
+          return;
+        }
+    }
+      if(key === "plant_flower_type" && !plantConfirmRare(plantSeedFromManual(val))){
+        el.value = el.dataset.prev || "";
+        return;
+      }
+      const cfg = {}; cfg[key] = val;
       try{
-        const d = await api("/api/set_config", {method:"POST", body:JSON.stringify(cfg)});
-        $("mod-settings-status").textContent = d.ok ? "已保存 ✓" : "保存失败";
-        if(d.ok && t && t.settings){ const s = t.settings.find(x=>x.key===el.dataset.key); if(s) s.value = cfg[el.dataset.key]; }
+        await api("/api/set_config", {method:"POST", body:JSON.stringify(cfg)});
+        $("mod-settings-status").textContent = "已保存 ✓";
+        el.dataset.prev = String(val);
+        if(t && t.settings){ const s = t.settings.find(x=>x.key===key); if(s) s.value = val; }
+        if(mid === "plant" && (key === "plant_seed_mode" || key === "plant_count_mode")) applyPlantVisibility(body);
         setTimeout(()=>{ const st=$("mod-settings-status"); if(st) st.textContent=""; }, 2000);
-      }catch(e){ $("mod-settings-status").textContent = "失败: " + e.message; }
+      }catch(e){
+        alert("保存失败: " + (e.message||e));
+        if(el.type === "checkbox") el.checked = (el.dataset.prev === "true");
+        else el.value = el.dataset.prev !== undefined ? el.dataset.prev : el.value;
+        $("mod-settings-status").textContent = "失败: " + (e.message||e);
+      }
     });
+    if(el.dataset.prev === undefined){
+      el.dataset.prev = el.type === "checkbox" ? String(el.checked) : String(el.value);
+    }
   });
 }
 $("maa-all").onclick = ()=>{ maaTasks.forEach(t=>t.checked=true); renderMaaTasks(); };
 $("maa-clear").onclick = ()=>{ maaTasks.forEach(t=>t.checked=false); renderMaaTasks(); };
 $("maa-invert").onclick = ()=>{ maaTasks.forEach(t=>t.checked=!t.checked); renderMaaTasks(); };
+
+// 设置页: 稀有种子二次确认总开关（默认开）
+$("ui-rare-confirm-chk").onchange = async (ev)=>{
+  plantRareConfirm = ev.target.checked;
+  try{
+    await api("/api/set_config", {method:"POST", body:JSON.stringify({plant_rare_confirm: plantRareConfirm})});
+  }catch(e){ alert("保存失败: " + (e.message||e)); }
+};
 
 // 使用界面: 识别设置两项开关(记录按钮位置 / 使用缓存位置), 即时持久化
 $("maa-logpos-chk").onchange = async (ev)=>{
@@ -884,6 +1052,17 @@ $("maa-start").onclick = async ()=>{
   try{
     const sel = maaTasks.filter(t=>t.checked).map(t=>t.id);
     if(!sel.length){ alert("请至少勾选一个任务"); return; }
+    // 稀有种子：开始一轮前再确认一次（开关在设置页；仅本次勾选种植且目标稀有）
+    if(sel.includes("plant")){
+      try{
+        await ensurePlantPresets();
+        const d0 = await api("/api/daily");
+        if(d0.plant_rare_confirm !== false && d0.plant_seed_rare){
+          const label = plantRareLabel(d0.plant_seed_name || "");
+          if(!confirm(`选中的 ${label} 种子为稀有种子，请确认`)) return;
+        }
+      }catch(e){ /* 查询失败不阻断启动，服务端仍按配置执行 */ }
+    }
     $("maa-start").disabled = true;
     $("maa-status").textContent = "已提交 " + sel.length + " 个任务, 后台运行中...";
     // W01(batch-04): 「完成后」下拉接线 —— 控件自页面上线起 JS 零引用(04_webui 实查),

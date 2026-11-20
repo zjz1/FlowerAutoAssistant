@@ -36,6 +36,26 @@ def _apply_config_key(eng: OCREngine, key: str, spec: dict, value) -> str | None
     处理 —— 已应用键保持已应用, 与改前 finish_action 分支原语义一致)。
     """
     t = spec["type"]
+    # 2026-11-20 种植增强：数量必须 1~360（拒绝并回退，不钳制）；种子名必须在数据库
+    if key == "plant_count":
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            return "种植数量须为 1~360 的整数"
+        if not 1 <= n <= 360:
+            return "种植数量须在 1~360 之间"
+        eng.update_config(plant_count=n)
+        return None
+    if key in ("plant_seed_preset", "plant_flower_type"):
+        from plant import resolve_seed_name
+        ok, msg, seed = resolve_seed_name(str(value))
+        if not ok:
+            return msg
+        if key == "plant_seed_preset":
+            eng.update_config(plant_seed_preset=seed)
+        else:
+            eng.update_config(plant_flower_type=str(value))
+        return None
     if t == "bool":
         eng.update_config(**{key: bool(value)})
     elif t == "text":

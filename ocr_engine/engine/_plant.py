@@ -13,12 +13,29 @@ from .._failures import report_failure
 class _PlantMixin:
     def _step_plant_flower(self, step: dict, kws, pad: str, indent: int):
         # 函数内延迟导入: plant.py 顶部 import ocr_engine, 避免包初始化期循环依赖
-        from plant import run_plant_flower
+        from plant import PlantOptions, run_plant_flower
 
-        flower = str(step.get("flower") or self.config.get("plant_flower_type", "桃花") or "桃花")
-        print(f"{pad}[种植] 种植花朵: 花种={flower}")
+        # 选种模式: manual=按 plant_flower_type/步骤 flower; preset=数据库预设
+        seed_mode = str(self.config.get("plant_seed_mode", "manual") or "manual")
+        if seed_mode == "preset":
+            flower = str(self.config.get("plant_seed_preset", "白色桃花") or "白色桃花")
+        else:
+            flower = str(step.get("flower") or self.config.get("plant_flower_type", "桃花") or "桃花")
         try:
-            ok = run_plant_flower(self, flower)
+            options = PlantOptions(
+                count_mode=str(self.config.get("plant_count_mode", "fixed") or "fixed"),
+                count=int(self.config.get("plant_count", 1) or 1),
+                buy_missing=bool(self.config.get("plant_buy_missing", False)),
+                auto_buy=bool(self.config.get("plant_auto_buy", False)),
+            )
+        except (TypeError, ValueError):
+            options = PlantOptions()
+        print(f"{pad}[种植] 种植花朵: 模式={seed_mode}, 花种={flower}, "
+              f"数量={options.count_mode}({options.count}), "
+              f"缺种购买={'开' if options.buy_missing else '关'}, "
+              f"auto购买={'开' if options.auto_buy else '关'}")
+        try:
+            ok = run_plant_flower(self, flower, options=options)
         except Exception as e:
             print(f"{pad}[种植] 异常: {e}")
             report_failure(self._module, f"种植花朵({flower})异常: {e}")

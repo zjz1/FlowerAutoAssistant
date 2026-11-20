@@ -79,8 +79,39 @@ _CONFIG_KEYS: dict[str, dict] = {
         meta_default=False),
     "plant_flower_type": dict(
         type="text",
-        meta=("花种选择", "可选：桃花(默认白色)/白色桃花/粉色桃花/绿色桃花"),
+        meta=("花种选择", "手动模式：桃花(默认白色)/白色桃花/粉色桃花/绿色桃花"),
         meta_default="桃花"),
+    # 2026-11-20 种植增强：预设选种 + 数量(1~360/auto) + 缺种购买
+    "plant_seed_mode": dict(
+        type="enum", enum_values=("manual", "preset"),
+        enum_error="选种模式仅接受 manual|preset, 收到 {v}",
+        meta=("选种模式", "manual=输入全称；preset=按数据库下拉选择花名/颜色"),
+        meta_default="manual"),
+    "plant_seed_preset": dict(
+        type="text",
+        meta=("预设种子", "预设模式选中的种子（来自 data/plant_presets.json）"),
+        meta_default="白色桃花"),
+    "plant_count_mode": dict(
+        type="enum", enum_values=("fixed", "auto"),
+        enum_error="数量模式仅接受 fixed|auto, 收到 {v}",
+        meta=("数量模式", "fixed=按数量；auto=按肥力/槽位/库存自动计算(≤360)"),
+        meta_default="fixed"),
+    "plant_count": dict(
+        type="int", clamp=(1, 360),
+        meta=("种植数量", "固定模式数量，范围 1~360"),
+        meta_default=1),
+    "plant_buy_missing": dict(
+        type="bool",
+        meta=("缺种购买", "固定模式下种子不足时去园艺店补齐差额"),
+        meta_default=False),
+    "plant_auto_buy": dict(
+        type="bool",
+        meta=("auto 自动购买", "auto 模式也自动购买（稀有种子强制关闭）"),
+        meta_default=False),
+    "plant_rare_confirm": dict(
+        type="bool",
+        meta=("稀有种子确认", "保存设置与开始一轮时对稀有种子二次确认"),
+        meta_default=True),
     "plant_pollinate": dict(
         type="bool",
         meta=("花朵授粉", "占位待开发, 开启暂无实际动作"),
@@ -156,7 +187,9 @@ _CONFIG_KEYS: dict[str, dict] = {
 _MODULE_SETTINGS: dict[str, tuple[str, ...]] = {
     "claim": ("claim_online", "claim_party", "claim_hb", "claim_fairyland"),
     "startup": ("enable_switch", "target_tail"),
-    "plant": ("plant_flower", "plant_flower_type", "plant_pollinate", "plant_harvest", "plant_buy_seed"),
+    "plant": ("plant_flower", "plant_flower_type", "plant_seed_mode", "plant_seed_preset",
+              "plant_count_mode", "plant_count", "plant_buy_missing", "plant_auto_buy",
+              "plant_pollinate", "plant_harvest", "plant_buy_seed"),
     "social": ("enable_water", "enable_shine", "enable_mine", "enable_rabbit", "enable_pollin"),
     "daily": ("enable_like", "enable_hot_sale", "enable_baobao", "enable_baobao_buy"),
 }
@@ -182,7 +215,7 @@ NO_DEFAULT = _NO_DEFAULT
 
 # ---- 文件级键：存在 config.json / config.example，但不进 set_config 白名单 ----
 FILE_ONLY_KEYS: dict[str, dict] = {
-    "schema_version": dict(type="int", default=1, settable=False),
+    "schema_version": dict(type="int", default=2, settable=False),
     "baobao_buy_floor": dict(type="int", default=10000, settable=False),
     "baobao_buy_max": dict(type="int", default=1, settable=False),
     "guard_reuse": dict(type="bool", default=True, settable=False),
@@ -191,14 +224,16 @@ FILE_ONLY_KEYS: dict[str, dict] = {
 
 # 1.0 #13: 配置版本号。语义 = 程序向 config.json 写入新键/改默认值时 +1, 并在
 # `_MIGRATIONS` 中登记"从上一版升级做了什么"(当前仅补键, 无需逐键迁移函数)。
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 
 ALL_KEYS: dict[str, dict] = {**CONFIG_KEYS, **FILE_ONLY_KEYS}
 SETTABLE_KEYS: tuple[str, ...] = tuple(CONFIG_KEYS)
+# 只显示在「设置页」、不挂在模块 ⚙ 子面板的可配置键（2026-11-20 稀有种子确认）
+SETTINGS_PAGE_KEYS: tuple[str, ...] = ("plant_rare_confirm",)
 
 # ---- 默认值：config.example.json 的权威值 ----
 DEFAULTS: dict[str, object] = {
-    "schema_version": 1,
+    "schema_version": 2,
     "enable_switch": False,
     "target_tail": "",
     "claim_online": True,
@@ -213,6 +248,13 @@ DEFAULTS: dict[str, object] = {
     "enable_baobao_buy": True,
     "plant_flower": False,
     "plant_flower_type": "桃花",
+    "plant_seed_mode": "manual",
+    "plant_seed_preset": "白色桃花",
+    "plant_count_mode": "fixed",
+    "plant_count": 1,
+    "plant_buy_missing": False,
+    "plant_auto_buy": False,
+    "plant_rare_confirm": True,
     "plant_pollinate": False,
     "plant_harvest": False,
     "plant_buy_seed": False,
@@ -239,7 +281,9 @@ EXAMPLE_ORDER: tuple[str, ...] = (
     "enable_switch", "target_tail", "claim_online", "claim_party", "enable_shine",
     "enable_mine", "enable_rabbit", "enable_water", "enable_pollin", "enable_like",
     "enable_hot_sale", "enable_baobao", "enable_baobao_buy", "plant_flower",
-    "plant_flower_type", "plant_pollinate", "plant_harvest", "plant_buy_seed",
+    "plant_flower_type", "plant_seed_mode", "plant_seed_preset", "plant_count_mode",
+    "plant_count", "plant_buy_missing", "plant_auto_buy", "plant_rare_confirm",
+    "plant_pollinate", "plant_harvest", "plant_buy_seed",
     "baobao_buy_floor", "baobao_buy_max", "claim_hb", "claim_fairyland",
     "log_click_pos", "use_cache_pos", "region_ocr", "confirm_page_close",
     "minimize_to_tray", "fail_cache_prompt_mb", "guard_reuse", "ocr_threads",

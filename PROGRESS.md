@@ -5169,3 +5169,11 @@ R5 自述与内容一致、**R6 `files/` 整文件**（diff 仅作 evidence）�
 - **Phase 5 安全与维护**：#19 本地 HTTP POST 增加 Origin 白名单（无 Origin / http://127.0.0.1|localhost|[::1] 放行，其余 403；含 9 项 HTTP 测试）；#20 日志与诊断统一脱敏（`diagnostics/redact.py` 接入 `log_service` 与诊断包，账号/用户路径/ADB 路径/密钥）；#23 `SECURITY.md` + `.github/dependabot.yml`（pip/nuget/actions）；#6 复扫：当前树 0 命中（真实账号掩码统一 `abc****de`、`clean_click_log.py` 死路径改占位符）。验证：Python 122/122、WPF 70/70、闸门通过。
 - **Phase 6 实机验证（2026-11-20，MuMu 已启动）**：发行包后端连接成功（实机 1920×1080 / 引擎 1280×720）；「开始启动」模块 130s 全通过（资源更新守卫 58 个 131.7MB → 登录 → 签到，ok=1 fail=0）；「领取奖励」模块首次 310s 出现 1 项软失败（花灵派对今日时长=0 仍点领取），补 `if_text` 0 时长闸门后源码模式复跑 331s **ok=1 fail=0**。干净目录解压 zip → 后端 health=faa、页面 200；离线回放 4/4 PASS；真实个人标识扫描 0 命中（PROGRESS 中历史账号掩码/旧工作区名一并清理）。
 - **Phase 6 未完成门槛**：CI 工作流尚未在 GitHub 运行（分支 `release/prep` 未推送）；无干净 Windows VM（仅干净目录）；因此**未打 v1.0.0 tag**。
+## 2026-11-20 · 种植增强：预设选种 / 数量 1~360 / auto / 缺种购买（里程碑 106）
+
+- **数据库**：新增 `data/plant_presets.json`（桃花：白/粉/绿，肥力消耗均 2，绿色 rare），引擎与 WebUI/WPF 共用；名称合法性唯一来源，库缺失/重复/cost 越界均如实报错。
+- **配置**：新增 `plant_seed_mode`/`plant_seed_preset`/`plant_count_mode`/`plant_count`/`plant_buy_missing`/`plant_auto_buy`/`plant_rare_confirm`；`schema_version` 升至 2（旧配置自动补键）。`plant_count` 1~360，超界服务端 400 拒绝。
+- **引擎**：`plant.py` 新增预设解析、`compute_target_count`（fixed clamp / auto=min(槽位,360,肥力/2)，auto 未开购买时再取库存）、`_adjust_quantity`（± 图标批量点击+复读）、`_buy_shortfall`（园艺店分批 ≤99 购买后返回重开面板）、稀有种子强制关购买 + 日志头部标注；回读改按 Q 校验（d-Q、肥力 -2Q）。
+- **界面**：WebUI 种植 ⚙ 面板支持 enum/int、花名→颜色下拉、稀有保存确认；设置页新增「稀有种子二次确认」；「开始一轮」前再确认（仅勾选种植且目标稀有）。WPF 设置页新增「种植」卡片（同套控件）、界面卡新增稀有确认开关、首页开始前确认；WPF 模块 ⚙ 隐藏已迁移的种植键。
+- **流程**：`flow_plant.json` 顺序改为 授粉（占位）→ 收获 → 种植 → 购买（占位）。
+- **验证**：API 实测（非法种子/数量 400；preset 绿色 → `plant_seed_rare=true`；配置已恢复）；WebUI 内联脚本 `node --check` 通过；Python 全量测试 + 闸门通过；WPF 编译 0 警告、单测 70/70。**真机验收待用户指令**。

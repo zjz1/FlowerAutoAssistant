@@ -146,6 +146,10 @@ public sealed class FaaProxy
     public Task<ProxyResult<DailyPlan>> GetDailyAsync(CancellationToken ct = default)
         => GetAsync<DailyPlan>("api/daily", ct);
 
+    /// <summary>GET /api/plant_presets —— 种植种子数据库（花名→颜色→种子/稀有/肥力消耗）。</summary>
+    public Task<ProxyResult<PlantPresetsDoc>> GetPlantPresetsAsync(CancellationToken ct = default)
+        => GetAsync<PlantPresetsDoc>("api/plant_presets", ct);
+
     /// <summary>GET /api/screen —— JPEG 预览帧(webui.py _screen 841 行; 未连接 503)。</summary>
     public Task<ProxyResult<ScreenShot>> GetScreenAsync(CancellationToken ct = default)
         => GetAsync<ScreenShot>("api/screen", ct);
@@ -252,6 +256,8 @@ public sealed class FaaProxy
         "claim_online", "claim_party", "claim_hb", "claim_fairyland",  // claim ⚙(2026-11-17 花仙乐园)
         "enable_water", "enable_shine", "enable_mine", "enable_rabbit", "enable_pollin",  // social ⚙(948-959)
         "plant_flower", "plant_flower_type", "plant_pollinate", "plant_harvest", "plant_buy_seed",  // plant ⚙(2026-11-16 四功能)
+        "plant_seed_mode", "plant_seed_preset", "plant_count_mode", "plant_count",  // 种植增强(2026-11-20)
+        "plant_buy_missing", "plant_auto_buy", "plant_rare_confirm",
         "enable_like", "enable_hot_sale", "enable_baobao", "enable_baobao_buy",           // daily ⚙(963-976)
         "log_click_pos", "use_cache_pos",        // 识别设置(539-542)
         "ocr_threads",                            // OCR 线程数(543-549)

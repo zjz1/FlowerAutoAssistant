@@ -20,7 +20,10 @@ public sealed record DailyPlan(
     [property: JsonPropertyName("modules")] DailyModule[] Modules,
     [property: JsonPropertyName("log_click_pos")] bool LogClickPos,
     [property: JsonPropertyName("use_cache_pos")] bool UseCachePos,
-    [property: JsonPropertyName("ocr_threads")] int OcrThreads);
+    [property: JsonPropertyName("ocr_threads")] int OcrThreads,
+    [property: JsonPropertyName("plant_rare_confirm")] bool PlantRareConfirm = true,
+    [property: JsonPropertyName("plant_seed_name")] string? PlantSeedName = null,
+    [property: JsonPropertyName("plant_seed_rare")] bool PlantSeedRare = false);
 
 /// <summary>daily.modules 元素: id/flow/name/required + settings 面板。</summary>
 public sealed record DailyModule(
@@ -30,10 +33,29 @@ public sealed record DailyModule(
     [property: JsonPropertyName("required")] bool Required,
     [property: JsonPropertyName("settings")] SettingItem[] Settings);
 
-/// <summary>daily.modules[].settings 元素(webui.py _module_settings): value 为 switch→bool / text→string, 类型不定 → JsonElement。</summary>
+/// <summary>daily.modules[].settings 元素(webui.py _module_settings): switch→bool / text→string / enum→string / int→number。</summary>
 public sealed record SettingItem(
     [property: JsonPropertyName("key")] string Key,
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("label")] string Label,
     [property: JsonPropertyName("desc")] string Desc,
-    [property: JsonPropertyName("value")] JsonElement Value);
+    [property: JsonPropertyName("value")] JsonElement Value,
+    [property: JsonPropertyName("options")] string[]? Options = null,
+    [property: JsonPropertyName("min")] int? Min = null,
+    [property: JsonPropertyName("max")] int? Max = null);
+
+/// <summary>GET /api/plant_presets —— 种植种子数据库（2026-11-20）。</summary>
+public sealed record PlantPresetsDoc(
+    [property: JsonPropertyName("version")] int Version,
+    [property: JsonPropertyName("flowers")] PlantFlower[] Flowers);
+
+public sealed record PlantFlower(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("colors")] PlantColor[] Colors);
+
+public sealed record PlantColor(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("seed")] string Seed,
+    [property: JsonPropertyName("rare")] bool Rare = false,
+    [property: JsonPropertyName("cost")] int Cost = 2,
+    [property: JsonPropertyName("cost_source")] string? CostSource = null);

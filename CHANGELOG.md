@@ -6,6 +6,14 @@
 
 ### Added
 
+- 种植增强（2026-11-20）：
+  - 种子数据库 `data/plant_presets.json`（桃花/白·粉·绿，肥力消耗均 2，绿色为稀有）；种子名合法性由该库统一判定，非法名称保存时拒绝并回退。
+  - 选种模式：手动输入全称 / 预设选择（花名 → 颜色下拉）；预设与手动均支持稀有种子二次确认。
+  - 数量模式：固定 1~360 / auto（按肥力、可种槽位、库存/360 上限计算）；auto 可单独开启自动购买。
+  - 缺种购买：按差额去园艺店分批购买（单批≤99），返回后重读库存继续种植。
+  - 稀有种子不可购买：强制关闭购买开关并在运行日志头部标注。
+  - 种植流程顺序调整为 授粉（占位）→ 收获 → 种植，避免花园满时可收获花朵挡住种植。
+  - 配置 `schema_version` 升至 2，旧配置自动补键迁移。
 - 便携发行包：PyInstaller one-folder 后端（`tools/faa_webui.spec`）+ WPF 自包含外壳，`tools/build_release.ps1` 产出 `FAA-<版本>-win-x64.zip` 与 SHA256。
 - WPF 宿主支持打包后端：路径解析新增 `FAA_BACKEND_EXE` 与便携包布局 `backend/faa_webui.exe`（源码模式不变）。
 - CI/Release 工作流：`.github/workflows/ci.yml`（Python 闸门 + WPF 单测）、`release.yml`（便携包构建，tag 时发 Release）。

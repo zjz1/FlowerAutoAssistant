@@ -100,18 +100,7 @@
                 ] }
           ] },
 
-        { "_note": "===== 功能1: 种植花朵(当前仅桃花) =====" },
-        { "type": "if_config",
-          "key": "plant_flower",
-          "value": true,
-          "default": false,
-          "then": [
-              { "_note": "阶段1+2(已开发): 一键种植→区域 OCR 采集天气/肥力/已选→按 plant_flower_type 搜索基础花名→精确点选目标颜色变体网格块→数量1→随机种植→详情「目标花种/已选择：m/n」核对→确认→回读 d-1、c=0(肥力消耗已标定的花种另核 a/b)→关闭面板归位。造型种植待补。" },
-              { "type": "plant_flower", "required": false }
-          ],
-          "else": [] },
-
-        { "_note": "===== 功能2: 花朵授粉(占位待开发) =====" },
+        { "_note": "===== 功能2: 花朵授粉(占位待开发; 2026-11-20 起排在收获/种植之前) =====" },
         { "type": "if_config",
           "key": "plant_pollinate",
           "value": true,
@@ -121,7 +110,7 @@
           ],
           "else": [] },
 
-        { "_note": "===== 功能3: 收获花朵(已开发) =====" },
+        { "_note": "===== 功能3: 收获花朵(已开发; 2026-11-20 起排在种植之前, 先腾出槽位) =====" },
         { "type": "if_config",
           "key": "plant_harvest",
           "value": true,
@@ -129,6 +118,17 @@
           "then": [
               { "_note": "花朵收获(已开发): 照料页读可收获(x); x=0 关面板; x>0 查可授粉(y); y=0 一键收花→关奖励弹窗→回读诊断; y>0 跳过并关面板。" },
               { "type": "plant_harvest", "required": false }
+          ],
+          "else": [] },
+
+        { "_note": "===== 功能1: 种植花朵(2026-11-20: 预设/数量 1~360/auto/缺种购买) =====" },
+        { "type": "if_config",
+          "key": "plant_flower",
+          "value": true,
+          "default": false,
+          "then": [
+              { "_note": "阶段1+2: 一键种植→区域 OCR 采集天气/肥力/已选→按选种模式搜索→精确点选目标颜色变体网格块→数量(固定/auto)→随机种植→详情「目标花种/已选择：m/n」核对→确认→回读 d-q、肥力 a/b 各-2q(桃花)->关闭面板归位。缺种购买与稀有种子规则见 plant.py。" },
+              { "type": "plant_flower", "required": false }
           ],
           "else": [] },
 

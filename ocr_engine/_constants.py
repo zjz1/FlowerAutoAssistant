@@ -15,6 +15,8 @@ CLICK_LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "click_log.js
 CLOSE_BUTTONS_PATH = Path(__file__).resolve().parent.parent / "data" / "close_buttons.json"
 # 1.0 #11: 阻断层/覆盖层注册表(等级提升/领取成功/资源更新/通用提示), 新增弹窗只加数据
 BLOCKERS_PATH = Path(__file__).resolve().parent.parent / "data" / "blockers.json"
+# 种植种子数据库(花名→颜色→种子/稀有/肥力消耗), 引擎与 UI 共用
+PLANT_PRESETS_PATH = Path(__file__).resolve().parent.parent / "data" / "plant_presets.json"
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "data" / "config.json"
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "resource" / "template"
 # 公共「进入目标界面」导航注册表(flows/common/entries.json), 供 navigate 步骤按 target 查进入链。

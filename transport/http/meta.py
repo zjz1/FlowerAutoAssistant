@@ -32,6 +32,14 @@ class MetaRoutes:
             "engine_loaded": eng is not None,
         })
 
+    def _plant_presets(self):
+        """种植种子数据库（WebUI/WPF 共用）：花名→颜色→种子/稀有/肥力消耗。"""
+        from plant import load_presets
+        try:
+            return self._send_json(load_presets()["raw"])
+        except ValueError as e:  # noqa: BLE001
+            return self._send_json({"error": str(e)}, 500)
+
     def _ready(self):
         """就绪：HTTP 服务已可接收请求；connected/engine_loaded 仅信息性。
 

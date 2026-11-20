@@ -1,6 +1,8 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using FAA.WpfGui.Models;
@@ -207,6 +209,347 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
+    // ==================== 卡片二: 种植（2026-11-20 选种/数量/缺种购买） ====================
+
+    private PlantPresetsDoc? _presets;
+    private bool _rebuildingPlantColors;
+    private bool _suppressPlantSave;
+    private int _lastPlantCount = 1;
+    private string _lastPresetSeed = "白色桃花";
+    private string _lastPlantFlowerType = "桃花";
+
+    public ObservableCollection<string> PlantFlowers { get; } = new();
+    public ObservableCollection<PlantColorOption> PlantColors { get; } = new();
+
+    [ObservableProperty]
+    private int _plantSeedModeIndex;                 // 0=manual 1=preset
+
+    [ObservableProperty]
+    private int _plantCountModeIndex;                // 0=fixed 1=auto
+
+    [ObservableProperty]
+    private string _plantFlowerTypeText = "桃花";
+
+    [ObservableProperty]
+    private string _plantCountText = "1";
+
+    [ObservableProperty]
+    private bool _plantBuyMissing;
+
+    [ObservableProperty]
+    private bool _plantAutoBuy;
+
+    [ObservableProperty]
+    private bool _plantRareConfirm = true;
+
+    [ObservableProperty]
+    private string _plantSeedLabel = "白色桃花";
+
+    [ObservableProperty]
+    private string? _plantFlower;
+
+    [ObservableProperty]
+    private PlantColorOption? _plantColor;
+
+    public bool IsPlantManual => PlantSeedModeIndex == 0;
+    public bool IsPlantPreset => PlantSeedModeIndex == 1;
+    public bool IsPlantCountFixed => PlantCountModeIndex == 0;
+    public bool IsPlantCountAuto => PlantCountModeIndex == 1;
+
+    partial void OnPlantSeedModeIndexChanged(int value)
+    {
+        OnPropertyChanged(nameof(IsPlantManual));
+        OnPropertyChanged(nameof(IsPlantPreset));
+        if (!_loadingEcho)
+        {
+            _ = SaveKeyAsync("plant_seed_mode", value == 0 ? "manual" : "preset");
+        }
+    }
+
+    partial void OnPlantCountModeIndexChanged(int value)
+    {
+        OnPropertyChanged(nameof(IsPlantCountFixed));
+        OnPropertyChanged(nameof(IsPlantCountAuto));
+        if (!_loadingEcho)
+        {
+            _ = SaveKeyAsync("plant_count_mode", value == 0 ? "fixed" : "auto");
+        }
+    }
+
+    partial void OnPlantBuyMissingChanged(bool value)
+    {
+        if (!_suppressPlantSave)
+        {
+            SaveIfNotEchoing("plant_buy_missing", value);
+        }
+    }
+
+    partial void OnPlantAutoBuyChanged(bool value)
+    {
+        if (!_suppressPlantSave)
+        {
+            SaveIfNotEchoing("plant_auto_buy", value);
+        }
+    }
+
+    partial void OnPlantRareConfirmChanged(bool value) => SaveIfNotEchoing("plant_rare_confirm", value);
+
+    partial void OnPlantFlowerChanged(string? value) => RebuildPlantColors(null);
+
+    partial void OnPlantColorChanged(PlantColorOption? value) => OnPlantColorPicked();
+
+    private PlantColor? FindColor(string? seed)
+        => seed is null ? null : _presets?.Flowers.SelectMany(f => f.Colors)
+            .FirstOrDefault(c => c.Seed == seed);
+
+    private string RareLabel(string seed)
+    {
+        var flower = _presets?.Flowers.FirstOrDefault(f => f.Colors.Any(c => c.Seed == seed))?.Name;
+        var color = FindColor(seed)?.Name;
+        return $"{color} {flower}".Trim() is { Length: > 0 } s ? s : seed;
+    }
+
+    private string? ResolveManualSeed(string raw)
+    {
+        if (_presets is null)
+        {
+            return null;   // 数据库未加载: 交由服务端校验
+        }
+        var s = raw.Trim();
+        foreach (var suf in new[] { "种子", "花种" })
+        {
+            if (s.EndsWith(suf) && s.Length > suf.Length)
+            {
+                s = s[..^suf.Length];
+            }
+        }
+        if (s.Length == 0 || s == "桃花")
+        {
+            s = "白色桃花";
+        }
+        return _presets.Flowers.SelectMany(f => f.Colors).Any(c => c.Seed == s) ? s : null;
+    }
+
+    /// <summary>手动种子提交（TextBox LostFocus）。非法/服务端拒绝时回退并提示。</summary>
+    public async void CommitPlantFlowerType()
+    {
+        if (_loadingEcho)
+        {
+            return;
+        }
+        var raw = PlantFlowerTypeText.Trim();
+        if (raw == _lastPlantFlowerType)
+        {
+            return;
+        }
+        var seed = ResolveManualSeed(raw);
+        if (seed is not null && FindColor(seed)?.Rare == true && PlantRareConfirm
+            && !DialogService.Confirm($"选中的 {RareLabel(seed)} 种子为稀有种子，请确认", "稀有种子确认"))
+        {
+            PlantFlowerTypeText = _lastPlantFlowerType;
+            return;
+        }
+        if (!await SaveKeyResultAsync("plant_flower_type", raw))
+        {
+            PlantFlowerTypeText = _lastPlantFlowerType;
+            DialogService.Warn($"种子名保存失败（可能不是小花仙种子）：{raw}\n可选项见 data/plant_presets.json", "种植设置");
+            return;
+        }
+        _lastPlantFlowerType = raw;
+    }
+
+    /// <summary>种植数量提交（LostFocus）：1~360，超界拒绝并回退。</summary>
+    public async void CommitPlantCount()
+    {
+        if (_loadingEcho)
+        {
+            return;
+        }
+        if (!int.TryParse(PlantCountText.Trim(), out var n) || n < 1 || n > 360)
+        {
+            PlantCountText = _lastPlantCount.ToString();
+            DialogService.Warn("种植数量须在 1~360 之间", "种植设置");
+            return;
+        }
+        if (n == _lastPlantCount)
+        {
+            PlantCountText = n.ToString();
+            return;
+        }
+        if (!await SaveKeyResultAsync("plant_count", n))
+        {
+            PlantCountText = _lastPlantCount.ToString();
+            DialogService.Warn("种植数量保存失败（须在 1~360 之间）", "种植设置");
+            return;
+        }
+        _lastPlantCount = n;
+        PlantCountText = n.ToString();
+    }
+
+    private void RebuildPlantColors(string? preserveSeed)
+    {
+        if (_presets is null)
+        {
+            return;
+        }
+        var flower = _presets.Flowers.FirstOrDefault(f => f.Name == PlantFlower);
+        _rebuildingPlantColors = true;
+        try
+        {
+            PlantColors.Clear();
+            foreach (var c in flower?.Colors ?? Array.Empty<PlantColor>())
+            {
+                PlantColors.Add(new PlantColorOption(c.Name, c.Seed, c.Rare));
+            }
+            PlantColor = PlantColors.FirstOrDefault(x => x.Seed == preserveSeed) ?? PlantColors.FirstOrDefault();
+        }
+        finally
+        {
+            _rebuildingPlantColors = false;
+        }
+        UpdatePlantSeedLabel();
+    }
+
+    private async void OnPlantColorPicked()
+    {
+        if (_loadingEcho || _rebuildingPlantColors || PlantColor is null)
+        {
+            return;
+        }
+        var seed = PlantColor.Seed;
+        if (seed == _lastPresetSeed)
+        {
+            UpdatePlantSeedLabel();
+            return;
+        }
+        if (PlantColor.Rare && PlantRareConfirm
+            && !DialogService.Confirm($"选中的 {PlantColor.Name} {PlantFlower} 种子为稀有种子，请确认", "稀有种子确认"))
+        {
+            RevertPlantPreset();
+            return;
+        }
+        if (!await SaveKeyResultAsync("plant_seed_preset", seed))
+        {
+            RevertPlantPreset();
+            DialogService.Warn("预设种子保存失败", "种植设置");
+            return;
+        }
+        _lastPresetSeed = seed;
+        UpdatePlantSeedLabel();
+    }
+
+    private void UpdatePlantSeedLabel()
+    {
+        var seed = PlantColor?.Seed ?? _lastPresetSeed;
+        var rare = PlantColor?.Rare == true || FindColor(seed)?.Rare == true;
+        PlantSeedLabel = seed + (rare ? "（稀有，不可购买）" : "");
+        if (!rare)
+        {
+            return;
+        }
+        // 稀有种子不可购买：仅视觉强制关闭（不改写已保存值，引擎运行时会再次强制）
+        _suppressPlantSave = true;
+        try
+        {
+            PlantBuyMissing = false;
+            PlantAutoBuy = false;
+        }
+        finally
+        {
+            _suppressPlantSave = false;
+        }
+    }
+
+    private void RevertPlantPreset()
+    {
+        var seed = _lastPresetSeed;
+        var flower = _presets?.Flowers.FirstOrDefault(f => f.Colors.Any(c => c.Seed == seed));
+        if (flower is not null)
+        {
+            _rebuildingPlantColors = true;
+            try
+            {
+                PlantFlower = flower.Name;
+                PlantColors.Clear();
+                foreach (var c in flower.Colors)
+                {
+                    PlantColors.Add(new PlantColorOption(c.Name, c.Seed, c.Rare));
+                }
+                PlantColor = PlantColors.FirstOrDefault(x => x.Seed == seed) ?? PlantColors.FirstOrDefault();
+            }
+            finally
+            {
+                _rebuildingPlantColors = false;
+            }
+        }
+        UpdatePlantSeedLabel();
+    }
+
+    private async Task EnsurePresetsAsync(FaaProxy proxy)
+    {
+        if (_presets is not null)
+        {
+            return;
+        }
+        var r = await proxy.GetPlantPresetsAsync();
+        if (r.Success && r.Value is not null)
+        {
+            _presets = r.Value;
+        }
+    }
+
+    /// <summary>种植卡片回显（/api/daily modules[plant].settings + 顶层稀有状态）。</summary>
+    private async Task LoadPlantEchoAsync(FaaProxy proxy, DailyPlan d)
+    {
+        await EnsurePresetsAsync(proxy);
+        var ps = d.Modules.FirstOrDefault(m => m.Id == "plant")?.Settings ?? Array.Empty<SettingItem>();
+        string Txt(string key, string def)
+        {
+            var s = ps.FirstOrDefault(x => x.Key == key);
+            if (s is null)
+            {
+                return def;
+            }
+            return s.Value.ValueKind == JsonValueKind.String ? (s.Value.GetString() ?? def) : s.Value.ToString();
+        }
+        bool Bl(string key, bool def)
+        {
+            var s = ps.FirstOrDefault(x => x.Key == key);
+            if (s is null)
+            {
+                return def;
+            }
+            return s.Value.ValueKind == JsonValueKind.True
+                   || (s.Value.ValueKind == JsonValueKind.String
+                       && bool.TryParse(s.Value.GetString(), out var b) && b);
+        }
+
+        PlantSeedModeIndex = Txt("plant_seed_mode", "manual") == "preset" ? 1 : 0;
+        PlantCountModeIndex = Txt("plant_count_mode", "fixed") == "auto" ? 1 : 0;
+        _lastPlantFlowerType = Txt("plant_flower_type", "桃花");
+        PlantFlowerTypeText = _lastPlantFlowerType;
+        _lastPlantCount = int.TryParse(Txt("plant_count", "1"), out var n) ? Math.Clamp(n, 1, 360) : 1;
+        PlantCountText = _lastPlantCount.ToString();
+        PlantBuyMissing = Bl("plant_buy_missing", false);
+        PlantAutoBuy = Bl("plant_auto_buy", false);
+        PlantRareConfirm = d.PlantRareConfirm;
+        _lastPresetSeed = Txt("plant_seed_preset", "白色桃花");
+
+        PlantFlowers.Clear();
+        foreach (var f in _presets?.Flowers ?? Array.Empty<PlantFlower>())
+        {
+            PlantFlowers.Add(f.Name);
+        }
+        var savedFlower = _presets?.Flowers.FirstOrDefault(f => f.Colors.Any(c => c.Seed == _lastPresetSeed))?.Name
+                          ?? PlantFlowers.FirstOrDefault();
+        if (savedFlower is not null)
+        {
+            PlantFlower = savedFlower;
+            RebuildPlantColors(_lastPresetSeed);
+        }
+        UpdatePlantSeedLabel();
+    }
+
     // ==================== 卡片二: 识别(契约6 唯一回显来源 /api/daily) ====================
     [ObservableProperty]
     private bool _logClickPos;
@@ -342,16 +685,23 @@ public partial class SettingsViewModel : ObservableObject
 
     private async Task SaveKeyAsync(string key, object? value)
     {
+        await SaveKeyResultAsync(key, value);
+    }
+
+    /// <summary>保存单键并返回是否成功（种植卡片需要在失败时回退控件值）。</summary>
+    private async Task<bool> SaveKeyResultAsync(string key, object? value)
+    {
         var proxy = _main.Session.Proxy;
         if (proxy is null)
         {
             Services.DebugTrace.Log("settings.save: proxy null");
             SaveStatusText = "服务未就绪, 未保存";
-            return;
+            return false;
         }
         var r = await proxy.SetConfigAsync(new Dictionary<string, object?> { [key] = value });
         Services.DebugTrace.Log($"settings.save: key={key} success={r.Success} err={(r.Success ? "" : r.Error)}");
-        if (r.Success && r.Value?.Ok == true)
+        var ok = r.Success && r.Value?.Ok == true;
+        if (ok)
         {
             SaveStatusText = "已保存 ✓";
             SaveStatusIsError = false;
@@ -363,6 +713,7 @@ public partial class SettingsViewModel : ObservableObject
         }
         var seq = ++_saveMsgSeq;
         _ = ClearSaveStatusAfterDelayAsync(seq);
+        return ok;
     }
 
     private async Task ClearSaveStatusAfterDelayAsync(int seq)
@@ -401,6 +752,7 @@ public partial class SettingsViewModel : ObservableObject
             {
                 OcrThreadsText = d.OcrThreads.ToString();
             }
+            await LoadPlantEchoAsync(proxy, d);
         }
         finally
         {
@@ -443,4 +795,10 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     private static string Trunc(string s) => s.Length > 160 ? s[..160] : s;
+}
+
+/// <summary>预设颜色下拉项（Display 带稀有标记）。</summary>
+public sealed record PlantColorOption(string Name, string Seed, bool Rare)
+{
+    public string Display => Rare ? $"{Name} (稀有)" : Name;
 }

@@ -40,6 +40,8 @@ data/*
 !data/close_buttons.json
 # blockers.json = 阻断层/覆盖层注册表(1.0 #11), 引擎运行必需, 新增弹窗只加数据 → 入仓。
 !data/blockers.json
+# plant_presets.json = 种植种子数据库(花名/颜色/稀有/肥力消耗), 引擎与 UI 共用 → 入仓。
+!data/plant_presets.json
 
 # ---------- 开发区：未并入主项目的开发代码 / 工具 / 脚本 ----------
 dev_tools/

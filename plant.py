@@ -13,11 +13,13 @@ from __future__ import annotations
 from core.ports import EnginePort
 
 import re
+import json
 import subprocess
 import time
 from dataclasses import dataclass
 
 from ocr_engine import ADB_ADDRESS, ADB_PATH, stop_requested
+from ocr_engine._constants import PLANT_PRESETS_PATH
 from ui_ops import (IME_OK_REGION, close_reward_popup,
                     click_text_fine as _click_text_fine,
                     fine_blocks as _fine_blocks, save_shot as _save_shot,
@@ -41,18 +43,111 @@ SEED_COUNT_DX_REL = 0.015
 SEED_COUNT_DY_REL = -0.040
 SEED_COUNT_RADIUS_REL = 0.02
 
-# ---- 阶段2: 种植花朵（2026-11-17 用户确认） ----
-TARGET_COUNT = 1
+# ---- 阶段2: 种植花朵（2026-11-17 用户确认；2026-11-20 数量/预设/缺种购买） ----
+MAX_PLANT_COUNT = 360          # 单次种植数量上限（用户 2026-11-20 定值）
+MAX_BUY_BATCH = 99             # 园艺店单次购买上限（超出分批）
 DEFAULT_SEED = "白色桃花"
-# 花种名称库（当前仅桃花系）。cost=None 表示肥力消耗尚未实机标定：
-# 只校验「可种 d-1 / 已选归零」，不校验肥力精确变化，避免用未测数据误拦截。
-SEED_LIBRARY = {
-    "白色桃花": {"detail": "白色桃花花种", "cost": 2},
-    "粉色桃花": {"detail": "粉色桃花花种", "cost": None},
-    "绿色桃花": {"detail": "绿色桃花花种", "cost": None},
-}
-SUPPORTED_SEEDS = "、".join(SEED_LIBRARY)
 COLOR_PREFIX_RE = re.compile(r"^(白色|粉色|绿色|黄色|紫色|蓝色|红色|黑色|橙色|彩色)")
+
+_PRESETS_CACHE: dict | None = None
+
+
+def load_presets() -> dict:
+    """读取 data/plant_presets.json（花名→颜色→种子）。
+
+    缺失/损坏/字段非法一律抛 ValueError（带可操作说明），由调用方如实失败，
+    不做“猜一个种子”的回退。缓存一次；`reload_presets()` 供测试/热更新。
+    """
+    global _PRESETS_CACHE
+    if _PRESETS_CACHE is not None:
+        return _PRESETS_CACHE
+    try:
+        data = json.loads(PLANT_PRESETS_PATH.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"种子数据库读取失败({PLANT_PRESETS_PATH}): {e}") from e
+    flowers = data.get("flowers") if isinstance(data, dict) else None
+    if not isinstance(flowers, list) or not flowers:
+        raise ValueError("种子数据库缺少 flowers 列表")
+    lib: dict[str, dict] = {}
+    for fl in flowers:
+        if not isinstance(fl, dict):
+            raise ValueError(f"种子数据库花名项非法: {fl!r}")
+        fname = str(fl.get("name") or "").strip()
+        colors = fl.get("colors")
+        if not fname or not isinstance(colors, list) or not colors:
+            raise ValueError(f"种子数据库花名/颜色不完整: {fl!r}")
+        for c in colors:
+            if not isinstance(c, dict):
+                raise ValueError(f"种子数据库颜色项非法: {fname}/{c!r}")
+            cname = str(c.get("name") or "").strip()
+            seed = str(c.get("seed") or "").strip()
+            if not cname or not seed:
+                raise ValueError(f"种子数据库颜色项缺少 name/seed: {fname}/{c!r}")
+            cost = c.get("cost", 2)
+            if isinstance(cost, bool) or not isinstance(cost, int) or not 0 <= cost <= 2:
+                raise ValueError(f"{seed} 的 cost 须为 0~2 整数, 实为 {cost!r}")
+            if seed in lib:
+                raise ValueError(f"种子重复: {seed}")
+            lib[seed] = {
+                "flower": fname, "color": cname, "seed": seed,
+                "detail": str(c.get("detail") or (seed + "花种")),
+                "buy_name": str(c.get("buy_name") or (seed + "种子")),
+                "rare": bool(c.get("rare", False)),
+                "cost": cost,
+                "cost_source": c.get("cost_source", "default"),
+            }
+    _PRESETS_CACHE = {"raw": data, "seeds": lib, "flowers": flowers}
+    return _PRESETS_CACHE
+
+
+def reload_presets() -> None:
+    """清缓存（测试用）。"""
+    global _PRESETS_CACHE
+    _PRESETS_CACHE = None
+
+
+def seed_library() -> dict[str, dict]:
+    return dict(load_presets()["seeds"])
+
+
+def supported_seeds() -> str:
+    return "、".join(load_presets()["seeds"])
+
+
+def _normalize_seed_input(raw: str) -> str:
+    """去掉「种子/花种」后缀；空值按默认桃花处理。"""
+    s = str(raw or "").strip()
+    for suffix in ("种子", "花种"):
+        if s.endswith(suffix) and len(s) > len(suffix):
+            s = s[:-len(suffix)]
+    return s
+
+
+def resolve_seed_name(raw: str) -> tuple[bool, str, "str | None"]:
+    """校验种子名是否在库（set_config / UI / 引擎共用）。
+
+    返回 (ok, 错误文案, 规范化种子名)。接受「桃花」别名与「…种子/花种」后缀；
+    未带颜色的其它花名按「白色+花名」查找（与旧行为一致）；查不到不猜。
+    """
+    try:
+        lib = load_presets()["seeds"]
+    except ValueError as e:  # noqa: BLE001
+        return False, str(e), None
+    name = _normalize_seed_input(raw)
+    if not name:
+        name = "桃花"
+    if name == "桃花":
+        if DEFAULT_SEED in lib:
+            return True, "", DEFAULT_SEED
+        return False, f"种子库缺少默认种子 {DEFAULT_SEED}", None
+    if name in lib:
+        return True, "", name
+    if COLOR_PREFIX_RE.match(name):
+        return False, f"「{raw}」不在种子库；可选：{supported_seeds()}", None
+    candidate = "白色" + name
+    if candidate in lib:
+        return True, "", candidate
+    return False, f"「{raw}」不在种子库；可选：{supported_seeds()}", None
 
 
 @dataclass(frozen=True)
@@ -61,7 +156,42 @@ class PlantTarget:
     seed: str                 # 网格块精确名称，如「粉色桃花」
     detail: str               # 详情窗口名称，如「粉色桃花花种」
     search_kw: str            # 搜索框输入的基础花名，如「桃花」
-    cost: int | None          # 肥力消耗；None=未标定，不校验肥力精确值
+    cost: int | None          # 肥力消耗（0~2；数据库未标注时为 None）
+    rare: bool = False        # 稀有种子（不可购买）
+    buy_name: str = ""        # 园艺店搜索/详情名（缺省 seed+种子）
+
+
+@dataclass(frozen=True)
+class PlantOptions:
+    """一次种植的用户选项（由配置/步骤传入）。"""
+    count_mode: str = "fixed"     # fixed / auto
+    count: int = 1                # fixed 模式数量（1~360）
+    buy_missing: bool = False     # fixed 模式缺种购买
+    auto_buy: bool = False        # auto 模式也自动购买
+
+
+def compute_target_count(count_mode: str, count: int, *, n: int, plantable: int,
+                         fertility: int, cost: "int | None", auto_buy: bool = False,
+                         rare: bool = False, max_count: int = MAX_PLANT_COUNT) -> int:
+    """计算本次种植数量 Q（纯函数，供单测）。
+
+    fixed: Q = clamp(count, 1, max_count)
+    auto : Q = min(plantable, max_count, fertility//cost)；cost=0/None 不设肥力上限；
+           未开自动购买（或稀有种子）时再加 n 上限。
+    返回 0 表示当前无法种植（无槽位/无肥力/无种子）。
+    """
+    if str(count_mode) != "auto":
+        try:
+            return max(1, min(int(max_count), int(count)))
+        except (TypeError, ValueError):
+            return 1
+    q = max(0, min(int(plantable or 0), int(max_count)))
+    if cost is not None and int(cost) > 0:
+        q = min(q, max(0, int(fertility or 0) // int(cost)))
+    if not auto_buy or rare:
+        q = min(q, max(0, int(n or 0)))
+    return max(0, int(q))
+
 
 
 QUANTITY_DIALOG_REGION = [0.23, 0.20, 0.77, 0.80]   # 数量窗口（实机标定 2026-11-17: 标题 y≈0.215, 确认 y≈0.729）
@@ -276,34 +406,19 @@ def read_search_result(eng: EnginePort, flower: str) -> dict:
 # ---------------- 阶段2: 种植目标花种 ----------------
 
 def _resolve_seed(flower: str) -> PlantTarget | None:
-    """配置值 -> PlantTarget；不支持返回 None。
-
-    兼容写法: 「桃花」(默认白色)、「白色桃花」、「白色桃花种子/花种」。
-    未带颜色的其它花名按「白色+花名」查库；查不到即如实拒绝，不猜颜色。
-    """
-    raw = str(flower or "").strip()
-    for suffix in ("种子", "花种"):
-        if raw.endswith(suffix) and len(raw) > len(suffix):
-            raw = raw[:-len(suffix)]
-    if not raw:
-        raw = "桃花"
-    if raw == "桃花":
-        seed = DEFAULT_SEED
-    elif raw in SEED_LIBRARY:
-        seed = raw
-    elif COLOR_PREFIX_RE.match(raw):
-        print(f"    [种植] 花种「{raw}」不在名称库; 可选: {SUPPORTED_SEEDS}")
+    """配置值 -> PlantTarget（数据库校验；不支持/库损坏返回 None 并打印原因）。"""
+    ok, msg, seed = resolve_seed_name(flower)
+    if not ok or not seed:
+        print(f"    [种植] {msg or '种子名无法解析'}")
         return None
-    else:
-        candidate = "白色" + raw
-        if candidate not in SEED_LIBRARY:
-            print(f"    [种植] 花种「{raw}」不在名称库; 可选: {SUPPORTED_SEEDS}")
-            return None
-        seed = candidate
-    info = SEED_LIBRARY[seed]
-    search_kw = COLOR_PREFIX_RE.sub("", seed) or seed
-    return PlantTarget(seed=seed, detail=info["detail"],
-                       search_kw=search_kw, cost=info["cost"])
+    info = load_presets()["seeds"][seed]
+    return PlantTarget(seed=seed, detail=info["detail"], search_kw=info["flower"],
+                       cost=info["cost"], rare=info["rare"], buy_name=info["buy_name"])
+
+
+def resolve_target(flower: str) -> PlantTarget | None:
+    """公开解析入口（步骤处理器 / 测试用）。"""
+    return _resolve_seed(flower)
 
 
 def _nearest_badge(blocks, nx, ny, w, h, radius_rel=SEED_COUNT_RADIUS_REL):
@@ -389,40 +504,59 @@ def _read_quantity_pair(eng: EnginePort, timeout=8.0):
     return None
 
 
-def _adjust_quantity_to_one(eng: EnginePort, pair) -> bool:
-    """把将种个数调到 1。+/- 是图标: 先尝试 OCR 的 -/－/−, 再用 m/n 块左侧相对位置。"""
+def _quantity_button(eng: EnginePort, pair, sign: int):
+    """定位 +/- 图标；OCR 不到时按 m/n 块左右下角相对推算（不写死屏幕坐标）。"""
+    kws = ["-", "－", "−"] if sign < 0 else ["+", "＋", "﹢"]
+    pt = eng.locate(kws, region_rel=QUANTITY_DIALOG_REGION, min_score=0.2,
+                    need_refine=False, log_miss=False)
+    if pt is not None:
+        return int(pt.x), int(pt.y)
+    _, _, block = pair
+    w, h = eng.screen_w or 1, eng.screen_h or 1
+    x = int(block["center"][0] + (-0.13 if sign < 0 else 0.13) * w)
+    y = int(block["center"][1] + 0.06 * h)
+    print(f"    [种植] 「{'+' if sign > 0 else '-'}」图标未识别, 按 m/n 块相对点击 ({x},{y})")
+    return x, y
+
+
+def _adjust_quantity(eng: EnginePort, pair, target: int) -> bool:
+    """把将种个数调到 target（1~n）。± 图标点击 + 每轮复读校验，最多 3 轮。"""
     m, n, block = pair
     if n < 1:
         print(f"    [种植] 该种子数量为 {n}, 不能种植")
         return False
-    if m == TARGET_COUNT:
-        print(f"    [种植] 数量已为 {TARGET_COUNT}, 无需调整")
+    target = max(1, min(int(target), int(n)))
+    if m == target:
+        print(f"    [种植] 数量已为 {target}, 无需调整")
         return True
-    w = eng.screen_w or 1
-    for i in range(10):
-        minus = eng.locate(["-", "－", "−"], region_rel=QUANTITY_DIALOG_REGION,
-                           min_score=0.2, need_refine=False, log_miss=False)
-        if minus is not None:
-            eng.click_abs(int(minus.x), int(minus.y))
-        else:
-            # 图标 OCR 不到时的相对兜底: 实机「-」在 m/n 块左下方 (相对块坐标推导, 非屏幕写死坐标)
-            x = int(block["center"][0] - 0.13 * w)
-            y = int(block["center"][1] + 0.06 * (eng.screen_h or 1))
-            print(f"    [种植] 「-」图标未识别, 按 m/n 块左下方相对点击 ({x},{y})")
+    for round_no in range(1, 4):
+        m, n, block = pair
+        delta = target - m
+        if delta == 0:
+            print(f"    [种植] 数量已调到 {target}")
+            return True
+        sign = 1 if delta > 0 else -1
+        clicks = min(abs(delta), MAX_PLANT_COUNT)
+        x, y = _quantity_button(eng, pair, sign)
+        print(f"    [种植] 数量 {m} -> {target}: 点击「{'+' if sign > 0 else '-'}」x{clicks} "
+              f"(第{round_no}轮)")
+        for i in range(clicks):
+            if stop_requested():
+                return False
             eng.click_abs(x, y)
-        time.sleep(0.5)
+            time.sleep(0.12)
+            if (i + 1) % 25 == 0:
+                time.sleep(0.2)          # 每 25 次给 UI 一点消化时间
+        time.sleep(0.4)
         pair = _read_quantity_pair(eng, 3.0)
         if pair is None:
             print("    [种植] 调整数量后 m/n 丢失")
             return False
-        m, n, block = pair
-        if m == TARGET_COUNT:
-            print(f"    [种植] 数量已调到 {TARGET_COUNT}")
+        if pair[0] == target:
+            print(f"    [种植] 数量已调到 {target}")
             return True
-        if m < TARGET_COUNT:
-            print(f"    [种植] 数量降到 {m}, 低于目标 {TARGET_COUNT}")
-            return False
-    print(f"    [种植] 数量调整失败, 仍为 {m}")
+        print(f"    [种植] 本轮后 m={pair[0]}（目标 {target}），继续校准")
+    print(f"    [种植] 数量调整失败, 仍为 {pair[0]}")
     return False
 
 
@@ -438,8 +572,8 @@ def _confirm_quantity(eng: EnginePort) -> bool:
     return False
 
 
-def _wait_after_quantity(eng: EnginePort, base: dict, cost=None, timeout=8.0):
-    """数量确认后的状态。返回 (info, mode): mode='selected'=已选1待随机;
+def _wait_after_quantity(eng: EnginePort, base: dict, q: int, cost=None, timeout=8.0):
+    """数量确认后的状态。返回 (info, mode): mode='selected'=已选 q 待随机;
     mode='planted'=确认后已直接完成种植(实机可能出现)。
 
     cost=None（该花种肥力消耗未标定）时跳过肥力数值判据, 只按已选/可种判断。
@@ -452,15 +586,15 @@ def _wait_after_quantity(eng: EnginePort, base: dict, cost=None, timeout=8.0):
         a_ok = (cost is None
                 or (info["fertility_remaining"] is not None
                     and base["fertility_remaining"] is not None
-                    and info["fertility_remaining"] == base["fertility_remaining"] - cost))
-        if a_ok and info["selected_count"] == TARGET_COUNT:
-            print("    [种植] 数量确认后: 已选=1, 待随机种植")
+                    and info["fertility_remaining"] == base["fertility_remaining"] - cost * q))
+        if a_ok and info["selected_count"] == q:
+            print(f"    [种植] 数量确认后: 已选={q}, 待随机种植")
             return info, "selected"
         if (a_ok and info["selected_count"] == 0
                 and info["plantable_total"] is not None
                 and base["plantable_total"] is not None
-                and info["plantable_total"] == base["plantable_total"] - TARGET_COUNT):
-            print("    [种植] 数量确认后: 已直接完成种植(可种-1)")
+                and info["plantable_total"] == base["plantable_total"] - q):
+            print(f"    [种植] 数量确认后: 已直接完成种植(可种-{q})")
             return info, "planted"
         time.sleep(1.0)
     print("    [种植] 数量确认后状态不符(已选/肥力/可种), 不继续")
@@ -481,8 +615,8 @@ def _wait_detail_window(eng: EnginePort, detail_name: str, timeout=10.0):
     return None
 
 
-def _verify_detail(eng: EnginePort, blocks, detail_name: str) -> bool:
-    """详情窗口: 目标行「白色桃花花种」+ 数量=1；出现计划外花种行则拒绝确认。
+def _verify_detail(eng: EnginePort, blocks, detail_name: str, q: int) -> bool:
+    """详情窗口: 目标行「白色桃花花种」+ 数量=q；出现计划外花种行则拒绝确认。
 
     实机 2026-11-17: 单种子时布局为 顶部名称「白色桃花花种」+ 底部「已选择：1/58」+「确认种植」,
     名称与数量不在同一行；优先解析「已选择：m/n」的 m，多行时再退回同行数字。
@@ -508,8 +642,8 @@ def _verify_detail(eng: EnginePort, blocks, detail_name: str) -> bool:
             sel.append((int(m.group(1)), int(m.group(2)), b))
     if sel:
         got, total, b = sel[0]
-        print(f"    [种植] 详情核对: {detail_name} 已选择={got}/{total} (计划 {TARGET_COUNT})")
-        return got == TARGET_COUNT and total >= TARGET_COUNT
+        print(f"    [种植] 详情核对: {detail_name} 已选择={got}/{total} (计划 {q})")
+        return got == q and total >= q
 
     # 兜底: 名称同行数字（多种子多行布局）
     name = names[0]
@@ -526,8 +660,8 @@ def _verify_detail(eng: EnginePort, blocks, detail_name: str) -> bool:
         return False
     nums.sort(key=lambda x: abs(x[1]["center"][0] - nx))
     got = nums[0][0]
-    print(f"    [种植] 详情核对(同行): {detail_name} = {got} (计划 {TARGET_COUNT})")
-    return got == TARGET_COUNT
+    print(f"    [种植] 详情核对(同行): {detail_name} = {got} (计划 {q})")
+    return got == q
 
 
 def _close_detail_window(eng: EnginePort, blocks, detail_name: str) -> bool:
@@ -576,30 +710,30 @@ def _wait_detail_closed(eng: EnginePort, detail_name: str, timeout=8.0) -> bool:
     return False
 
 
-def _verify_after_plant(eng: EnginePort, base: dict, cost=None) -> bool:
-    """回读校验: d-1、c=0；肥力消耗已标定的花种另校验 a/b 同步 -cost。
+def _verify_after_plant(eng: EnginePort, base: dict, cost, q: int) -> bool:
+    """回读校验: 可种 q、已选归零；肥力消耗已标定时另校验 a/b 同步 -cost*q。
 
-    cost=None（未标定）时只校验可种-1/已选归零, 肥力变化如实打印不参与判定。
+    cost=None（未标定）时只校验可种/已选, 肥力变化如实打印不参与判定。
     """
     after = read_panel_info(eng)
     eng.plant_panel_after = after
     d_ok = (after["plantable_total"] is not None
             and base["plantable_total"] is not None
-            and after["plantable_total"] == base["plantable_total"] - TARGET_COUNT)
+            and after["plantable_total"] == base["plantable_total"] - q)
     if cost is not None:
         a_ok = (after["fertility_remaining"] is not None
                 and base["fertility_remaining"] is not None
-                and after["fertility_remaining"] == base["fertility_remaining"] - cost)
+                and after["fertility_remaining"] == base["fertility_remaining"] - cost * q)
         b_ok = (after["fertility_total"] is not None
                 and base["fertility_total"] is not None
-                and after["fertility_total"] == base["fertility_total"] - cost)
+                and after["fertility_total"] == base["fertility_total"] - cost * q)
     else:
         a_ok = b_ok = True
     c_ok = after["selected_count"] == 0
     print(f"    [种植] 种植前后: 可种 {base['plantable_total']}->{after['plantable_total']} "
-          f"(期望-{TARGET_COUNT}) 肥力 {base['fertility_remaining']}/{base['fertility_total']}"
+          f"(期望-{q}) 肥力 {base['fertility_remaining']}/{base['fertility_total']}"
           f"->{after['fertility_remaining']}/{after['fertility_total']} "
-          f"({'期望各-' + str(cost) if cost is not None else '消耗未标定, 仅记录'}) "
+          f"({'期望各-' + str(cost * q) if cost is not None else '消耗未标定, 仅记录'}) "
           f"已选={after['selected_count']}")
     ok = d_ok and a_ok and b_ok and c_ok
     print(f"    [种植] 种植判据: 可种{'OK' if d_ok else 'FAIL'} "
@@ -610,31 +744,49 @@ def _verify_after_plant(eng: EnginePort, base: dict, cost=None) -> bool:
 
 # ---------------- 主入口 ----------------
 
-def run_plant_flower(eng: EnginePort, flower: str = "桃花") -> bool:
-    """种植花朵: 解析目标花种 -> 阶段1搜索 -> 阶段2精确点选/数量/随机种植/详情确认 -> 回读校验。
+def run_plant_flower(eng: EnginePort, flower: str = "桃花",
+                     options: PlantOptions | None = None) -> bool:
+    """种植花朵: 解析目标 -> 阶段1搜索 -> 阶段2选种/数量/缺种购买/随机种植/回读校验。
 
+    options 由配置/步骤传入（数量模式、数量、缺种购买、auto 自动购买）。
     结束（无论成功/失败）若种植面板仍打开, 统一关闭面板归位, 便于模块串联。
     """
+    opts = options or PlantOptions()
     state = {"opened": False}
     try:
-        return _run_plant_flower(eng, flower, state)
+        return _run_plant_flower(eng, flower, state, opts)
     finally:
         if state["opened"]:
             _close_plant_panel(eng)
 
 
-def _run_plant_flower(eng: EnginePort, flower: str, state: dict) -> bool:
+def _plan_header(target: PlantTarget, opts: PlantOptions) -> None:
+    """运行日志头部：目标/数量模式/购买开关（稀有种子强制关闭购买）。"""
+    if target.rare:
+        print(f"[种植] 目标={target.seed}（稀有）| 数量={opts.count_mode} | "
+              f"自动购买=强制关闭（稀有种子不可购买）")
+        return
+    if opts.count_mode == "auto":
+        print(f"[种植] 目标={target.seed} | 数量=auto | "
+              f"自动购买={'开' if opts.auto_buy else '关'} | 上限=肥力/槽位/库存")
+        return
+    print(f"[种植] 目标={target.seed} | 数量=fixed({opts.count}) | "
+          f"缺种购买={'开' if opts.buy_missing else '关'}")
+
+
+def _run_plant_flower(eng: EnginePort, flower: str, state: dict, options: PlantOptions) -> bool:
     target = _resolve_seed(flower)
     if target is None:
         return False
     print(f"\n[种植] ===== 种植花朵: {target.seed} (搜索词={target.search_kw}) =====")
+    _plan_header(target, options)
     if stop_requested():
         return False
     if not _open_plant_panel(eng, state):
         return False
     if not _search_target(eng, target):
         return False
-    return _plant_target(eng, target)
+    return _plant_target(eng, target, options, state)
 
 
 def _open_plant_panel(eng: EnginePort, state: dict) -> bool:
@@ -684,38 +836,128 @@ def _search_target(eng: EnginePort, target: PlantTarget) -> bool:
     return res["found"]
 
 
-def _plant_target(eng: EnginePort, target: PlantTarget) -> bool:
-    """阶段2：基线读取 → 选种/数量 → 随机种植/详情确认 → 回读校验。"""
-    print(f"\n[种植] ===== 阶段2: {target.seed} x{TARGET_COUNT} =====")
+def _buy_shortfall(eng: EnginePort, target: PlantTarget, need: int) -> int:
+    """按批购买缺少的种子（单批 ≤ MAX_BUY_BATCH），返回已买到的数量。"""
+    from buy_seed import run_buy_seed
+
+    name = target.buy_name or (target.seed + "种子")
+    bought = 0
+    remaining = max(0, int(need))
+    print(f"    [种植] 园艺店购买「{name}」x{remaining}（单批≤{MAX_BUY_BATCH}）")
+    while remaining > 0 and not stop_requested():
+        batch = min(MAX_BUY_BATCH, remaining)
+        if not run_buy_seed(eng, name, count=batch):
+            print(f"    [种植] 购买失败（本批 {batch} 颗）")
+            break
+        bought += batch
+        remaining -= batch
+    return bought
+
+
+def _back_to_garden(eng: EnginePort) -> bool:
+    """购买后从园艺店回到任意家园；失败如实返回 False。"""
+    from navigation import ensure_any_garden
+
+    for _ in range(2):
+        if ensure_any_garden(eng):
+            return True
+        print("    [种植] 尝试关闭园艺店面板后回家园")
+        try:
+            eng.close_dialog()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(1.2)
+    return ensure_any_garden(eng)
+
+
+def _plant_target(eng: EnginePort, target: PlantTarget, options: PlantOptions,
+                  state: dict) -> bool:
+    """阶段2：基线 → 计算数量 Q → 缺种购买 → 选种/数量 → 随机种植/回读。"""
     base = read_panel_info(eng)
     eng.plant_panel_baseline = base
     if base["plantable_total"] is None or base["fertility_remaining"] is None:
         print("    [种植] 基线 a/d 未读到, 中止(不点种子)")
         return False
 
-    mode = _choose_quantity(eng, target, base)
+    grid = _find_grid_seed(eng, target.seed)
+    if grid is None:
+        print(f"    [种植] 未找到带数量角标的精确块「{target.seed}」, 中止; 不点其它变体")
+        _save_shot(eng, "seed_not_found")
+        return False
+    n = int(grid[1])
+
+    q = compute_target_count(options.count_mode, options.count,
+                             n=n, plantable=base["plantable_total"],
+                             fertility=base["fertility_remaining"], cost=target.cost,
+                             auto_buy=options.auto_buy, rare=target.rare)
+    buy_wanted = ((options.count_mode == "fixed" and options.buy_missing)
+                  or (options.count_mode == "auto" and options.auto_buy))
+    if target.rare:
+        buy_wanted = False
+    print(f"    [种植] 库存={n} 可种={base['plantable_total']} "
+          f"肥力={base['fertility_remaining']} cost={target.cost} → 计划={q}"
+          + ("（缺种购买已开启）" if buy_wanted and q > n else ""))
+
+    if q < 1:
+        if options.count_mode == "auto":
+            print("    [种植] auto 计划为 0（无种子/无槽位/无肥力），跳过本次种植")
+            return True
+        print("    [种植] 固定数量计划为 0, 无法种植")
+        return False
+
+    if q > n and buy_wanted:
+        need = q - n
+        print(f"    [种植] 缺 {need} 颗 → 关闭种植面板, 前往园艺店")
+        state["opened"] = False
+        _close_plant_panel(eng)
+        bought = _buy_shortfall(eng, target, need)
+        print(f"    [种植] 购买结束: {bought}/{need} 颗")
+        if not _back_to_garden(eng):
+            print("    [种植] 购买后未回到家园, 中止")
+            return False
+        if not _open_plant_panel(eng, state):
+            return False
+        base = read_panel_info(eng)
+        eng.plant_panel_baseline = base
+        if base["plantable_total"] is None or base["fertility_remaining"] is None:
+            print("    [种植] 购买后基线 a/d 未读到, 中止")
+            return False
+        grid = _find_grid_seed(eng, target.seed)
+        if grid is None:
+            print(f"    [种植] 购买后未找到「{target.seed}」, 中止")
+            return False
+        n2 = int(grid[1])
+        print(f"    [种植] 购买后库存={n2}（计划 {q}）")
+        q = min(q, n2)
+        if q < 1:
+            print("    [种植] 购买后仍无种子, 中止")
+            return False
+    elif q > n:
+        print(f"    [种植] 种子不足（计划 {q} / 现有 {n}），按现有 {n} 种植")
+        q = n
+
+    mode = _choose_quantity(eng, target, base, q)
     if mode is None:
         return False
     if mode == "planted":
-        ok = _verify_after_plant(eng, base, target.cost)
+        ok = _verify_after_plant(eng, base, target.cost, q)
         _save_shot(eng, "after_plant")
-        print(f"[种植] ===== 阶段2{'完成' if ok else '失败'}: {target.seed} x{TARGET_COUNT} "
+        print(f"[种植] ===== 阶段2{'完成' if ok else '失败'}: {target.seed} x{q} "
               f"(数量确认即完成种植) =====")
         return ok
 
-    if not _random_plant_and_confirm(eng, target):
+    if not _random_plant_and_confirm(eng, target, q):
         return False
 
-    ok = _verify_after_plant(eng, base, target.cost)
+    ok = _verify_after_plant(eng, base, target.cost, q)
     _save_shot(eng, "after_plant")
-    cost_desc = f"消耗 {target.cost} 肥力" if target.cost is not None else "肥力消耗未标定"
-    print(f"[种植] ===== 阶段2{'完成' if ok else '失败'}: "
-          f"{target.seed} x{TARGET_COUNT} {cost_desc} =====")
+    cost_desc = f"消耗 {target.cost * q} 肥力" if target.cost is not None else "肥力消耗未标定"
+    print(f"[种植] ===== 阶段2{'完成' if ok else '失败'}: {target.seed} x{q} {cost_desc} =====")
     return ok
 
 
-def _choose_quantity(eng: EnginePort, target: PlantTarget, base: dict) -> str | None:
-    """精确点选网格块 → 数量窗口调到 1 → 确认；返回 selected/planted 或 None。"""
+def _choose_quantity(eng: EnginePort, target: PlantTarget, base: dict, q: int) -> str | None:
+    """精确点选网格块 → 数量窗口调到 q → 确认；返回 selected/planted 或 None。"""
     grid = _find_grid_seed(eng, target.seed)
     if grid is None:
         print(f"    [种植] 未找到带数量角标的精确块「{target.seed}」, 中止; 不点其它变体")
@@ -731,21 +973,27 @@ def _choose_quantity(eng: EnginePort, target: PlantTarget, base: dict) -> str | 
     if pair is None:
         print("    [种植] 数量窗口未就绪, 中止")
         return None
-    if not _adjust_quantity_to_one(eng, pair):
+    if pair[1] < q:
+        print(f"    [种植] 数量窗口库存 {pair[1]} < 计划 {q}, 按现有库存种植")
+        q = int(pair[1])
+    if q < 1:
+        print("    [种植] 数量窗口库存为 0, 中止")
+        return None
+    if not _adjust_quantity(eng, pair, q):
         _save_shot(eng, "quantity_failed")
         return None
     if not _confirm_quantity(eng):
         _save_shot(eng, "quantity_confirm_failed")
         return None
 
-    state_mid = _wait_after_quantity(eng, base, target.cost, 8.0)
+    state_mid = _wait_after_quantity(eng, base, q, target.cost, 8.0)
     if state_mid is None:
         _save_shot(eng, "selected_state_failed")
         return None
     return state_mid[1]
 
 
-def _random_plant_and_confirm(eng: EnginePort, target: PlantTarget) -> bool:
+def _random_plant_and_confirm(eng: EnginePort, target: PlantTarget, q: int) -> bool:
     """点随机种植 → 等详情窗口 → 核对名称/数量 → 确认种植 → 等窗口关闭。"""
     if not eng.click_text(["随机种植"], region_rel=PLANT_PANEL_REGION,
                           min_score=0.4, no_fallback=True):
@@ -759,7 +1007,7 @@ def _random_plant_and_confirm(eng: EnginePort, target: PlantTarget) -> bool:
     if blocks is None:
         _save_shot(eng, "detail_timeout")
         return False
-    if not _verify_detail(eng, blocks, target.detail):
+    if not _verify_detail(eng, blocks, target.detail, q):
         print("    [种植] 详情核对不符 -> 关闭窗口(右上角X), 不确认")
         _save_shot(eng, "detail_mismatch")
         _close_detail_window(eng, blocks, target.detail)

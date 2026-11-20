@@ -80,12 +80,24 @@ public partial class HomeModuleVm : ObservableObject
         Id = m.Id;
         Name = m.Name;
         Flow = m.Flow ?? "";
-        HasSettings = m.Settings is { Length: > 0 };
         foreach (var s in m.Settings ?? [])
         {
+            // 2026-11-20: 种植增强的选种/数量/购买键统一在「设置 → 种植」卡片配置,
+            // 模块 ⚙ 面板不再重复渲染(避免 text 控件误展示 enum/int)。
+            if (m.Id == "plant" && HiddenPlantKeys.Contains(s.Key))
+            {
+                continue;
+            }
             Settings.Add(new SettingVm(s, Save));
         }
+        HasSettings = Settings.Count > 0;
     }
+
+    private static readonly HashSet<string> HiddenPlantKeys = new(StringComparer.Ordinal)
+    {
+        "plant_flower_type", "plant_seed_mode", "plant_seed_preset",
+        "plant_count_mode", "plant_count", "plant_buy_missing", "plant_auto_buy",
+    };
 
     public string Id { get; }
     public string Name { get; }
@@ -411,6 +423,21 @@ public partial class HomeViewModel : ObservableObject
         {
             StatusText = "请至少勾选一个任务";
             return;
+        }
+        // 2026-11-20: 稀有种子二次确认（开始一轮再确认一次；开关在设置页）
+        if (sel.Contains("plant"))
+        {
+            var d = await proxy.GetDailyAsync();
+            if (d.Success && d.Value is { PlantRareConfirm: true, PlantSeedRare: true })
+            {
+                var label = string.IsNullOrWhiteSpace(d.Value.PlantSeedName)
+                    ? "稀有" : d.Value.PlantSeedName;
+                if (!DialogService.Confirm($"选中的 {label} 种子为稀有种子，请确认", "种植确认"))
+                {
+                    StatusText = "已取消: 稀有种子未确认";
+                    return;
+                }
+            }
         }
         _starting = true;                    // 提交瞬间即禁用按钮(webui.html:825 同语义)
         StartCommand.NotifyCanExecuteChanged();

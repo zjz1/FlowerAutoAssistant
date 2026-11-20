@@ -43,6 +43,7 @@ class ConfigSchemaTests(unittest.TestCase):
 
     def test_module_settings_cover_meta_exactly(self):
         meta = {k for k, spec in schema.CONFIG_KEYS.items() if spec.get("meta")}
+        meta -= set(schema.SETTINGS_PAGE_KEYS)
         used = {k for keys in schema.MODULE_SETTINGS.values() for k in keys}
         self.assertEqual(meta, used)
 
