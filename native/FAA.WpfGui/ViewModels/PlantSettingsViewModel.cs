@@ -17,6 +17,7 @@ public partial class PlantSettingsViewModel : ObservableObject
     private bool _loadingEcho;
     private bool _rebuilding;
     private bool _suppressSave;
+    private bool _suppressPresetSave;   // 回退/回显重建时不触发「首色自动保存」
     private bool _rareConfirm = true;
     private PlantPresetsDoc? _presets;
     private int _lastPlantCount = 1;
@@ -86,7 +87,16 @@ public partial class PlantSettingsViewModel : ObservableObject
         }
     }
 
-    partial void OnPlantFlowerChanged(string? value) => RebuildPlantColors(null);
+    partial void OnPlantFlowerChanged(string? value)
+    {
+        RebuildPlantColors(null);
+        // 2026-11-20: 切换花名后自动选中首色时必须同步保存 plant_seed_preset，
+        // 否则界面显示新种子、开始一轮仍用旧预设（审阅 W4-004）。
+        if (!_loadingEcho && !_suppressPresetSave && PlantColor is not null)
+        {
+            OnPlantColorPicked();
+        }
+    }
 
     partial void OnPlantColorChanged(PlantColorOption? value) => OnPlantColorPicked();
 
@@ -255,23 +265,31 @@ public partial class PlantSettingsViewModel : ObservableObject
     {
         var seed = _lastPresetSeed;
         var flower = _presets?.Flowers.FirstOrDefault(f => f.Colors.Any(c => c.Seed == seed));
-        if (flower is not null)
+        _suppressPresetSave = true;
+        try
         {
-            _rebuilding = true;
-            try
+            if (flower is not null)
             {
-                PlantFlower = flower.Name;
-                PlantColors.Clear();
-                foreach (var c in flower.Colors)
+                _rebuilding = true;
+                try
                 {
-                    PlantColors.Add(new PlantColorOption(c.Name, c.Seed, c.Rare));
+                    PlantFlower = flower.Name;
+                    PlantColors.Clear();
+                    foreach (var c in flower.Colors)
+                    {
+                        PlantColors.Add(new PlantColorOption(c.Name, c.Seed, c.Rare));
+                    }
+                    PlantColor = PlantColors.FirstOrDefault(x => x.Seed == seed) ?? PlantColors.FirstOrDefault();
                 }
-                PlantColor = PlantColors.FirstOrDefault(x => x.Seed == seed) ?? PlantColors.FirstOrDefault();
+                finally
+                {
+                    _rebuilding = false;
+                }
             }
-            finally
-            {
-                _rebuilding = false;
-            }
+        }
+        finally
+        {
+            _suppressPresetSave = false;
         }
         UpdatePlantSeedLabel();
     }

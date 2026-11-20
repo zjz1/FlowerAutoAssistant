@@ -86,6 +86,7 @@ PY_SOURCES = [
     *sorted((ROOT / "core").glob("*.py")),   # 2026-11-17 Stage 3: EnginePort 端口
     *sorted((ROOT / "config").glob("*.py")),  # 2026-11-17 Stage 2: 配置 schema 单源
     *sorted((ROOT / "app").glob("*.py")),    # 2026-11-17 Stage 1: 应用服务层
+    *sorted((ROOT / "diagnostics").glob("*.py")),  # 2026-11-20: 诊断/脱敏/错误目录纳入语法闸
     *sorted((ROOT / "transport").rglob("*.py")),  # 2026-11-17 Stage 3: HTTP 路由 mixin
     *sorted((ROOT / "tests").glob("*.py")),  # 2026-11-17 Stage 0: 离线测试基线
     ROOT / "webui.py",

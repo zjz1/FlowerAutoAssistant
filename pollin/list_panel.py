@@ -240,6 +240,24 @@ def open_jump_dialog(eng: EnginePort):
     return wait_until(eng, lambda: has(eng, "跳转页签"), 5, desc="跳转页签对话框")
 
 
+def _dismiss_jump_dialog(eng: EnginePort) -> None:
+    """翻页失败时清掉残留的「跳转页签」模态框，防止后续点击被模态吞掉。"""
+    try:
+        if not has(eng, "跳转页签"):
+            return
+        pt = eng.locate_template(TPL_DLG_CLOSE, img=eng.screenshot(),
+                                 threshold=DLG_CLOSE_TH, region_rel=DLG_CLOSE_REGION)
+        if pt is not None:
+            print(f"  [翻页] 失败清理: 点对话框✕ ({pt.x},{pt.y})")
+            eng.click_abs(pt.x, pt.y)
+        else:
+            print("  [翻页] 失败清理: 对话框✕未命中, 走锚点关闭档")
+            eng.close_dialog(only_types=["anchor_color"])
+        time.sleep(1.5)
+    except Exception as e:  # noqa: BLE001 —— 清理失败不掩盖原始翻页结果
+        print(f"  [翻页] 失败清理异常: {e}")
+
+
 def _jump_once(eng: EnginePort, n):
     """一次翻页尝试: 点「跳」-> 点数字条弹数字键盘 -> 清空 -> 输入 n -> 确认。"""
     if not open_jump_dialog(eng):
@@ -248,6 +266,7 @@ def _jump_once(eng: EnginePort, n):
                              threshold=NUM_BAR_TH, region_rel=NUM_BAR_REGION)
     if pt is None:
         print("  [翻页] 数字条模板未命中(num_bar)")
+        _dismiss_jump_dialog(eng)
         return False
     print(f"  [翻页] 模板命中数字条 ({pt.x},{pt.y}) 唤起数字键盘")
     eng.click_abs(pt.x, pt.y)
@@ -263,6 +282,7 @@ def _jump_once(eng: EnginePort, n):
     pt = eng.locate(["确认"], region_rel=DLG_CONFIRM_REGION, min_score=0.4)
     if pt is None:
         print("  [翻页] 对话框内未见「确认」")
+        _dismiss_jump_dialog(eng)
         return False
     print(f"  [翻页] 点对话框「确认」({pt.x},{pt.y})")
     eng.click_abs(pt.x, pt.y)
@@ -287,6 +307,7 @@ def goto_page(eng: EnginePort, n, tries=3):
             continue
         if wait_until(eng, lambda: (read_page(eng) or (0, 0))[0] == n, 5, desc=f"第{n}页"):
             return True
+    _dismiss_jump_dialog(eng)
     print(f"  [翻页] 重试 {tries} 次仍未到第 {n} 页")
     return False
 

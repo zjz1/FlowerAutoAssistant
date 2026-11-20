@@ -20,7 +20,8 @@ class _StepHandlersMixin:
     def _step_wait_text(self, step, kws, pad, indent):
         self.wait_text(kws, timeout=step.get("timeout", 30), interval=step.get("interval", 1.0),
                        need_refine=step.get("need_refine", True),
-                       min_score=step.get("min_score", 0.5))
+                       min_score=step.get("min_score", 0.5),
+                       region_rel=step.get("region_rel"))
 
     # E06: 原 run_step `elif s_type == "dump_frame"` 分支体原文(快照行 3582-3582)
     def _step_dump_frame(self, step, kws, pad, indent):
@@ -148,12 +149,16 @@ class _StepHandlersMixin:
         #   拆块只为「紧邻下一步 click_text 复用命中点」服务(见 _remember_guard/_take_guard_point,
         #   守卫 seq 只允许紧邻一步); 若 then/else 首步与顶层后继都不点同词, 拆块纯浪费。
         pt = self.locate(kws, min_score=min_score, region_rel=region_rel,
+                         exact=bool(step.get("exact", False)),
                          need_refine=bool(step.get("need_refine", True)),
                          log_miss=bool(step.get("log_miss", True)))
         hit = pt is not None
         if hit:
             # 批B: 命中后登记守卫, 供紧邻下一步 click_text 复用该点位(免二次截图+全图 OCR)。
             self._remember_guard(kws, pt, False, region_rel, min_score)
+            # 2026-11-20: 条件步骤的 scene 只在命中后登记(MISS 不应改变当前场景)
+            if step.get("scene"):
+                self._scene = step["scene"]
         branch = step.get("then") if hit else step.get("else")
         print(f"{pad}[if_text] {kws} {'区域'+str(region_rel)+' ' if region_rel else ''}-> {'HIT' if hit else 'MISS'}")
         if branch:
@@ -162,6 +167,8 @@ class _StepHandlersMixin:
     # E06: 原 run_step `elif s_type == "if_scene"` 分支体原文(快照行 3710-3713)
     def _step_if_scene(self, step, kws, pad, indent):
         hit = self.judge_scene(step.get("scene", ""), min_score=step.get("min_score", 0.4))
+        if hit and isinstance(step.get("scene"), str):
+            self._scene = step["scene"]
         branch = step.get("then") if hit else step.get("else")
         if branch:
             self.run_steps(branch, indent=indent + 1)
@@ -188,6 +195,8 @@ class _StepHandlersMixin:
             time.sleep(interval)
             waited += interval
         if okflag:
+            if isinstance(okname, str):
+                self._scene = okname
             if len(scenes) > 1:
                 print(f"[等待成功] 场景『{okname}』(多场景任一命中, 第{probes}次探测)")
         else:

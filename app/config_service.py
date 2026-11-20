@@ -24,6 +24,7 @@ def set_mode(mode: str) -> None:
 
 
 from config.schema import (CONFIG_KEYS as _CONFIG_KEYS,
+                           DEFAULTS as _CONFIG_DEFAULTS,
                            LOG_ORDER as _CONFIG_LOG_ORDER,
                            LOG_SUFFIX as _CONFIG_LOG_SUFFIX,
                            MODULE_SETTINGS as _MODULE_SETTINGS,
@@ -76,7 +77,9 @@ def _apply_config_key(eng: OCREngine, key: str, spec: dict, value) -> str | None
             eng.update_config(plant_flower_type=str(value))
         return None
     if t == "bool":
-        eng.update_config(**{key: bool(value)})
+        if not isinstance(value, bool):
+            return f"{key} 仅接受 JSON 布尔值 true/false, 收到: {value!r}"
+        eng.update_config(**{key: value})
     elif t == "text":
         eng.update_config(**{key: str(value)})
     elif t == "int":
@@ -105,6 +108,9 @@ def _config_log_segment(eng: OCREngine, key: str, spec: dict, now: bool) -> str 
     if spec.get("log_cond") == "switch_now" and not now:
         return None
     if spec["log_fmt"] == "raw":
+        # 隐私: 目标账号尾号不落明文日志（诊断包/日志分享均不应出现）
+        if key == "target_tail":
+            return f"{spec['log_label']}={'***' if eng.config.get(key) else ''}"
         return f"{spec['log_label']}={eng.config.get(key)}"
     if spec.get("log_value") == "now":
         v = now
@@ -144,5 +150,5 @@ def _config_echo(eng: OCREngine, now: bool, pre: bool) -> dict:
         elif e == "enum_none":
             out[key] = str(eng.config.get(key, "none") or "none")
         else:
-            out[key] = bool(eng.config.get(key, e))
+            out[key] = bool(eng.config.get(key, _CONFIG_DEFAULTS.get(key, e)))
     return out

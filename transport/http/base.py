@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler
 
 class HandlerBase(BaseHTTPRequestHandler):
     server_version = "FAA WebUI/1.0"
+    MAX_BODY_BYTES = 1024 * 1024   # 1MB: 本地 UI 的所有 JSON 请求都远小于此值
 
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -55,6 +56,9 @@ class HandlerBase(BaseHTTPRequestHandler):
         return None
 
     def do_GET(self):
+        if not self._host_allowed():
+            self._send_json({"error": "host not allowed"}, 403)
+            return
         try:
             self._route()
         except Exception as e:
@@ -62,6 +66,22 @@ class HandlerBase(BaseHTTPRequestHandler):
                 self._send_json({"error": str(e)}, 500)
             except Exception:
                 pass
+
+    def _host_allowed(self) -> bool:
+        """防 DNS rebinding：Host 必须是本机回环（无 Host 的 HTTP/1.0 原生客户端放行）。
+
+        GET 接口虽只读，但会暴露日志/截图/OCR 文本；浏览器把攻击者域名解析到
+        127.0.0.1 后，同源策略会放行读取，故所有端点统一校验 Host。
+        """
+        host = (self.headers.get("Host") or "").strip()
+        if not host:
+            return True
+        try:
+            from urllib.parse import urlsplit
+            hostname = urlsplit("//" + host).hostname
+        except Exception:
+            return False
+        return hostname in ("127.0.0.1", "localhost", "::1")
 
     def _origin_allowed(self) -> bool:
         """1.0 #19: POST 的 Origin 白名单（防其他网站借浏览器打本机服务）。
@@ -84,11 +104,22 @@ class HandlerBase(BaseHTTPRequestHandler):
         return u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost", "::1")
 
     def do_POST(self):
+        if not self._host_allowed():
+            self._send_json({"error": "host not allowed"}, 403)
+            return
         if not self._origin_allowed():
             self._send_json({"error": "origin not allowed"}, 403)
             return
         if self.path.split("?", 1)[0] not in _POST_ROUTES:
             self._send_json({"error": "method not allowed"}, 405)
+            return
+        try:
+            body_len = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            body_len = 0
+        if body_len > self.MAX_BODY_BYTES:
+            self.close_connection = True
+            self._send_json({"error": "请求体过大(上限 1MB)"}, 413)
             return
         try:
             self._route()

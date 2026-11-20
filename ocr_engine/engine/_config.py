@@ -8,9 +8,22 @@ allowlist)。行为等价口径: 帧集回归 0 退化 + 闸门全绿 + import �
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
 
 from .._constants import CONFIG_PATH
+
+_CONFIG_LOCK = threading.Lock()   # 配置写盘互斥: 并发 set_config 不丢键/不读半写
+
+
+def _atomic_write_config(data: dict) -> None:
+    """临时文件 + os.replace 原子替换（同目录，Windows 上可原子覆盖）。"""
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CONFIG_PATH.with_name(CONFIG_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=4), encoding="utf-8")
+    os.replace(tmp, CONFIG_PATH)
+
 
 class _ConfigMixin:
     # ---- 用户配置 (data/config.json) ----
@@ -55,25 +68,24 @@ class _ConfigMixin:
             print(f"[配置迁移失败] {e}")
             return data
         if notes:
-            CONFIG_PATH.write_text(
-                json.dumps(migrated, ensure_ascii=False, indent=4), encoding="utf-8")
+            with _CONFIG_LOCK:
+                _atomic_write_config(migrated)
             print(f"[配置] 已升级: {'; '.join(notes)}")
         return migrated
 
     def _save_config(self) -> None:
-        """把 self.config 写回 data/config.json (合并注释字段除外)。"""
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        data = {}
-        try:
-            if CONFIG_PATH.exists():
-                with open(CONFIG_PATH, encoding="utf-8") as fp:
-                    data = json.load(fp)
-        except Exception:
+        """把 self.config 写回 data/config.json (合并注释字段除外; 加锁 + 原子替换)。"""
+        with _CONFIG_LOCK:
             data = {}
-        for k, v in self.config.items():
-            data[k] = v
-        with open(CONFIG_PATH, "w", encoding="utf-8") as fp:
-            json.dump(data, fp, ensure_ascii=False, indent=4)
+            try:
+                if CONFIG_PATH.exists():
+                    with open(CONFIG_PATH, encoding="utf-8") as fp:
+                        data = json.load(fp)
+            except Exception:
+                data = {}
+            for k, v in self.config.items():
+                data[k] = v
+            _atomic_write_config(data)
 
     def update_config(self, **kwargs) -> None:
         """更新配置项并持久化。例如 update_config(enable_switch=True, target_tail="61")。"""

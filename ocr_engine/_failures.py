@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 # ---------------------------------------------------------------------------
 # 功能失败登记: 供「任意功能失败就提醒」(WebUI 弹窗, 2026-10-02 需求)。
 # 只登记**真实失败**(等待超时 / 放弃 / 跑满轮数 / 模块异常), 不得把缓存回退当失败或成功判据。
 # 登记 = ① print(带 [失败] 前缀, 落盘进运行日志) ② 存内存清单, 供 WebUI 增量拉取弹窗。
+# 2026-11-20: 内存清单设上限(保留最近 1000 条), 长跑不线性增长; id 仍单调递增。
 # ---------------------------------------------------------------------------
 _FAIL_LOCK = threading.Lock()
-_FAILURES: list[dict] = []
+_FAILURES: deque = deque(maxlen=1000)
 _FAIL_SEQ = 0
 
 

@@ -23,6 +23,24 @@ from .env_check import ROOT, run_checks
 from .redact import redact_config, redact_text
 
 
+def _scrub_text(text: str, adb: str | None) -> str:
+    """诊断包统一脱敏：正则脱敏 + 程序根目录替换为 <ROOT>（ENV-PATH 等字段）。"""
+    out = redact_text(text, adb)
+    return out.replace(str(ROOT), "<ROOT>")
+
+
+def _scrub_obj(obj, adb: str | None):
+    """递归脱敏 dict/list/str（env.json 与 config.json 的每个字符串值）。"""
+    if isinstance(obj, str):
+        return _scrub_text(obj, adb)
+    if isinstance(obj, list):
+        return [_scrub_obj(x, adb) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _scrub_obj(v, adb) for k, v in obj.items()}
+    return obj
+
+
+
 def _tail(path: Path, max_lines: int) -> str:
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -58,7 +76,7 @@ def export_bundle(out_path: Path, *, log_lines: int = 400) -> Path:
         "schema_version": 1,
     }
 
-    env = run_checks()
+    env = _scrub_obj(run_checks(), adb)
     cfg_raw = None
     cfg_file = ROOT / "data" / "config.json"
     if cfg_file.exists():
@@ -66,10 +84,10 @@ def export_bundle(out_path: Path, *, log_lines: int = 400) -> Path:
             cfg_raw = json.loads(cfg_file.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             cfg_raw = None
-    cfg = redact_config(cfg_raw or {})
+    cfg = _scrub_obj(redact_config(cfg_raw or {}), adb)
 
-    runtime = redact_text(_tail(ROOT / "data" / "webui_runtime_log.txt", log_lines), adb)
-    http = redact_text(_tail(ROOT / "data" / "webui_http_log.txt", log_lines), adb)
+    runtime = _scrub_text(_tail(ROOT / "data" / "webui_runtime_log.txt", log_lines), adb)
+    http = _scrub_text(_tail(ROOT / "data" / "webui_http_log.txt", log_lines), adb)
 
     flows: dict = {"files": [], "daily_modules": []}
     try:

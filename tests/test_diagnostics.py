@@ -87,20 +87,26 @@ class LogRedactionTests(unittest.TestCase):
 
     def test_append_and_tee_are_redacted(self):
         from app import log_service
-        log_service.append(r"路径 C:\Users\alice\FAA 账号 123****45 adb "
-                           r"D:\Program Files\Netease\MuMu\nx_main\adb.exe" + "\n")
-        text = "".join(log_service.snapshot())
-        self.assertNotIn("alice", text)
-        self.assertNotIn("123****45", text)
-        self.assertNotIn("Netease", text)
+        with tempfile.TemporaryDirectory() as d:
+            old = log_service.LOG_FILE
+            log_service.LOG_FILE = Path(d) / "runtime.txt"
+            try:
+                log_service.append(r"路径 C:\Users\alice\FAA 账号 123****45 adb "
+                                   r"D:\Program Files\Netease\MuMu\nx_main\adb.exe" + "\n")
+                text = "".join(log_service.snapshot())
+                self.assertNotIn("alice", text)
+                self.assertNotIn("123****45", text)
+                self.assertNotIn("Netease", text)
 
-        import io
-        buf = io.StringIO()
-        tee = log_service.TeeOut(io.StringIO(), buf)
-        tee.write(r"E:\Users\bob\app 账号 123****45" + "\n")
-        text2 = "".join(log_service.snapshot())
-        self.assertNotIn("bob", text2)
-        self.assertNotIn("123****45", text2)
+                import io
+                buf = io.StringIO()
+                tee = log_service.TeeOut(io.StringIO(), buf)
+                tee.write(r"E:\Users\bob\app 账号 123****45" + "\n")
+                text2 = "".join(log_service.snapshot())
+                self.assertNotIn("bob", text2)
+                self.assertNotIn("123****45", text2)
+            finally:
+                log_service.LOG_FILE = old
 
 
 class DiagBundleTests(unittest.TestCase):
@@ -121,6 +127,11 @@ class DiagBundleTests(unittest.TestCase):
                 text = z.read("logs/runtime_tail.txt").decode("utf-8", "replace")
                 import re
                 self.assertIsNone(re.search(r"\d{2,4}\*{3,5}\d{1,3}", text), "日志仍含账号掩码")
+                # W5-003: env.json 不应带程序根目录/用户名（诊断包会公开上传）
+                env_text = z.read("env.json").decode("utf-8")
+                self.assertNotIn(str(ROOT), env_text)
+                self.assertIsNone(re.search(r"[A-Za-z]:\\\\Users\\\\", env_text),
+                                  "env.json 仍含用户目录")
 
 
 if __name__ == "__main__":

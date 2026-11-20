@@ -131,6 +131,8 @@ class _CollectMixin:
             self.swipe_rel(*swipe, duration_ms=dur)
             time.sleep(settle)
         print(f"[采集] {label}: 达到 max_rounds={max_rounds} 上限仍未稳定, 如实登记")
+        report_failure(self._module,
+                       f"dump_text {label}: 达到 max_rounds={max_rounds} 上限, 未确认列表到底")
 
     def _write_collect(self, save, label, round_no, rows, blocks):
         """采集留档: 追加 data/collect/<save>.jsonl(ts/label/round/rows/blocks 全量)。
@@ -174,6 +176,8 @@ class _CollectMixin:
         save = step.get("save")
         use_pair = bool(step.get("row_pair"))
         claim_kws = step.get("claim_keywords", ["领取"])
+        # 2026-11-20: 「已领取」也含「领取」子串, 默认排除, 防全已领日误点+假失败。
+        claim_exclude = step.get("claim_exclude", ["已领取"])
         close_kws = step.get("close_keywords", ["点击任意处关闭", "恭喜获得"])
         tab_region = step.get("tab_region_rel")
         tab_vars = step.get("tab_variants") or []
@@ -212,7 +216,9 @@ class _CollectMixin:
                     self._check_stop()
                     img = self.screenshot()
                     blocks, _s, _u = self._ocr_candidates(img, region_rel)
-                    claims = [b for b in blocks if any(k in b.get("text", "") for k in claim_kws)]
+                    claims = [b for b in blocks
+                              if any(k in b.get("text", "") for k in claim_kws)
+                              and not any(x in b.get("text", "") for x in claim_exclude)]
                     if not claims:
                         break
                     c = max(claims, key=lambda b: float(b.get("score", 1.0)))
@@ -264,6 +270,8 @@ class _CollectMixin:
             self.swipe_rel(*swipe, duration_ms=dur)
             time.sleep(settle)
         print(f"[领取] {label}: 达到 max_rounds={max_rounds} 上限, 如实登记")
+        report_failure(self._module,
+                       f"claim_scroll {label}: 达到 max_rounds={max_rounds} 上限, 未确认列表到底")
 
     def _if_collected(self, step: dict, indent: int) -> None:
         """条件分支(2026-10-12 v2): 查询最近一次采集(label)的**跨屏累计**行分组结果, 按 desc 关键字找行,

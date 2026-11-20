@@ -91,6 +91,11 @@ foreach ($doc in @("LICENSE", "THIRD_PARTY_NOTICES.md", "ASSETS.md", "README.md"
     $src = Join-Path $root $doc
     if (Test-Path $src) { Copy-Item $src -Destination $stage }
 }
+# 1.0 合规: THIRD_PARTY_NOTICES 要求第三方许可文本随包分发（LGPL/Apache/MIT/BSD）
+$licenses = Join-Path $root "licenses"
+if (Test-Path $licenses) {
+    Copy-Item $licenses (Join-Path $stage "licenses") -Recurse
+}
 
 $launcher = Join-Path $stage "start_faa.bat"
 $lines = @(

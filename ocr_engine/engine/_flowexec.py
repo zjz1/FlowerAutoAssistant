@@ -22,7 +22,7 @@ class _FlowExecMixin:
             raise StopRequested("收到停止请求, 中断流程")
 
     def wait_text(self, keywords, timeout=30, interval=1.0, need_refine: bool = True,
-                  min_score: float = 0.5):
+                  min_score: float = 0.5, region_rel=None):
         """轮询等待某文字出现, 返回 Point; 超时返回 None。
 
         超时语义(2026-10-07 用户决策「等待时间不计 OCR」): timeout 只累计**纯等待**
@@ -32,6 +32,7 @@ class _FlowExecMixin:
         wait_text / wait_text_gone / wait_scene 三处循环骨架同步此语义。
         O2(2026-10-22): `need_refine=False` 供启动页状态守卫等纯判断调用跳过拆块。
         2026-10-23: `min_score` 步骤参数接通(此前 JSON 里写 min_score 会被静默忽略, 同 click_text 旧坑)。
+        2026-11-20: `region_rel` 接通(此前 flow_plant 阶段0 的区域等待被静默退化为全屏 OCR)。
         """
         kws = keywords if isinstance(keywords, list) else [keywords]
         waited, probes = 0.0, 0
@@ -39,10 +40,11 @@ class _FlowExecMixin:
             self._check_stop()
             img = self.screenshot()
             probes += 1
-            pt = self.locate(kws, img=img, min_score=min_score, need_refine=need_refine)
+            pt = self.locate(kws, img=img, min_score=min_score, need_refine=need_refine,
+                             region_rel=region_rel)
             if pt is not None:
                 # 批B: 登记守卫, 供紧邻下一步 click_text 复用该命中点位(免二次截图+全图 OCR)。
-                self._remember_guard(kws, pt, False, None, 0.5)
+                self._remember_guard(kws, pt, False, region_rel, min_score)
                 print(f"[等待成功] {kws} @ {pt.x},{pt.y} (第{probes}次探测)")
                 return pt
             time.sleep(interval)
@@ -320,8 +322,10 @@ class _FlowExecMixin:
         # 残留值只会影响「步骤结束后、非步骤内」的调用(pollin 内部函数在 friend_pollin 步骤内, 正确归属)。
         self._ocr_src = s_type
         kws = step.get("text", step.get("keywords"))
-        # 步骤可声明当前界面场景(如 "scene": "家园主界面"), 之后的点击默认记入该场景
-        if step.get("scene"):
+        # 步骤可声明当前界面场景(如 "scene": "家园主界面"), 之后的点击默认记入该场景。
+        # 2026-11-20: 条件/等待类步骤的 scene 是「预期/判据」而非「已进入」—— 统一前置写入
+        # 会在 MISS/超时时污染 _scene; 改由各 handler 命中后自行登记。
+        if step.get("scene") and s_type not in ("if_text", "if_scene", "wait_scene"):
             self._scene = step["scene"]
         if step.get("category") and (
                 s_type in ("click_text", "click_rel", "click_account_tail")):

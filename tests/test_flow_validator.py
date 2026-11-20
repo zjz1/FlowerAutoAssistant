@@ -87,5 +87,57 @@ class FlowStructTests(unittest.TestCase):
         self.assertTrue(_run({"common/scenes.json": {"scenes": []}}))
 
 
+class _StepHarness:
+    """只实现 handler 依赖的最小接口, 用于验证步骤参数是否真正透传。"""
+
+    def __init__(self, hit=True):
+        self.hit = hit
+        self.calls = []
+        self._scene = "初始"
+        self.ran = []
+
+    def wait_text(self, kws, **kwargs):
+        self.calls.append(("wait_text", kwargs))
+
+    def locate(self, kws, **kwargs):
+        self.calls.append(("locate", kwargs))
+        return object() if self.hit else None
+
+    def _remember_guard(self, *a, **k):
+        pass
+
+    def run_steps(self, steps, indent=1):
+        self.ran.append(steps)
+
+    def judge_scene(self, scene, min_score=0.4):
+        return self.hit
+
+
+class StepParamPassingTests(unittest.TestCase):
+    """2026-11-20 审阅 W1-003/004/006: wait_text 区域 / if_text exact / scene 命中才登记。"""
+
+    def test_wait_text_passes_region_rel(self):
+        from ocr_engine.engine._steps import _StepHandlersMixin
+        h = _StepHarness()
+        _StepHandlersMixin._step_wait_text(h, {"region_rel": [0.1, 0.2, 0.3, 0.4],
+                                               "timeout": 1}, ["家园"], "", 0)
+        self.assertEqual(h.calls[0][1]["region_rel"], [0.1, 0.2, 0.3, 0.4])
+
+    def test_if_text_passes_exact_and_sets_scene_on_hit(self):
+        from ocr_engine.engine._steps import _StepHandlersMixin
+        h = _StepHarness(hit=True)
+        _StepHandlersMixin._step_if_text(h, {"text": ["服装"], "exact": True,
+                                             "scene": "服装界面"}, ["服装"], "", 0)
+        self.assertTrue(h.calls[0][1]["exact"])
+        self.assertEqual(h._scene, "服装界面")
+
+    def test_if_text_miss_keeps_scene(self):
+        from ocr_engine.engine._steps import _StepHandlersMixin
+        h = _StepHarness(hit=False)
+        _StepHandlersMixin._step_if_text(h, {"text": ["服装"], "scene": "服装界面"},
+                                          ["服装"], "", 0)
+        self.assertEqual(h._scene, "初始")
+
+
 if __name__ == "__main__":
     unittest.main()

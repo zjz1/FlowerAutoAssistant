@@ -288,7 +288,9 @@ public partial class HomeViewModel : ObservableObject
             m.IsRunningModule = runningId is not null && m.Id == runningId;
         }
         OnPropertyChanged(nameof(LockBannerText));
-        // B5: 全选/清空/反选三命令随运行态灰显/恢复(CanExecute 守卫见 AnyModuleRunning)
+        OnPropertyChanged(nameof(AnyModuleRunning));
+        OnPropertyChanged(nameof(NotRunning));
+        // B5: 全选/清空/反选三命令随运行态灰显/恢复(CanExecute 守卫见 NotRunning)
         SelectAllCommand.NotifyCanExecuteChanged();
         ClearAllCommand.NotifyCanExecuteChanged();
         InvertSelectionCommand.NotifyCanExecuteChanged();
@@ -302,7 +304,10 @@ public partial class HomeViewModel : ObservableObject
     /// Modules.Any(IsRunningModule), 防 current_module 为列表外 id 时漏判)。</summary>
     public bool AnyModuleRunning => _main.Session.RunningModule is not null;
 
-    [RelayCommand(CanExecute = nameof(AnyModuleRunning))]
+    /// <summary>CanExecute 用正向条件：空闲才允许批量改勾选（RelayCommand 不能直接取反）。</summary>
+    public bool NotRunning => !AnyModuleRunning;
+
+    [RelayCommand(CanExecute = nameof(NotRunning))]
     private void SelectAll()
     {
         foreach (var m in Modules)
@@ -311,7 +316,7 @@ public partial class HomeViewModel : ObservableObject
         }
     }
 
-    [RelayCommand(CanExecute = nameof(AnyModuleRunning))]
+    [RelayCommand(CanExecute = nameof(NotRunning))]
     private void ClearAll()
     {
         foreach (var m in Modules)
@@ -320,7 +325,7 @@ public partial class HomeViewModel : ObservableObject
         }
     }
 
-    [RelayCommand(CanExecute = nameof(AnyModuleRunning))]
+    [RelayCommand(CanExecute = nameof(NotRunning))]
     private void InvertSelection()
     {
         foreach (var m in Modules)

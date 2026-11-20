@@ -38,8 +38,9 @@ class _OrchestrateMixin:
         _metrics_interrupted = False   # 度量基座: 异常退出标记(except 已处理的异常不进 finally 的 exc_info)
         print(f"\n[{_ts()}] ===== 流程: {name} (scene={self._scene}) =====")
         try:
-            for step in flow.get("steps", []):
-                self.run_step(step)
+            # 2026-11-20: 与模块路径统一走 run_steps —— 支持嵌套 list 与 BranchAborted 的
+            # 「required 首步失败只中止当前层」语义, 不再逐条 run_step 绕过。
+            self.run_steps(flow.get("steps", []))
         except StopRequested:
             print(f"[{_ts()}] ===== 流程已由停止请求中断: {name} =====")
             _metrics_interrupted = True

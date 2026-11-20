@@ -188,7 +188,7 @@ start_webui_app.bat
 | | 壳 1 · `webui_app.py`（Python） | 壳 2 · `native/FAA.WpfGui`（C#/WPF） |
 |---|---|---|
 | 定位 | **开发/备用 WebView 壳，不进入发行包** | **发行版主推原生窗口** |
-| 技术栈 | WebView2 / pywebview，Python 单文件（~405 行） | WPF + CommunityToolkit.Mvvm（48 文件，cs+xaml 7712 行） |
+| 技术栈 | WebView2 / pywebview，Python 单文件（~405 行） | WPF + CommunityToolkit.Mvvm（50 文件，cs+xaml 8369 行，不含 Tests/bin/obj） |
 | 启动 | `python webui_app.py` / `start_webui_app.bat`（需 `requirements-dev.txt`） | `start_faa_native.bat` / `native/dist/FAA.WpfGui.exe` |
 | 状态 | 已入仓可运行；dev-only | 发行版主推；自包含发布件 |
 

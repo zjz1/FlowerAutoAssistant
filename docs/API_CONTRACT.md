@@ -102,9 +102,19 @@
   "use_cache_pos": false,
   "ocr_threads": 2,
   "ocr_execution_provider": "cpu",
-  "use_angle_cls": true
+  "use_angle_cls": true,
+  "plant_rare_confirm": true,
+  "plant_harvest_allowed": ["白色桃花", "粉色桃花"],
+  "plant_seed_name": "白色桃花",
+  "plant_seed_rare": false
 }
 ```
+
+`plant_harvest_allowed` 仅由 WPF 种植模块面板编辑；无 `meta`，不进 WebUI ⚙ 面板。
+
+### GET `/api/plant_presets`
+
+返回 `data/plant_presets.json` 的种子库（花名 → 颜色 → 种子全称 / 稀有标记 / 肥力消耗）。
 
 ### POST `/api/set_config`
 
@@ -115,6 +125,7 @@
 ```
 
 响应：配置回显（`_config_echo`）；非法 enum/值返回 `400`，已应用键保持已应用。
+bool 键仅接受 JSON 布尔值 `true/false`（字符串 `"false"` 也返回 `400`）。
 
 > Stage 2（2026-11-17）：配置键的唯一事实源是 `config/schema.py`。
 > `app/config_service.py` 只保留校验/日志/回显逻辑；示例配置、flow `if_config`、
@@ -144,7 +155,7 @@
 
 ### POST `/api/run`
 
-请求：`{"key": "<flow 文件名或流程名>"}`。
+请求：`{"flow": "<flow 文件名或流程名>", "mode": "use" | "test"}`。
 响应：`{"ok": true, "started": "<name>"}`；未找到 `400`；已有运行 `409`。
 
 ### POST `/api/run_daily`
@@ -158,6 +169,17 @@
 `finish_action` 仅接受 `none` / `close_client`，其它值 `400`。
 响应：`{"ok": true, "started": "<name>", "count": N}`；
 未勾选 `400`；`daily.json` 缺失/解析失败 `500`；已有运行 `409`。
+
+### POST `/api/preflight`
+
+请求：`{"modules": ["startup", "plant"]}`（未知模块 `400`）。
+
+```json
+{"enabled": ["开始启动", "..."], "disabled": ["..."],
+ "risks": ["..."], "text": "本次运行时开启了以下功能：\n..."}
+```
+
+`text` 由后端拼好，WPF 统一确认框只负责展示；取消则不启动。
 
 ### POST `/api/stop`
 

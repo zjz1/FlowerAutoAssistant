@@ -145,25 +145,27 @@ def _close_reward(eng: EnginePort) -> bool:
                               REWARD_REGION, tag="乐园", confirm=True)
 
 
-def _claim_online(eng: EnginePort) -> None:
+def _claim_online(eng: EnginePort) -> bool:
+    """在线领取。返回 False=确认失败（页签不可达/点击后无奖励弹窗）；无可领=True。"""
     print("\n[乐园] --- 在线领取 ---")
     if not _click_tab(eng, "在线领取"):
-        return
+        return False
     blocks = [b for b in eng.ocr_blocks(None)
               if "一键领取" in str(b.get("text", ""))]
     if not blocks:
         print("    [乐园] 无「一键领取」按钮 = 已领完/无奖励, 跳过")
-        return
+        return True
     btn = blocks[0]
     if not _button_enabled(eng, btn):
         print("    [乐园] 一键领取置灰, 跳过")
-        return
+        return True
     eng.click_abs(int(btn["center"][0]), int(btn["center"][1]))
     time.sleep(1.5)
     if _reward_wait(eng, 8.0) is not None:
         _close_reward(eng)
-    else:
-        print("    [乐园] 一键领取后未见奖励弹窗(继续)")
+        return True
+    print("    [乐园] 一键领取后未见奖励弹窗(登记失败)")
+    return False
 
 
 # ---------------- 每日任务 ----------------
@@ -192,47 +194,55 @@ def _read_task_row(eng: EnginePort, name: str):
     return name_b, prog, btn
 
 
-def _handle_exchange(eng: EnginePort, name: str) -> None:
+def _handle_exchange(eng: EnginePort, name: str) -> bool:
+    """兑换任务。返回 False=点击后无奖励弹窗；任务行缺失/置灰/按钮缺失按跳过处理。"""
     print(f"\n[乐园] --- 兑换: {name} ---")
     row = _read_task_row(eng, name)
     if row is None:
         print(f"    [乐园] 未找到任务行「{name}」, 跳过")
-        return
+        return True
     _, progress, btn = row
     print(f"    [乐园] 进度={progress} 按钮={btn.get('text') if btn else None}")
     if btn is None:
         print("    [乐园] 未找到「兑换」按钮, 跳过")
-        return
+        return True
     if not _button_enabled(eng, btn):
         print("    [乐园] 兑换置灰(花朵不足), 跳过")
-        return
+        return True
     eng.click_abs(int(btn["center"][0]), int(btn["center"][1]))
     time.sleep(1.5)
     if _reward_wait(eng, 8.0) is not None:
         _close_reward(eng)
+        return True
+    print(f"    [乐园] 兑换「{name}」后未见奖励弹窗(登记失败)")
+    return False
 
 
-def _handle_water(eng: EnginePort) -> None:
+def _handle_water(eng: EnginePort) -> bool:
+    """浇水任务。返回 False=点击后无奖励弹窗；未达 5/5/按钮缺失/置灰按跳过处理。"""
     print("\n[乐园] --- 给他人浇水5次 ---")
     row = _read_task_row(eng, "给他人浇水5次")
     if row is None:
         print("    [乐园] 未找到浇水任务行, 跳过")
-        return
+        return True
     _, progress, btn = row
     print(f"    [乐园] 进度={progress}")
     if progress != (5, 5):
         print("    [乐园] 未达 5/5, 不领取")
-        return
+        return True
     if btn is None:
         print("    [乐园] 未找到「领取」按钮, 跳过")
-        return
+        return True
     if not _button_enabled(eng, btn):
         print("    [乐园] 领取置灰, 跳过")
-        return
+        return True
     eng.click_abs(int(btn["center"][0]), int(btn["center"][1]))
     time.sleep(1.5)
     if _reward_wait(eng, 8.0) is not None:
         _close_reward(eng)
+        return True
+    print("    [乐园] 浇水任务领取后未见奖励弹窗(登记失败)")
+    return False
 
 
 def _return_to_daily(eng: EnginePort) -> bool:
@@ -249,17 +259,18 @@ def _return_to_daily(eng: EnginePort) -> bool:
     return _open_fairyland(eng) and _click_tab(eng, "每日任务")
 
 
-def _handle_bean(eng: EnginePort) -> None:
+def _handle_bean(eng: EnginePort) -> bool:
+    """仙豆兑换花种任务。返回 False=任务进行中确认失败；行缺失/不可读按跳过处理。"""
     print("\n[乐园] --- 园艺店仙豆兑换花种3次 ---")
     row = _read_task_row(eng, "园艺店仙豆兑换花种3次")
     if row is None:
         print("    [乐园] 未找到仙豆任务行, 跳过")
-        return
+        return True
     _, progress, btn = row
     print(f"    [乐园] 进度={progress}")
     if progress is None:
         print("    [乐园] 进度未读到, 不领取")
-        return
+        return True
     n, total = progress
     if n < total:
         need = total - n
@@ -267,8 +278,8 @@ def _handle_bean(eng: EnginePort) -> None:
         # 任务行内「兑换花种」快捷按钮（x 约 0.573, y 与任务名同排）
         if not eng.click_text(["兑换花种"], region_rel=[0.50, 0.38, 0.65, 0.49],
                               min_score=0.3, no_fallback=True):
-            print("    [乐园] 未找到「兑换花种」, 跳过")
-            return
+            print("    [乐园] 未找到「兑换花种」(登记失败)")
+            return False
         time.sleep(2.0)
         # 等购买种子界面
         t0 = time.time()
@@ -282,13 +293,13 @@ def _handle_bean(eng: EnginePort) -> None:
             if not buy_seed_in_shop(eng, "白色铃兰种子", 1):
                 print("    [乐园] 购买种子失败, 关闭购买界面")
                 eng.close_dialog()
-                return
+                return False
         # 关闭购买种子界面 -> 花仙乐园
         eng.close_dialog()
         time.sleep(1.5)
         if not _return_to_daily(eng):
-            print("    [乐园] 关闭购买界面后未能回到每日任务")
-            return
+            print("    [乐园] 关闭购买界面后未能回到每日任务(登记失败)")
+            return False
         # 重新读任务; 3/3 才领取
         t0 = time.time()
         while time.time() - t0 < 6:
@@ -298,20 +309,23 @@ def _handle_bean(eng: EnginePort) -> None:
             time.sleep(1.0)
         if row is None or row[1] != (total, total):
             print(f"    [乐园] 购买后进度未到 {total}/{total}: "
-                  f"{row[1] if row else None}, 不领取")
-            return
+                  f"{row[1] if row else None}, 登记失败")
+            return False
         _, progress, btn = row
         print(f"    [乐园] 购买后进度={progress}")
     if btn is None:
         print("    [乐园] 未找到「领取」按钮, 跳过")
-        return
+        return True
     if not _button_enabled(eng, btn):
         print("    [乐园] 领取置灰, 跳过")
-        return
+        return True
     eng.click_abs(int(btn["center"][0]), int(btn["center"][1]))
     time.sleep(1.5)
     if _reward_wait(eng, 8.0) is not None:
         _close_reward(eng)
+        return True
+    print("    [乐园] 仙豆任务领取后未见奖励弹窗(登记失败)")
+    return False
 
 
 def _close_fairyland(eng: EnginePort) -> bool:
@@ -335,10 +349,10 @@ def _close_fairyland(eng: EnginePort) -> bool:
         break
     joined = " ".join(str(b.get("text", "")) for b in eng.ocr_blocks(None))
     if "累计在线时间" in joined or "每日任务" in joined or "花仙乐园" in joined:
-        print("    [乐园] 面板关闭未确认, 尝试模板兜底")
-        eng.click_template("close_corner_pink.png",
-                           region_rel=[0.94, 0.0, 1.0, 0.09],
-                           threshold=0.75, no_fallback=True)
+        print("    [乐园] 面板关闭未确认, 尝试注册表角区关闭(粉色一致性校验)")
+        # 复用 close_buttons.json 的 corner 条目(0.85 + verify_pink), 不再用裸模板 0.75:
+        # 纯白「收起菜单」箭头实测 0.865 会骗过 0.75/0.85, 只有粉色否决能拦住。
+        eng.close_dialog(only_types=["corner"])
         time.sleep(1.2)
     return _ensure_garden(eng)
 
@@ -353,11 +367,15 @@ def run_fairyland_claim(eng: EnginePort) -> bool:
         _save_shot(eng, "fairyland_open_failed")
         return False
 
-    _claim_online(eng)
+    results = [_claim_online(eng)]
     _save_shot(eng, "fairyland_online")
 
     if not _click_tab(eng, "每日任务"):
-        return False
+        results.append(False)
+        ok = _close_fairyland(eng) and all(results)
+        _save_shot(eng, "fairyland_end")
+        print(f"[乐园] ===== 完成: 任务={results} 关闭回园={ok} =====")
+        return ok
     # 等待任务列表
     t0 = time.time()
     while time.time() - t0 < 8:
@@ -368,11 +386,12 @@ def run_fairyland_claim(eng: EnginePort) -> bool:
     _save_shot(eng, "fairyland_daily")
 
     for name in ("白色雪绒花", "蓝色月季花"):
-        _handle_exchange(eng, name)
-    _handle_water(eng)
-    _handle_bean(eng)
+        results.append(_handle_exchange(eng, name))
+    results.append(_handle_water(eng))
+    results.append(_handle_bean(eng))
 
-    ok = _close_fairyland(eng)
+    close_ok = _close_fairyland(eng)
     _save_shot(eng, "fairyland_end")
-    print(f"[乐园] ===== 完成: 关闭回园={ok} =====")
+    ok = close_ok and all(results)
+    print(f"[乐园] ===== 完成: 任务={results} 关闭回园={close_ok} =====")
     return ok

@@ -77,6 +77,26 @@ class RunServiceTests(unittest.TestCase):
         self.assertEqual(captured["thread"], "faa-daily")
         self.assertIn("勾选 2 模块", captured["line"])
 
+    def test_spawn_connect_failure_skips_runner(self):
+        """W2-001: connect() 返回 False 时不得启动 runner, running 必须回滚。"""
+        class _OfflineEng:
+            def connect(self):
+                return False
+
+        events = []
+        run_service.set_running(True)
+        with patch.object(run_service, "get_engine", lambda: _OfflineEng()), \
+             patch.object(run_service, "is_connected", lambda e: False), \
+             patch.object(run_service, "log_append", lambda s: events.append(s)):
+            run_service._spawn("离线", lambda e: events.append("runner"), "[run] 开始")
+            for _ in range(50):
+                if not run_service.running():
+                    break
+                import time
+                time.sleep(0.01)
+        self.assertNotIn("runner", events)
+        self.assertFalse(run_service.running())
+
 
 if __name__ == "__main__":
     unittest.main()

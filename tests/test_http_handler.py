@@ -116,20 +116,58 @@ class HttpHealthContractTests(unittest.TestCase):
         self.assertIn("未知模块", body.get("error", ""))
 
     def test_harvest_allowed_config_validation(self):
-        status, body = self._post_status("/api/set_config",
-                                         {"plant_harvest_allowed": ["绿色桃花"]})
+        # W4-003: 不写入真实 data/config.json / 真实运行日志 —— 引擎先按真实配置装载,
+        # 然后把落盘路径临时重定向到 tempdir。
+        import ocr_engine.engine._config as engine_config
+        from app import log_service
+        engine_service.get_engine()
+        old_cfg = engine_config.CONFIG_PATH
+        old_log = log_service.LOG_FILE
+        with tempfile.TemporaryDirectory() as td:
+            engine_config.CONFIG_PATH = Path(td) / "config.json"
+            log_service.LOG_FILE = Path(td) / "runtime.txt"
+            try:
+                status, body = self._post_status("/api/set_config",
+                                                 {"plant_harvest_allowed": ["绿色桃花"]})
+                self.assertEqual(status, 400)
+                self.assertIn("稀有种子", body.get("error", ""))
+                status, body = self._post_status("/api/set_config",
+                                                 {"plant_harvest_allowed": ["蓝色桃花"]})
+                self.assertEqual(status, 400)
+                status, body = self._post_status("/api/set_config",
+                                                 {"plant_harvest_allowed": ["白色桃花"]})
+                self.assertEqual(status, 200)
+                self.assertTrue(body.get("ok"))
+                # 恢复默认，避免影响同进程其它用例
+                self._post("/api/set_config",
+                           {"plant_harvest_allowed": ["白色桃花", "粉色桃花"]})
+            finally:
+                engine_config.CONFIG_PATH = old_cfg
+                log_service.LOG_FILE = old_log
+
+    def test_bool_config_rejects_string(self):
+        status, body = self._post_status("/api/set_config", {"claim_online": "false"})
         self.assertEqual(status, 400)
-        self.assertIn("稀有种子", body.get("error", ""))
-        status, body = self._post_status("/api/set_config",
-                                         {"plant_harvest_allowed": ["蓝色桃花"]})
+        self.assertIn("布尔", body.get("error", ""))
+
+    def test_invalid_log_cursor_returns_400(self):
+        req = urllib.request.Request(self.base + "/api/log?after=abc")
+        try:
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                status, body = resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            status, body = e.code, json.loads(e.read().decode("utf-8"))
         self.assertEqual(status, 400)
-        status, body = self._post_status("/api/set_config",
-                                         {"plant_harvest_allowed": ["白色桃花"]})
-        self.assertEqual(status, 200)
-        self.assertTrue(body.get("ok"))
-        # 恢复默认，避免影响同进程其它用例
-        self._post("/api/set_config",
-                   {"plant_harvest_allowed": ["白色桃花", "粉色桃花"]})
+        self.assertIn("after", body.get("error", ""))
+
+    def test_non_loopback_host_rejected(self):
+        req = urllib.request.Request(self.base + "/api/health", headers={"Host": "evil.example"})
+        try:
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                status = resp.status
+        except urllib.error.HTTPError as e:
+            status = e.code
+        self.assertEqual(status, 403)
 
     def test_health_contract_without_creating_engine(self):
         before = engine_service.peek_engine()

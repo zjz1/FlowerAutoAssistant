@@ -66,7 +66,13 @@ def _open_shop(eng: EnginePort) -> bool:
         print("    [买种] 当前家园无「园艺店」入口, 尝试离开后重进自己家园")
         if eng.click_text(["离开"], region_rel=[0.78, 0.85, 1.0, 1.0],
                           min_score=0.4, no_fallback=True):
-            time.sleep(3.0)
+            # 2026-11-20: 原固定 sleep 3s 在慢加载时会让「家园」MISS; 改为轮询到位。
+            t0 = time.time()
+            while time.time() - t0 < 8:
+                if eng.locate(["家园"], region_rel=[0.78, 0.85, 1.0, 1.0],
+                              min_score=0.4, need_refine=False, log_miss=False) is not None:
+                    break
+                time.sleep(1.0)
             if eng.click_text(["家园"], region_rel=[0.78, 0.85, 1.0, 1.0],
                               min_score=0.4, no_fallback=True):
                 _wait_shop_entry(eng, 8.0)

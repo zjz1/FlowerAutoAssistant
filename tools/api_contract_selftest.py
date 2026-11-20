@@ -13,7 +13,7 @@
     python tools/api_contract_selftest.py --inject-failures   # 预置两条失败事件(W02 SSE 浏览器实测用)
 
 断言面(清单 W04 验收线):
-  - 26 端点(GET 12 + POST 14; /api/shutdown **排除** —— 自起服务模式绝不真关服务)全断言;
+  - 28 端点(GET 13 + POST 15; /api/shutdown **排除** —— 自起服务模式绝不真关服务)全断言;
   - GET /api/stream SSE 首帧(status 立即首推 + log 会话回放);
   - finish_action 400 负例(set_config 与 run_daily 两入口, 白名单 none/close_client);
   - 两笔实发漂移钉子(fail_cache_info=200 / run_daily finish_action 键);
@@ -54,12 +54,12 @@ PASS = 0
 FAIL = 0
 PORT = 0
 
-# ---- 端点清单钉子: 26 = GET 12 + POST 14(/api/shutdown 排除, 防自关被测服务) ----
-GET_APIS = ["status", "flows", "kb", "daily", "screen", "ocr", "failures",
+# ---- 端点清单钉子: 28 = GET 13 + POST 15(/api/shutdown 排除, 防自关被测服务) ----
+GET_APIS = ["status", "flows", "kb", "daily", "plant_presets", "screen", "ocr", "failures",
             "log", "log_download", "stream", "fail_cache_info", "tplt_init"]
 POST_APIS = ["connect", "set_mode", "click", "run", "stop", "set_config", "run_daily",
-             "tplt_load", "tplt_submit", "tplt_contour", "failures_clear", "log_clear",
-             "fail_cache_clean", "fail_cache_open"]
+             "preflight", "tplt_load", "tplt_submit", "tplt_contour", "failures_clear",
+             "log_clear", "fail_cache_clean", "fail_cache_open"]
 EXCLUDED = ["shutdown"]
 EXPECTED_ENDPOINTS = {f"/api/{a}" for a in GET_APIS + POST_APIS}
 _EXERCISED: set[str] = set()
@@ -69,7 +69,7 @@ DAILY_IDS = ["startup", "plant", "social", "energy", "claim", "daily", "idle"]
 MODULE_SETTINGS_KEYS = {
     "startup": ["enable_switch", "target_tail"],
     "social": ["enable_water", "enable_shine", "enable_mine", "enable_rabbit", "enable_pollin"],
-    "claim": ["claim_online", "claim_party", "claim_hb"],
+    "claim": ["claim_online", "claim_party", "claim_hb", "claim_fairyland"],
     "daily": ["enable_like", "enable_hot_sale", "enable_baobao", "enable_baobao_buy"],
 }
 MODULE_SETTINGS_META = {  # key -> (label, desc) —— 中文文案逐字节契约
@@ -83,6 +83,7 @@ MODULE_SETTINGS_META = {  # key -> (label, desc) —— 中文文案逐字节契
     "claim_online": ("功能1 · 在线礼包", "抽奖耗尽次数 + 时间档位领取"),
     "claim_party": ("功能2 · 花灵派对", "进入派对并领取 6 个在线时长礼包"),
     "claim_hb": ("功能3 · 奇妙花宝", "家园→奇妙花宝→奇妙特权，领奇妙礼包每日/每周/每月三档"),
+    "claim_fairyland": ("花仙乐园", "在线骰子 + 每日任务（兑换/浇水/仙豆；购买花种占位）"),
     "enable_like": ("社区点赞", "完成手账「为精美搭配献上点赞吧」任务(每期上限 20 次; 任务已完成则跳过)"),
     "enable_hot_sale": ("浏览热卖", "完成手账「查看最新热卖套装」任务(点行内前往进页浏览即完成, 不碰抽取按钮; 2026-10-27 自社区点赞拆分独立)"),
     "enable_baobao": ("花宝照顾", "完成手账「在花园中照顾小花宝一次」任务(道具手套拖拽, 消耗手套道具)"),
@@ -418,8 +419,8 @@ def run_all(root: Path, config_free: bool):
     check("200 + 7 模块顺序=flows/daily.json", st == 200 and ids == DAILY_IDS, ids)
     smod = {m["id"]: m for m in d["modules"]}
     skeys = {"key", "type", "label", "desc", "value"}
-    check("settings 条目形状 {key,type,label,desc,value}",
-          all(skeys <= set(s) and set(s) == skeys for m in d["modules"] for s in m["settings"]))
+    check("settings 条目形状含 {key,type,label,desc,value}（enum/int 可带 options/min/max）",
+          all(skeys <= set(s) for m in d["modules"] for s in m["settings"]))
     for mid, keys in MODULE_SETTINGS_KEYS.items():
         got = [s["key"] for s in smod[mid]["settings"]]
         check(f"{mid} ⚙ 键序 = {keys}", got == keys, got)
@@ -429,12 +430,27 @@ def run_all(root: Path, config_free: bool):
             want = MODULE_SETTINGS_META.get(s["key"])
             if want and (s["label"], s["desc"]) != want:
                 bad.append((s["key"], s["label"], s["desc"]))
-    check("14 键 label/desc 中文文案逐字节(F06+W03 平移契约)", not bad, bad[:2])
-    check("plant/energy/idle settings=[](无 if_config 模块 ⚙ 显示「暂无独立子功能」)",
-          all(smod[k]["settings"] == [] for k in ("plant", "energy", "idle")))
+    check("15 键 label/desc 中文文案逐字节(F06+W03 平移契约)", not bad, bad[:2])
+    check("plant ⚙ 含种植键(2026-11-20 分组面板)", 
+          {"plant_flower", "plant_seed_mode", "plant_count", "plant_harvest"}
+          <= {s["key"] for s in smod["plant"]["settings"]})
+    check("energy/idle settings=[](无 if_config 模块 ⚙ 显示「暂无独立子功能」)",
+          all(smod[k]["settings"] == [] for k in ("energy", "idle")))
     check("顶层 log_click_pos/use_cache_pos/ocr_threads 回显键在",
           {"log_click_pos", "use_cache_pos", "ocr_threads"} <= set(d))
     check("ocr_threads 回显为 int 缺省 2 口径", isinstance(d.get("ocr_threads"), int))
+
+    # ---------- GET /api/plant_presets(种植种子库) ----------
+    section("GET /api/plant_presets")
+    st, _, d = req("GET", "/api/plant_presets")
+    check("200 + flowers[] 且含稀有标记", st == 200 and isinstance(d.get("flowers"), list)
+          and any(c.get("rare") for f in d["flowers"] for c in f.get("colors", [])), st)
+
+    # ---------- POST /api/preflight(运行前统一确认) ----------
+    section("POST /api/preflight")
+    st, _, d = req("POST", "/api/preflight", {"modules": ["startup"]})
+    check("200 + {enabled,disabled,risks,text}",
+          st == 200 and {"enabled", "disabled", "risks", "text"} <= set(d), st)
 
     # ---------- GET /api/screen 与 /api/ocr(离线 503) ----------
     section("GET /api/screen 与 /api/ocr(未连接 503)")
@@ -457,11 +473,12 @@ def run_all(root: Path, config_free: bool):
     check("200 + {next,lines} 且启动日志 ≥1 条", st == 200 and d.get("lines")
           and d["lines"][0].startswith("[webui] 服务启动"), d.get("next"))
     _, _, d9 = req("GET", "/api/log?after=99999")
-    check("after>=len → {next:after, lines:[]}", d9 == {"next": 99999, "lines": []}, d9)
+    check("after>=len → {next:end, lines:[]}(游标钳回当前末尾)",
+          d9 == {"next": d["next"], "lines": []}, d9)
     _, _, dn = req("GET", "/api/log?after=-5")
     check("after 负数 → max(0,·) 钳制(BUG-10 防御)", dn.get("next", -1) >= 0, dn)
     st_bad, _, dbad = req("GET", "/api/log?after=abc")
-    check("after 非法 → 500 {error}(do_GET 兜底信封)", st_bad == 500 and "error" in dbad, (st_bad, dbad))
+    check("after 非法 → 400 {error}(2026-11-20 由 500 改 400)", st_bad == 400 and "error" in dbad, (st_bad, dbad))
 
     # ---------- GET /api/log_download ----------
     section("GET /api/log_download")
@@ -582,7 +599,7 @@ def run_all(root: Path, config_free: bool):
     if config_free:
         _, _, dlog = req("GET", "/api/log?after=0")
         cfg_lines = [ln for ln in dlog["lines"] if ln.startswith("[config] ")]
-        want = ["[config] 切换账号功能 启用, 目标尾部=61",
+        want = ["[config] 切换账号功能 启用, 目标尾部=***",
                 "[config] 领取奖励功能1在线礼包=关, 功能2花灵派对=关, 功能3奇妙花宝=关, "
                 "闪耀委托挑战=关, 摇钱树浇水=开, 矿洞探险=关, 守望兔子=关, 好友采粉=开, "
                 "社区点赞=关, 浏览热卖=关, 花宝照顾=关, 花宝补货=开",
@@ -704,9 +721,8 @@ def run_all(root: Path, config_free: bool):
     check("  └ /api/daily use_angle_cls 回显 false", dd.get("use_angle_cls") is False,
           dd.get("use_angle_cls"))
     st, _, d = req("POST", "/api/set_config", {"use_angle_cls": "yes"})
-    check("use_angle_cls='yes'(字符串) → bool('yes')=True 落盘(bool 键既有原语义)",
-          st == 200 and _read_config_json(root).get("use_angle_cls") is True,
-          _read_config_json(root).get("use_angle_cls"))
+    check("use_angle_cls='yes'(字符串) → 400 拒收(bool 键仅接受 JSON 布尔值)",
+          st == 400 and _read_config_json(root).get("use_angle_cls") is False, (st, d))
     st, _, d = req("POST", "/api/set_config", {"use_angle_cls": True})
     check("use_angle_cls=True → 200 落盘还原(默认态, OCR2 批默认 true 终态)",
           st == 200 and d.get("ok") is True

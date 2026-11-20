@@ -232,9 +232,10 @@ class _JudgeMixin:
             return best
         return None
 
-    def parse_count_at(self, region_rel, img=None, tol=120) -> "int | None":
+    def parse_count_at(self, region_rel, img=None, tol=120, min_score: float = 0.0) -> "int | None":
         """OCR 整图, 找形如 '关键字:N' 或纯数字('N') 的数字块, 取中心离 region_rel*屏 最近且距离<=tol 的, 返回 N。
         用于解析『剩余抽奖次数:3』这类带关键字的单值数字。未找到返回 None。
+        min_score: 可选识别分数下限(if_greater 步骤的 min_score 在此生效)。
         """
         img = img if img is not None else self.screenshot()
         if img is None:
@@ -245,6 +246,8 @@ class _JudgeMixin:
         def _scan(blks):
             b_best, b_d = None, float("inf")
             for b in blks:
+                if float(b.get("score", 1.0)) < min_score:
+                    continue
                 m = re.search(r"[:：]?\s*(\d+)\s*$", b.get("text", "").strip())
                 if not m:
                     continue
@@ -274,7 +277,7 @@ class _JudgeMixin:
         if not reg:
             print("[if_greater] 缺少 region_rel")
             return False
-        n = self.parse_count_at(reg, img=img)
+        n = self.parse_count_at(reg, img=img, min_score=float(step.get("min_score", 0.0)))
         if n is None:
             print(f"[if_greater] 区域{reg} 未识别到 '关键字:N' 数字")
             return False

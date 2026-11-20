@@ -45,8 +45,10 @@ def _spawn(name: str, runner, start_line: str, thread_name: str = "faa-run") -> 
     def job():
         eng = get_engine()
         try:
-            if not is_connected(eng):
-                eng.connect()
+            if not is_connected(eng) and not eng.connect():
+                log_append("[run] 连接失败: 未连上模拟器, 取消本次运行")
+                set_running(False)
+                return
         except Exception as e:
             log_append(f"[run] 连接失败: {e}")
             set_running(False)
@@ -57,14 +59,6 @@ def _spawn(name: str, runner, start_line: str, thread_name: str = "faa-run") -> 
             sys.stdout = TeeOut(real_out, LOGS)
             sys.stderr = TeeOut(real_err, LOGS)
         try:
-            eng = get_engine()
-            try:
-                if not is_connected(eng):
-                    eng.connect()
-            except Exception as e:
-                log_append(f"[run] 连接失败: {e}")
-            sys.stdout = TeeOut(real_out, LOGS)
-            sys.stderr = TeeOut(real_err, LOGS)
             log_append(start_line)
             runner(eng)
             log_append(f"[run] ==== {name} 完成 ====")

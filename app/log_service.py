@@ -84,17 +84,21 @@ def get_since(after: int) -> tuple[int, list[str]]:
 
 
 def read_increment(last_chunk: str, cursor: int) -> tuple[int, list[str], str]:
-    """SSE 原子增量：在同一把锁内完成「缓冲替换检测 + 续读 + 末分片指纹更新」。"""
+    """SSE 原子增量：在同一把锁内完成「缓冲替换检测 + 续读 + 末分片指纹更新」。
+
+    cursor 是**全局序号**（含已丢弃的 LOG_BASE），不是 LOGS 列表下标；
+    指纹必须用 LOGS[cursor - 1 - base] 取，否则缓冲满 LOG_MAX_LINES 后
+    每次都会误判「缓冲被替换」并重放全量。
+    """
     with LOG_LOCK:
-        n = len(LOGS)
-        if cursor > n or (cursor > 0 and LOGS[cursor - 1] != last_chunk):
-            cursor = 0
         base = LOG_BASE
-        if cursor < base:
-            cursor = base
+        n = len(LOGS)
         end = base + n
+        if cursor > end or cursor < base or (
+                cursor > base and LOGS[cursor - 1 - base] != last_chunk):
+            cursor = base
         if cursor >= end:
-            return end, [], last_chunk
+            return end, [], (LOGS[-1] if LOGS else last_chunk)
         lines = LOGS[cursor - base:]
         return end, lines, LOGS[-1]
 

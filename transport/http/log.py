@@ -5,7 +5,10 @@ from __future__ import annotations
 from .common import *  # noqa: F401,F403
 class LogRoutes:
     def _log(self):
-        after = max(0, int(self._query("after") or 0))
+        try:
+            after = max(0, int(self._query("after") or 0))
+        except (TypeError, ValueError):
+            return self._send_json({"error": "after 须为整数"}, 400)
         end, lines = log_service.get_since(after)
         return self._send_json({"next": end, "lines": lines})
 

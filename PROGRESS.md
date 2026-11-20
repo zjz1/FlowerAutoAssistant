@@ -5186,3 +5186,14 @@ R5 自述与内容一致、**R6 `files/` 整文件**（diff 仅作 evidence）�
 - **WPF**：种植设置从设置页移回种植模块 ⚙，分组为 选种 / 数量与购买 / 收获保护（花名一级、颜色二级，稀有置灰）；设置页仅保留「稀有种子二次确认」；「开始一轮」统一调用 preflight 并在单弹窗展示，取不到时降级确认；`FaaProxy.SetConfigKeys` 补 `plant_harvest_allowed`（否则保存被静默过滤）。
 - **测试**：新增收获判定（全允许/混入保护/稀有/空集合/名称匹配）、preflight 契约与未知模块 400、允许列表校验用例；Python 全量闸门通过（`plant_harvest_allowed` 无 meta 已在契约测试登记豁免）；WPF 单测 70/70，Release 发布 0 警告 0 错误。
 - **产物**：`native/dist/FAA.WpfGui.exe` 已重新发布（自包含单文件，约 147 MB）。**真机验收待用户指令**。
+
+## 2026-11-20 · 全项目静态审查修复（30 findings，里程碑 108）
+
+- **基线**：审查报告 `debug/review/runs/20261120-194409`（HEAD 6577edd，30 条：高 2 / 中 13 / 低 15）。
+- **高优先级**：SSE 日志游标统一全局序号，缓冲满后不再每 0.8s 重放全量；诊断包 `env.json` 全字段脱敏 + 程序根替换，`[config]` 日志账号尾号改 `***`。
+- **引擎/流程**：`wait_text` 接通 `region_rel`；`if_text` 接通 `exact`；`if_greater` 接通 `min_score`；条件步骤 `scene` 仅命中登记；`run_flow` 改走 `run_steps`；守望兔子开放日改 `[4,5,6]`；`claim_scroll` 默认排除「已领取」，采集/领取达上限登记软失败。
+- **服务/HTTP**：连接失败不再启动 runner；配置落盘加锁 + `os.replace` 原子替换；body 上限 1MB、Host 回环校验、`after` 非法 400；bool 配置仅接受 JSON 布尔值，回显缺键用 schema 默认值。
+- **业务模块**：花仙乐园领取函数返回 bool 并在主入口汇总（失败不再被关园成功掩盖），关闭兜底改用 `close_buttons.json` 角区条目；采粉翻页失败清理模态框；买种回好友家园改轮询等待。
+- **WPF**：全选/清空/反选 CanExecute 修正为空闲可用；切换花名后首色立即保存，界面与实际预设一致。
+- **工具/发布/测试**：发行包补 `licenses/`；日志与 HTTP 测试改用临时目录（不碰真实 config/日志）；`diagnostics/` 纳入语法闸、`app/` 纳入 T2 分级；`api_contract_selftest` 更新为 28 端点并覆盖 preflight/plant_presets/种植面板。
+- **验证**：Python 单测 154 项全绿、`api_contract_selftest` 129/129、`check_project --with-tests` 通过、WPF 单测 70/70、Release 编译 0 警告 0 错误。**需实机复核**：`HARVEST_PENDING_REGION`、花仙乐园失败样本、周五/周一守望兔子、翻页模态残留。
