@@ -5220,3 +5220,4 @@ R5 自述与内容一致、**R6 `files/` 整文件**（diff 仅作 evidence）�
 - **离线帧回归**：`143722` 粉卡 → `{粉色桃花}, unknown=False`；`151128` 粉+紫卡 → `{粉色桃花}, unknown=True`，紫色触发保护。
 - **实机**：手动点「收取」后花园清空；再跑种植模块：收获 0（无可收）、种植白色桃花 x1 完成（可种 70→69、肥力 358→356），**失败 0**。
 - **验证**：Python 单测 170 项全绿；全量闸门通过。**剩余**：授粉功能（库存读取/兼容选择/点击）按用户决定暂缓。
+- **CI 修复**：GitHub Actions windows-latest 的 cp1252 控制台下测试打印中文触发 `UnicodeEncodeError`（5 个 ERROR）；`tests/__init__.py` 统一将 stdout/stderr 重配置为 UTF-8。本地用 `PYTHONIOENCODING=cp1252` 模拟 CI，170 项与全量闸门均通过。
