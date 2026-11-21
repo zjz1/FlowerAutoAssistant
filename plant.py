@@ -879,6 +879,13 @@ def _plant_target(eng: EnginePort, target: PlantTarget, options: PlantOptions,
     if base["plantable_total"] is None or base["fertility_remaining"] is None:
         print("    [种植] 基线 a/d 未读到, 中止(不点种子)")
         return False
+    if base["plantable_total"] <= 0:
+        print("    [种植] 可种槽位为 0(花园已满), 跳过种植")
+        return True
+    if target.cost is not None and int(target.cost) > 0 \
+            and base["fertility_remaining"] < int(target.cost):
+        print("    [种植] 剩余肥力不足, 跳过种植")
+        return True
 
     grid = _find_grid_seed(eng, target.seed)
     if grid is None:
@@ -898,6 +905,10 @@ def _plant_target(eng: EnginePort, target: PlantTarget, options: PlantOptions,
     print(f"    [种植] 库存={n} 可种={base['plantable_total']} "
           f"肥力={base['fertility_remaining']} cost={target.cost} → 计划={q}"
           + ("（缺种购买已开启）" if buy_wanted and q > n else ""))
+
+    if n <= 0 and not buy_wanted:
+        print("    [种植] 种子库存为 0 且未开启缺种购买, 跳过种植")
+        return True
 
     if q < 1:
         if options.count_mode == "auto":

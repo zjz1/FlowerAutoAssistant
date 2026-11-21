@@ -161,5 +161,47 @@ class HarvestDecisionTests(unittest.TestCase):
         self.assertIsNone(plant._match_seed_names(["待授粉", "未知花朵"]))
 
 
+class PlantTargetGuardTests(unittest.TestCase):
+    """实机 2026-11-21：花园已满/肥力不足/无库存时跳过种植，不产生假失败。"""
+
+    def setUp(self):
+        plant.reload_presets()
+
+    def tearDown(self):
+        plant.reload_presets()
+
+    @staticmethod
+    def _target():
+        return plant.PlantTarget(seed="白色桃花", detail="白色桃花花种",
+                                 search_kw="桃花", cost=2)
+
+    def _run(self, base, grid):
+        eng = type("_Eng", (), {})()
+        with mock.patch.object(plant, "read_panel_info", return_value=base), \
+             mock.patch.object(plant, "_find_grid_seed", return_value=grid) as fg, \
+             mock.patch.object(plant, "_choose_quantity") as cq:
+            ok = plant._plant_target(
+                eng, self._target(), plant.PlantOptions(count_mode="fixed", count=1),
+                {"opened": True})
+        return ok, fg, cq
+
+    def test_full_garden_skips_before_seed_grid(self):
+        ok, fg, cq = self._run({"plantable_total": 0, "fertility_remaining": 358}, (object(), 311))
+        self.assertTrue(ok)
+        fg.assert_not_called()
+        cq.assert_not_called()
+
+    def test_fertility_shortage_skips(self):
+        ok, fg, cq = self._run({"plantable_total": 5, "fertility_remaining": 1}, (object(), 311))
+        self.assertTrue(ok)
+        fg.assert_not_called()
+        cq.assert_not_called()
+
+    def test_zero_stock_without_buy_skips(self):
+        ok, _fg, cq = self._run({"plantable_total": 5, "fertility_remaining": 358}, (object(), 0))
+        self.assertTrue(ok)
+        cq.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
