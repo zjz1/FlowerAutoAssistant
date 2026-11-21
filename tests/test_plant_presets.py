@@ -160,6 +160,44 @@ class HarvestDecisionTests(unittest.TestCase):
         self.assertEqual(plant._match_seed_names(["待授粉", "绿色桃花"]), {"绿色桃花"})
         self.assertIsNone(plant._match_seed_names(["待授粉", "未知花朵"]))
 
+    def test_deterministic_suffix_forms(self):
+        # 显式去固定后缀，不是模糊匹配
+        self.assertEqual(plant._match_seed_names(["粉色桃花花"]), {"粉色桃花"})
+        self.assertEqual(plant._match_seed_names(["白色桃花花种"]), {"白色桃花"})
+        self.assertIsNone(plant._match_seed_names(["色桃花"]))
+        self.assertIsNone(plant._match_seed_names(["粉", "桃花"]))
+
+    def test_empty_allowed_blocks_all_pending(self):
+        ok, protected = plant.decide_harvest({"粉色桃花"}, [])
+        self.assertFalse(ok)
+        self.assertEqual(protected, ["粉色桃花"])
+        # 没有待授粉花时仍可收获
+        self.assertEqual(plant.decide_harvest(set(), []), (True, []))
+
+    def test_group_rows(self):
+        blocks = [
+            {"text": "粉色", "center": [300, 100]},
+            {"text": "桃花", "center": [350, 102]},
+            {"text": "75", "center": [400, 101]},
+            {"text": "施肥", "center": [1200, 200]},
+        ]
+        rows = plant._group_blocks_by_row(blocks, 720)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({b["text"] for b in rows[0]}, {"粉色", "桃花", "75"})
+
+    def test_split_cards_and_known_fragments(self):
+        row = [
+            {"text": "粉色桃花", "center": [464, 190],
+             "box": [420, 175, 510, 205]},
+            {"text": "紫色康乃馨", "center": [607, 190],
+             "box": [560, 175, 650, 205]},
+        ]
+        cards = plant._split_cards(row, 1280)
+        self.assertEqual(len(cards), 2)
+        lib = plant.load_presets()["seeds"]
+        self.assertTrue(plant._is_known_fragment("色桃花", {"粉色桃花"}, lib))
+        self.assertFalse(plant._is_known_fragment("紫色康乃馨", {"粉色桃花"}, lib))
+
 
 class PlantTargetGuardTests(unittest.TestCase):
     """实机 2026-11-21：花园已满/肥力不足/无库存时跳过种植，不产生假失败。"""

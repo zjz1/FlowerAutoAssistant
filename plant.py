@@ -463,12 +463,24 @@ def _find_grid_seed(eng: EnginePort, seed_exact: str):
     """在种子结果区找精确同名的网格块（带数量角标），返回 (name_block, count) 或 None。
 
     用户要求: 页面至少两个「种子名称」文字, 必须精准 OCR; 选“带数量角标的种子网格块”。
-    其余同名块(如选中列表/提示)因找不到固定偏移的数量角标而被排除。
+    2026-11-21: 先粗 OCR 定位名称块；粗识未命中时对该区域 2x 精识重试；
+    只用确定性归一化/去后缀后的精确匹配，不做模糊匹配。
     """
+    img = eng.screenshot()
+    if img is None:
+        return None
     blocks = eng.ocr_blocks(None, PLANT_SEED_RESULT_REGION)
-    cands = [b for b in blocks if str(b.get("text", "")).strip() == seed_exact]
+    fine_used = False
+    cands = [b for b in blocks
+             if any(form == seed_exact for form in _seed_forms(b.get("text", "")))]
+    if not cands:
+        print(f"    [种植] 粗识未命中「{seed_exact}」, 区域 2x 精识重试")
+        blocks = _fine_blocks(eng, PLANT_SEED_RESULT_REGION, 2, img)
+        fine_used = True
+        cands = [b for b in blocks
+                 if any(form == seed_exact for form in _seed_forms(b.get("text", "")))]
     print(f"    [种植] 精确匹配「{seed_exact}」: {len(cands)} 块 "
-          f"{[b['center'] for b in cands]}")
+          f"{[b['center'] for b in cands]}" + ("（精识）" if fine_used else ""))
     for name in cands:
         best = _badge_for(eng, name, blocks)
         if best:
@@ -951,6 +963,8 @@ def _plant_target(eng: EnginePort, target: PlantTarget, options: PlantOptions,
     mode = _choose_quantity(eng, target, base, q)
     if mode is None:
         return False
+    if mode == "skip":
+        return True
     if mode == "planted":
         ok = _verify_after_plant(eng, base, target.cost, q)
         _save_shot(eng, "after_plant")
@@ -969,7 +983,10 @@ def _plant_target(eng: EnginePort, target: PlantTarget, options: PlantOptions,
 
 
 def _choose_quantity(eng: EnginePort, target: PlantTarget, base: dict, q: int) -> str | None:
-    """精确点选网格块 → 数量窗口调到 q → 确认；返回 selected/planted 或 None。"""
+    """精确点选网格块 → 数量窗口调到 q → 确认；返回 selected/planted/skip 或 None。
+
+    skip = 数量窗口库存为 0（花园满/无该种子），调用方按“跳过种植”处理，不记失败。
+    """
     grid = _find_grid_seed(eng, target.seed)
     if grid is None:
         print(f"    [种植] 未找到带数量角标的精确块「{target.seed}」, 中止; 不点其它变体")
@@ -989,8 +1006,8 @@ def _choose_quantity(eng: EnginePort, target: PlantTarget, base: dict, q: int) -
         print(f"    [种植] 数量窗口库存 {pair[1]} < 计划 {q}, 按现有库存种植")
         q = int(pair[1])
     if q < 1:
-        print("    [种植] 数量窗口库存为 0, 中止")
-        return None
+        print("    [种植] 数量窗口库存为 0, 跳过种植")
+        return "skip"
     if not _adjust_quantity(eng, pair, q):
         _save_shot(eng, "quantity_failed")
         return None
@@ -1121,38 +1138,189 @@ def _read_pollinate_page(eng: EnginePort):
     return blocks
 
 
-def _match_seed_names(texts) -> set[str] | None:
-    """从待授粉列表文本匹配数据库种子；无任何匹配返回 None（保守）。
+_OCR_STRIP_RE = re.compile(r"[\s，。,.、；;：:！!？?（）()\[\]【】\"'“”‘’·]+")
+_SEED_SUFFIXES = ("花种", "种子", "花")
 
-    先按完整「颜色+花名」匹配；再按颜色/花名分块组合（页面可能分行显示）。
+
+def _normalize_ocr_text(text) -> str:
+    """确定性归一化：去空白/标点，不做任何相似度或模糊匹配。"""
+    return _OCR_STRIP_RE.sub("", str(text or ""))
+
+
+def _seed_forms(text) -> list[str]:
+    """返回文本的确定性候选形态（原文、去固定后缀）；用于精确匹配种子库。"""
+    s = _normalize_ocr_text(text)
+    if not s:
+        return []
+    forms = [s]
+    for suf in _SEED_SUFFIXES:
+        if s.endswith(suf) and len(s) > len(suf):
+            forms.append(s[:-len(suf)])
+    return list(dict.fromkeys(forms))
+
+
+def _match_seed_names(texts) -> set[str] | None:
+    """从一组（同一行/同一卡片）文本中精确匹配种子；无法匹配返回 None。
+
+    2026-11-21 用户要求：**绝对禁止模糊匹配**。本函数只做：
+      ① 确定性归一化 + 去固定后缀后的精确相等；
+      ② 同一行内“颜色词 + 花名”的精确组合。
+    不使用子串包含、编辑距离、相似度阈值。
     """
     try:
         lib = load_presets()["seeds"]
     except ValueError as e:  # noqa: BLE001
         print(f"    [收获] 种子库不可用: {e}")
         return None
-    joined = " ".join(str(t).replace(" ", "") for t in texts)
-    found = {seed for seed in lib if seed in joined}
+    norm = [_normalize_ocr_text(t) for t in texts]
+    norm = [t for t in norm if t]
+    found: set[str] = set()
+    for t in norm:
+        for form in _seed_forms(t):
+            if form in lib:
+                found.add(form)
     if found:
         return found
-    flowers = {info["flower"] for info in lib.values()}
+
     colors = {info["color"] for info in lib.values()}
-    for flower in flowers:
-        if flower not in joined:
-            continue
-        for color in colors:
+    flowers = {info["flower"] for info in lib.values()}
+    colors_in = {t for t in norm if t in colors}
+    flowers_in = {t for t in norm if t in flowers}
+    for color in colors_in:
+        for flower in flowers_in:
             seed = f"{color}{flower}"
-            if color in joined and seed in lib:
+            if seed in lib:
                 found.add(seed)
     return found or None
 
 
-def _read_pending_pollinations(eng: EnginePort) -> set[str] | None:
-    """读取授粉页右侧待授粉花朵集合；读不到/无法识别返回 None。"""
-    blocks = _fine_blocks(eng, HARVEST_PENDING_REGION, 2)
-    texts = _texts(blocks)
-    print(f"    [收获] 待授粉列表实读: {texts[:20]}")
-    return _match_seed_names(texts)
+PENDING_ACTION_KWS = ("浇水", "施肥", "收花", "快速", "开花", "结果", "二键")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _group_blocks_by_row(blocks, screen_h: int, y_tol_rel=0.035) -> list[list[dict]]:
+    """按 y 中心把 OCR 块分组为行（同行的名称/数量归为一组）。"""
+    if not blocks:
+        return []
+    ordered = sorted(blocks, key=lambda b: (b["center"][1], b["center"][0]))
+    rows: list[list[dict]] = []
+    for b in ordered:
+        y = b["center"][1]
+        if not rows:
+            rows.append([b])
+            continue
+        avg = sum(x["center"][1] for x in rows[-1]) / len(rows[-1])
+        if abs(y - avg) <= y_tol_rel * max(1, screen_h):
+            rows[-1].append(b)
+        else:
+            rows.append([b])
+    return rows
+
+
+def _split_cards(row: list[dict], screen_w: int, x_gap_rel=0.06) -> list[list[dict]]:
+    """同一行内按 x 间距切分成卡片（待授粉卡片可能横排多个）。"""
+    ordered = sorted(row, key=lambda b: b["center"][0])
+    cards: list[list[dict]] = []
+    last_x = None
+    for b in ordered:
+        x = b["center"][0]
+        if not cards or (last_x is not None and x - last_x > x_gap_rel * max(1, screen_w)):
+            cards.append([b])
+        else:
+            cards[-1].append(b)
+        last_x = x
+    return cards
+
+
+def _looks_like_name(text: str) -> bool:
+    s = _normalize_ocr_text(text)
+    return bool(s) and bool(_CJK_RE.search(s)) and not s.isdigit() \
+        and not any(k in s for k in PENDING_ACTION_KWS)
+
+
+def _is_known_fragment(text: str, known: set[str], lib: dict) -> bool:
+    """判断文本是否是已匹配种子的组成部分/后缀，避免把「色桃花」当未知花种。"""
+    s = _normalize_ocr_text(text)
+    if not s:
+        return True
+    for seed in known:
+        info = lib.get(seed) or {}
+        if s == seed or s == info.get("color") or s == info.get("flower"):
+            return True
+        if seed.endswith(s) or s.endswith(seed):
+            return True
+    return False
+
+
+def _read_pending_pollinations(eng: EnginePort) -> tuple[set[str], bool]:
+    """读取授粉页右侧待授粉卡片；返回 (已知种子集合, 是否存在无法识别卡片)。
+
+    2026-11-21 精识方案：
+      ① 粗 OCR 定位锚点与卡片行；
+      ② 按 x 间距切分横排卡片；
+      ③ 每张卡片做 3x 精识，合并粗/精文本；
+      ④ 只用确定性归一化+精确匹配；匹配不到但看起来像花名的卡片 → unknown=True，
+         由调用方保守跳过收花（防止漏保护未知花种）。
+    """
+    img = eng.screenshot()
+    if img is None:
+        return set(), True
+    w, h = eng.screen_w or 1280, eng.screen_h or 720
+    coarse = eng.ocr_blocks(None)
+    anchor = next((b for b in coarse if "选择花粉颜色" in str(b.get("text", ""))), None)
+    top = 0.18
+    if anchor is not None:
+        top = max(0.15, anchor["center"][1] / h + 0.045)
+
+    try:
+        lib = load_presets()["seeds"]
+    except ValueError as e:  # noqa: BLE001
+        print(f"    [收获] 种子库不可用: {e}")
+        return set(), True
+
+    def _card_texts(card):
+        texts = [str(b.get("text", "")).strip() for b in card]
+        if any(any(k in t for k in PENDING_ACTION_KWS) for t in texts):
+            return []
+        # 每张卡片 3x 精识，粗识 + 精识文本合并
+        pad = 0.015
+        x1 = max(0.0, min(b["box"][0] for b in card) / w - pad)
+        y1 = max(0.0, min(b["box"][1] for b in card) / h - pad)
+        x2 = min(1.0, max(b["box"][2] for b in card) / w + pad)
+        y2 = min(1.0, max(b["box"][3] for b in card) / h + pad)
+        fine = _fine_blocks(eng, [x1, y1, x2, y2], 3, img)
+        out = texts + [str(b.get("text", "")).strip() for b in fine]
+        return list(dict.fromkeys(t for t in out if t))
+
+    coarse_roi = [b for b in coarse
+                  if 0.35 * w <= b["center"][0] <= 0.90 * w
+                  and b["center"][1] >= top * h]
+    found: set[str] = set()
+    unknown = False
+    rows = _group_blocks_by_row(coarse_roi, h)
+    for row in rows:
+        for card in _split_cards(row, w):
+            texts = _card_texts(card)
+            if not texts:
+                continue
+            m = _match_seed_names(texts)
+            if m:
+                found |= m
+            else:
+                # 任何一张卡片无法精确匹配（含只剩数量、名称漏读）都按未知处理，
+                # 宁可不收花，也不放过未登记/受保护花种。
+                unknown = True
+            for t in texts:
+                if not _looks_like_name(t):
+                    continue
+                if not _is_known_fragment(t, found | (m or set()), lib):
+                    unknown = True
+            print(f"    [收获] 待授粉卡片: {texts} -> {sorted(m) if m else '未识别'}")
+    if not found and not unknown:
+        unknown = True   # y>0 却什么都没读到 -> 保守跳过
+    print(f"    [收获] 待授粉精确匹配: {sorted(found) if found else '无'}; "
+          f"未知卡片={unknown}")
+    return found, unknown
 
 
 def decide_harvest(pending, allowed, rare=None) -> tuple[bool, list[str]]:
@@ -1206,6 +1374,15 @@ def _wait_harvest_result(eng: EnginePort, timeout=8.0):
             return None
         blocks = eng.ocr_blocks(None)
         joined = " ".join(str(b.get("text", "")) for b in blocks)
+        # 2026-11-21 实机: 点一键收花后可能先弹「是否同时收获爱心地的花朵？」,
+        # 需点精确「收取」(不能点到「不收取」), 之后才出奖励弹窗。
+        extra = next((b for b in blocks
+                      if _normalize_ocr_text(b.get("text", "")) == "收取"), None)
+        if extra is not None and ("是否同时收获爱心地" in joined or "不收取" in joined):
+            print(f"    [收获] 爱心地确认弹窗({time.time() - t0:.1f}s) -> 点「收取」")
+            eng.click_abs(int(extra["center"][0]), int(extra["center"][1]))
+            time.sleep(1.5)
+            continue
         if ("没有能收获的花朵" in joined or "没有可收获" in joined
                 or "不能收获" in joined or "无法收获" in joined):
             print(f"    [收获] 失败提示弹窗出现({time.time() - t0:.1f}s): 无可收花")
@@ -1301,9 +1478,9 @@ def _run_plant_harvest(eng: EnginePort, state) -> bool:
         _close_plant_panel(eng)
         return True
     if y > 0:
-        pending = _read_pending_pollinations(eng)
-        if pending is None:
-            print("    [收获] 可授粉>0 但待授粉花朵无法识别 -> 保守跳过收花")
+        pending, unknown = _read_pending_pollinations(eng)
+        if unknown:
+            print("    [收获] 待授粉列表含未识别/未登记花朵 -> 保守跳过收花")
             _close_plant_panel(eng)
             return True
         try:
